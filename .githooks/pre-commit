@@ -14,10 +14,10 @@ fi
 # commit anywhere, active only where you opted in.
 #
 # Bypass, with a reason: git commit --no-verify
-GATE="${CONTENT_GATE:-$(command -v etymd || true)}"
+GATE="${CONTENT_GATE:-$(if [ -x ./dist/cli.js ]; then echo ./dist/cli.js; else command -v etymd || true; fi)}"
 if [ -x "$GATE" ]; then
   "$GATE" screen --staged || exit 1
 fi
 
 exit 0
-# etymd:generated pack-v7 a1805ccbee483e5d
+# etymd:generated pack-v8 44d63e264851f3e0

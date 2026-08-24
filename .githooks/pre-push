@@ -46,10 +46,10 @@ fi
 # Content screen, second pass — the WHOLE TREE rather than one diff. Catches anything committed
 # with --no-verify and anything a rebase or merge brought in from elsewhere. Advisory here (it
 # never blocks the push): the blocking decision belongs at commit time, where the fix is cheap.
-GATE="${CONTENT_GATE:-$(command -v etymd || true)}"
-if [ -x "$GATE" ] && [ "${CONTENT_GATE_PREPUSH:-1}" = "1" ]; then
+GATE="${CONTENT_GATE:-$(if [ -x ./dist/cli.js ]; then echo ./dist/cli.js; else command -v etymd || true; fi)}"
+if [ -x "$GATE" ]; then
   "$GATE" screen --tree --advisory || true
 fi
 
 exit 0
-# etymd:generated pack-v7 3278af3c202535d6
+# etymd:generated pack-v8 b3bf5049517c3afb

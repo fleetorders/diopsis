@@ -4,15 +4,11 @@
 # Wire it into the irreversible moment:
 #   package.json → "prepublishOnly": "./scripts/artifact-check.sh"
 #
-# No-op where no checker is installed. Bypass is deliberate and loud: ARTIFACT_CHECK_SKIP=1.
+# The artifact gate is the one check that sees what actually SHIPS — bypass with
+# .etymd-screen-allow entries (with provenance) if you must exempt a string.
 set -eu
 
-if [ "${ARTIFACT_CHECK_SKIP:-0}" = "1" ]; then
-  echo "› artifact-check: SKIPPED by ARTIFACT_CHECK_SKIP=1"
-  exit 0
-fi
-
-GATE="${CONTENT_GATE:-$(command -v etymd || true)}"
+GATE="${CONTENT_GATE:-$(if [ -x ./dist/cli.js ]; then echo ./dist/cli.js; else command -v etymd || true; fi)}"
 [ -x "$GATE" ] || { echo "› artifact-check: no checker installed — skipping."; exit 0; }
 
 WORK=$(mktemp -d)
@@ -27,4 +23,4 @@ fi
 
 "$GATE" screen --dir "$WORK" || exit 1
 exit 0
-# etymd:generated pack-v7 f32f6f88fdb02048
+# etymd:generated pack-v8 7e8e0e079bf580c3
