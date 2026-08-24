@@ -7,7 +7,11 @@
 # Bypass, with a reason: git commit --no-verify
 GATE="${COMMIT_MSG_GATE:-$(command -v etymd || true)}"
 if [ -x "$GATE" ]; then
-  "$GATE" screen --message "$1" || exit 1
+  if ! "$GATE" screen --message "$1"; then
+    "$GATE" screen --help >/dev/null 2>&1 ||
+      echo "etymd: this checker does not understand 'screen' (needs etymd 0.11+) — upgrade it, or set COMMIT_MSG_GATE to a checker that does." >&2
+    exit 1
+  fi
 fi
 
 # Message format — <type>[(scope)][!]: <summary>. Needs nothing installed, so it always runs.
@@ -32,10 +36,13 @@ esac
 
 # Repo-owned checks. This file is generated and will be overwritten; `.githooks/commit-msg.local`
 # is yours — etymd never reads, writes, or regenerates it. Put project-specific guards there.
+# A guard running tests that build fixture repositories should scrub git's exported GIT_* names
+# first — a child git inherits them and ignores its cwd, so the suite would hit the real repo:
+#   env $(env | grep -o '^GIT_[A-Za-z0-9_]*' | sed 's/^/-u /') <your command>
 LOCAL="$(dirname "$0")/commit-msg.local"
 if [ -x "$LOCAL" ]; then
   "$LOCAL" "$@" || exit 1
 fi
 
 exit 0
-# etymd:generated pack-v8 fb5f852715904344
+# etymd:generated pack-v12 d14772d43c4fd971

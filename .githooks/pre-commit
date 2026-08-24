@@ -3,6 +3,9 @@
 
 # Repo-owned checks. This file is generated and will be overwritten; `.githooks/pre-commit.local`
 # is yours — etymd never reads, writes, or regenerates it. Put project-specific guards there.
+# A guard running tests that build fixture repositories should scrub git's exported GIT_* names
+# first — a child git inherits them and ignores its cwd, so the suite would hit the real repo:
+#   env $(env | grep -o '^GIT_[A-Za-z0-9_]*' | sed 's/^/-u /') <your command>
 LOCAL="$(dirname "$0")/pre-commit.local"
 if [ -x "$LOCAL" ]; then
   "$LOCAL" "$@" || exit 1
@@ -14,10 +17,14 @@ fi
 # commit anywhere, active only where you opted in.
 #
 # Bypass, with a reason: git commit --no-verify
-GATE="${CONTENT_GATE:-$(if [ -x ./dist/cli.js ]; then echo ./dist/cli.js; else command -v etymd || true; fi)}"
+GATE="${CONTENT_GATE:-$(command -v etymd || true)}"
 if [ -x "$GATE" ]; then
-  "$GATE" screen --staged || exit 1
+  if ! "$GATE" screen --staged; then
+    "$GATE" screen --help >/dev/null 2>&1 ||
+      echo "etymd: this checker does not understand 'screen' (needs etymd 0.11+) — upgrade it, or set CONTENT_GATE to a checker that does." >&2
+    exit 1
+  fi
 fi
 
 exit 0
-# etymd:generated pack-v8 44d63e264851f3e0
+# etymd:generated pack-v12 54135a5b579e49cf

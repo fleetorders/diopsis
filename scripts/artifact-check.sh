@@ -8,7 +8,7 @@
 # .etymd-screen-allow entries (with provenance) if you must exempt a string.
 set -eu
 
-GATE="${CONTENT_GATE:-$(if [ -x ./dist/cli.js ]; then echo ./dist/cli.js; else command -v etymd || true; fi)}"
+GATE="${CONTENT_GATE:-$(command -v etymd || true)}"
 [ -x "$GATE" ] || { echo "› artifact-check: no checker installed — skipping."; exit 0; }
 
 WORK=$(mktemp -d)
@@ -21,6 +21,10 @@ if [ -f package.json ]; then
   tar -xzf "$WORK"/*.tgz -C "$WORK" 2>/dev/null || true
 fi
 
-"$GATE" screen --dir "$WORK" || exit 1
+if ! "$GATE" screen --dir "$WORK"; then
+  "$GATE" screen --help >/dev/null 2>&1 ||
+    echo "etymd: this checker does not understand 'screen' (needs etymd 0.11+) — upgrade it, or set CONTENT_GATE to a checker that does." >&2
+  exit 1
+fi
 exit 0
-# etymd:generated pack-v8 7e8e0e079bf580c3
+# etymd:generated pack-v12 2cff669174dd425e
