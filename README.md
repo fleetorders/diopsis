@@ -1,11 +1,11 @@
 # Diopsis
 
 <div align="center">
-  <img src="https://raw.githubusercontent.com/triartleet/diopsis/main/media/diopsis-logo.png" width="520" alt="Diopsis — a baseline render and the current one, and the lens between them showing the row that moved">
+  <img src="https://raw.githubusercontent.com/fleetorders/diopsis/main/media/diopsis-logo.png" width="520" alt="Diopsis — a baseline render and the current one, and the lens between them showing the row that moved">
   <p>
     <a href="https://www.npmjs.com/package/diopsis"><img src="https://img.shields.io/npm/v/diopsis.svg?label=npm&color=cb3837" alt="npm version"></a>
-    <a href="https://github.com/triartleet/diopsis/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/triartleet/diopsis/ci.yml?branch=main&label=CI" alt="CI"></a>
-    <a href="https://github.com/triartleet/diopsis/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT license"></a>
+    <a href="https://github.com/fleetorders/diopsis/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/fleetorders/diopsis/ci.yml?branch=main&label=CI" alt="CI"></a>
+    <a href="https://github.com/fleetorders/diopsis/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT license"></a>
   </p>
 </div>
 
@@ -46,7 +46,7 @@ And when something did change, the report shows you exactly what — baseline be
 render, changed stories first:
 
 <div align="center">
-  <img src="https://raw.githubusercontent.com/triartleet/diopsis/main/media/diopsis-report.png" width="920" alt="The Diopsis report: filter chips for changed and unchanged captures, above a story showing its committed baseline and current render side by side">
+  <img src="https://raw.githubusercontent.com/fleetorders/diopsis/main/media/diopsis-report.png" width="920" alt="The Diopsis report: filter chips for changed and unchanged captures, above a story showing its committed baseline and current render side by side">
 </div>
 
 Needs Node 18+, a built static Storybook, and `@playwright/test` as a peer dependency; runs on
