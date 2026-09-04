@@ -11,7 +11,7 @@ if [ -x "$LOCAL" ]; then
   "$LOCAL" "$@" || exit 1
 fi
 
-# Content screen — staged file bytes. Refuses to commit environment, employer or identity
+# Content screen — staged file bytes. Refuses to commit environment, guarded-side or identity
 # detail into a repo whose history is (or could become) public. The checker and its patterns
 # are machine-local by design, so this is a NO-OP wherever no checker is installed: safe to
 # commit anywhere, active only where you opted in.
@@ -27,4 +27,4 @@ if [ -x "$GATE" ]; then
 fi
 
 exit 0
-# etymd:generated pack-v12 54135a5b579e49cf
+# etymd:generated pack-v12 f7c982f486dd449a
