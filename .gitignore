@@ -20,3 +20,6 @@ coverage/
 # Delete both once v1 builds.
 HANDOFF.md
 NEXT-SESSION.md
+
+# Machine-local companion hooks and scratch; never tracked.
+local/

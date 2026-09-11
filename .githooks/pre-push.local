@@ -6,4 +6,10 @@ GUARD=$(command -v public-surface-guard || true)
 if [ -x "$GUARD" ]; then
   "$GUARD" --pre-push "$@" || exit 1
 fi
+# Machine-local companion checks, when this machine has any. The companion is never tracked and
+# never named here, so a contributor without one pushes exactly as before.
+if [ -x local/hooks/pre-push ]; then
+  local/hooks/pre-push || exit 1
+fi
+
 exit 0
