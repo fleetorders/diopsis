@@ -1,0 +1,9 @@
+#!/usr/bin/env sh
+# Screen what this push publishes: branch and tag names, tag and commit messages, and the
+# tracked hooks, scripts and package manifest. The checker is resolved by name from PATH;
+# where it is not installed there is no check, never a failure. (published-surface stub)
+GUARD=$(command -v public-surface-guard || true)
+if [ -x "$GUARD" ]; then
+  "$GUARD" --pre-push "$@" || exit 1
+fi
+exit 0
