@@ -41,7 +41,14 @@ async function embed(
     }
 
     const images: EmbeddedCapture['images'] = {};
-    for (const kind of ['expected', 'actual', 'diff'] as const) {
+    // A new capture's "expected" is the baseline the comparator just wrote from this very
+    // render — the same bytes as the actual — and no diff exists, because nothing was
+    // compared. Embedding the duplicate would double a first-run report, the one run that
+    // is all new captures, for images the single-column presentation never shows.
+    const kinds = capture.status === 'new'
+      ? (['actual'] as const)
+      : (['expected', 'actual', 'diff'] as const);
+    for (const kind of kinds) {
       const relative = capture.artifacts[kind];
       if (!relative) continue;
       if (spent >= EMBED_BUDGET_BYTES) {
@@ -204,6 +211,10 @@ main { padding: 14px 18px 56px; }
 .pair figure { margin: 0; min-width: 0; }
 .pair figcaption { color: var(--muted); font-size: 12px; padding: 3px 2px; }
 .pair .stage { max-height: none; overflow: visible; }
+/* A new capture is one labelled image, not half a comparison: the caption says what "new"
+   means, so the absence of a second column reads as nothing-to-compare, not a missing panel. */
+.solo { margin: 0; }
+.solo figcaption { color: var(--muted); font-size: 12px; padding: 3px 2px; }
 /* Both renders occupy one grid cell, so the cell takes the size of the larger and neither is
    stretched to the other's box. */
 .overlaywrap, .swipe { display: grid; line-height: 0; }
@@ -348,6 +359,23 @@ function copyButton(text, label) {
 function stage(capture) {
   const el = document.createElement('div');
   const img = capture.images || {};
+  // A new capture has no baseline to compare against: the "expected" a run leaves behind is
+  // the baseline written from this very render, so a two-column presentation would show one
+  // image twice and read as a difference that does not exist. One column, labelled as new —
+  // also when both artifact references are present, which a fresh result always carries.
+  if (capture.status === 'new' && (img.actual || img.expected)) {
+    const fig = document.createElement('figure');
+    fig.className = 'solo';
+    const cap = document.createElement('figcaption');
+    cap.textContent = 'New — no baseline yet; this image becomes the baseline when accepted.';
+    const box = document.createElement('div');
+    box.className = 'stage';
+    zoomable(box);
+    box.appendChild(picture(img.actual || img.expected));
+    fig.append(cap, box);
+    el.appendChild(fig);
+    return { el, modes: null, setMode: null, nudge: null };
+  }
   // The highlight overlay is the default: it answers "what changed?" without any interaction.
   const modes = [];
   if (img.diff) modes.push('Overlay');
@@ -636,10 +664,12 @@ function render() {
         slot.appendChild(entry.built.el);
       };
 
-      // A changed capture already states its own size in the bar; repeating it as a red
-      // assertion failure dresses the ordinary outcome up as a broken one. The text is kept
-      // wherever it is the only thing there is to read.
-      const explained = c.status === 'changed' && c.diffPixels != null;
+      // A changed capture already states its own size in the bar, and a new capture's whole
+      // story — "a snapshot doesn't exist … writing actual" — is told by its single column;
+      // repeating either as a red assertion failure dresses the ordinary outcome up as a
+      // broken one. The text is kept wherever it is the only thing there is to read.
+      const explained =
+        (c.status === 'changed' && c.diffPixels != null) || c.status === 'new';
       if (c.error && !explained) {
         const e = document.createElement('pre');
         e.className = 'err';
