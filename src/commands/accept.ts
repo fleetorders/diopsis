@@ -5,6 +5,14 @@ import path from 'node:path';
 import { loadConfig } from '../config.ts';
 import { needsReview, type RunSummary } from '../report/summary.ts';
 
+// Git exports GIT_DIR/GIT_WORK_TREE/GIT_COMMON_DIR to hooks, absolute inside a linked
+// worktree, and a child git prefers them over `cwd` — an inherited environment would make
+// `git add` stage into whichever repository launched us, not `options.root`. Strip the
+// whole prefix so `cwd` is the only authority on which repository we touch.
+const gitEnv = Object.fromEntries(
+  Object.entries(process.env).filter(([name]) => !name.startsWith('GIT_')),
+);
+
 export interface AcceptOptions {
   root: string;
   /** Accept only this story. Omitted means the whole run. */
@@ -69,14 +77,18 @@ export async function acceptCommand(options: AcceptOptions): Promise<number> {
 
   if (!options.noStage) {
     const inRepo =
-      spawnSync('git', ['rev-parse', '--git-dir'], { cwd: options.root, stdio: 'ignore' })
-        .status === 0;
+      spawnSync('git', ['rev-parse', '--git-dir'], {
+        cwd: options.root,
+        env: gitEnv,
+        stdio: 'ignore',
+      }).status === 0;
 
     if (!inRepo) {
       process.stdout.write('Not staged — this is not a git repository. The files are written.\n');
     } else {
       const staged = spawnSync('git', ['add', '--', ...written], {
         cwd: options.root,
+        env: gitEnv,
         encoding: 'utf8',
       });
       process.stdout.write(
