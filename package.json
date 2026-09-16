@@ -4,7 +4,7 @@
   "description": "Visual regression for Storybook — diffs the static build; identical locally and in CI.",
   "type": "module",
   "license": "MIT",
-  "author": "Alkis Yuv <pgiouvanelis@gmail.com>",
+  "author": "Alkis Yuv <hello@yuv.run>",
   "keywords": [
     "storybook",
     "visual-regression",
