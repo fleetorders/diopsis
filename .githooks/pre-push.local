@@ -6,10 +6,17 @@ GUARD=$(command -v public-surface-guard || true)
 if [ -x "$GUARD" ]; then
   "$GUARD" --pre-push "$@" || exit 1
 fi
-# Machine-local companion checks, when this machine has any. The companion is never tracked and
-# never named here, so a contributor without one pushes exactly as before.
-if [ -x local/hooks/pre-push ]; then
-  local/hooks/pre-push || exit 1
+
+# Machine-local companion checks, when this machine has any. The companion lives in the
+# untracked local/ tree at the repo root; which checks it runs is deliberately not
+# enumerated here, so a contributor without one pushes exactly as before. Contract: it
+# runs after the screen, receives the same arguments, and gets no ref stream — the screen
+# above has already read stdin to EOF.
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)
+if [ -n "$ROOT" ] && [ -x "$ROOT/local/hooks/pre-push" ]; then
+  "$ROOT/local/hooks/pre-push" "$@" || exit 1
+elif [ -e "$ROOT/local/hooks/pre-push" ]; then
+  echo "warning: local/hooks/pre-push exists but is not executable — skipped" >&2
 fi
 
 exit 0

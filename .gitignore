@@ -21,5 +21,6 @@ coverage/
 HANDOFF.md
 NEXT-SESSION.md
 
-# Machine-local companion hooks and scratch; never tracked.
-local/
+# Machine-local companion hooks and scratch; never tracked. Anchored to the root
+# so a directory named local deeper in the tree cannot silently become untrackable.
+/local/
