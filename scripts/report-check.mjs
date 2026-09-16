@@ -89,7 +89,9 @@ const captures = [
   capture({ t: 'Card', n: 'Long', id: 'card--long', w: 380, s: 'changed', px: 2684, r: 0.0088,
     a: { expected: 'shots/b-base.png', actual: 'shots/b-act.png', diff: 'shots/b-diff.png' } }),
   capture({ t: 'Card', n: 'Brand new', id: 'card--brand-new', w: 480, s: 'new',
-    a: { actual: 'shots/c-act.png' } }),
+    // Both references, as a real fresh result carries them: the "expected" is the baseline
+    // the comparator just wrote from this render — the same bytes as the actual.
+    a: { expected: 'shots/c-act.png', actual: 'shots/c-act.png' } }),
   capture({ t: 'Header', n: 'Sticky', id: 'header--sticky', w: 1280, s: 'render-failed',
     err: 'StoryRenderError: the story never left its loading state' }),
   capture({ t: 'Footer', n: 'Default', id: 'footer--default', w: 1280, s: 'unchanged' }),
@@ -158,6 +160,25 @@ check('the fixture really does have a taller current render', geometry.grew);
 check('both renders share one scale', geometry.sameScale);
 check('the current render keeps its own height', geometry.keepsOwnHeight);
 check('the frame takes the height of the taller render', geometry.wrapsTaller);
+
+// A new capture is one column, not a comparison (DECISIONS.md D-021). Its result carries both
+// an actual and a freshly written baseline reference, and showing the two — identical — images
+// side by side read as a difference that does not exist.
+const newStory = page.locator('#story-card--brand-new');
+check('a new capture shows exactly one image',
+  (await newStory.locator('img').count()) === 1);
+check('a new capture offers no comparison modes',
+  (await newStory.locator('.modes button').count()) === 0);
+check('a new capture is labelled as what it is',
+  (await newStory.locator('figcaption').first().textContent()).startsWith('New —'));
+check('a missing baseline is not dressed up as an assertion failure',
+  !(await newStory.textContent()).includes("doesn't exist"));
+// The control: a capture with a real baseline keeps its comparison.
+const changedStory = page.locator('#story-card--default');
+check('a changed capture still shows both renders',
+  (await changedStory.locator('.capture').first().locator('img').count()) === 2);
+check('a changed capture still offers the comparison modes',
+  (await changedStory.locator('.modes button').count()) === 4);
 
 // Triage, and its survival across a reload.
 await page.keyboard.press('r');

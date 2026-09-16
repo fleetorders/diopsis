@@ -559,3 +559,27 @@ considered for this pass and deferred. One capture still occupies roughly one sc
 large matrix cannot be taken in at a glance; that is the gap the overview would close.
 
 **Scope:** repo.
+
+## D-021 — 2026-09-12 — A new capture renders as one column, not a comparison
+
+**Decision:** A capture classified `new` — no baseline existed when it was taken — is shown
+as a single labelled column holding its one render, with no comparison modes, no
+expected/diff panels, and no assertion text. Its "expected" artifact is additionally not
+embedded: the comparator writes the baseline from the very render being reviewed, so the
+reference is byte-identical to the actual. Captures with a real baseline keep the full
+comparison surface, and failures that are not missing baselines keep their error text.
+
+**Why:** a fresh result for a new capture carries both an actual and a just-written baseline
+reference. Presenting those as a before/after showed one image twice and invited the reader
+to find a difference that did not exist — and the comparator's raw "a snapshot doesn't exist
+… writing actual" message, printed in the failure colour beside it, read as an alarm about
+content that was in fact identical. "New" is a bookkeeping state, not a visual finding, and
+the layout now says so. Not embedding the duplicate halves the image weight of a first run,
+which is exactly the run that consists almost entirely of new captures.
+
+**Consequences:** the new-capture presentation is one image, so a reviewer inspecting the
+first render of a story uses the actual-size toggle rather than a comparison mode. The
+rendering branches on the capture's status rather than on which artifacts happen to be
+present, so a result carrying both references still shows one column.
+
+**Scope:** repo.
