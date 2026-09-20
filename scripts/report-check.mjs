@@ -91,7 +91,16 @@ const captures = [
   capture({ t: 'Card', n: 'Brand new', id: 'card--brand-new', w: 480, s: 'new',
     // Both references, as a real fresh result carries them: the "expected" is the baseline
     // the comparator just wrote from this render — the same bytes as the actual.
-    a: { expected: 'shots/c-act.png', actual: 'shots/c-act.png' } }),
+    a: { expected: 'shots/c-act.png', actual: 'shots/c-act.png' },
+    // The error text too, as a real fresh result records it: the assertion message, then
+    // the same line again at the head of the trace. Shown raw, that pair reads as two
+    // errors per story — the suppression of a carried error is what this fixture pins.
+    err: [
+      "Error: A snapshot doesn't exist for card--brand-new-480.png, writing actual.",
+      '    at StoryCapture.compare',
+      "Error: A snapshot doesn't exist for card--brand-new-480.png, writing actual.",
+      '    at StoryCapture.compare',
+    ].join('\n') }),
   capture({ t: 'Header', n: 'Sticky', id: 'header--sticky', w: 1280, s: 'render-failed',
     err: 'StoryRenderError: the story never left its loading state' }),
   capture({ t: 'Footer', n: 'Default', id: 'footer--default', w: 1280, s: 'unchanged' }),
@@ -173,6 +182,9 @@ check('a new capture is labelled as what it is',
   (await newStory.locator('figcaption').first().textContent()).startsWith('New —'));
 check('a missing baseline is not dressed up as an assertion failure',
   !(await newStory.textContent()).includes("doesn't exist"));
+// Wording-independent: even reworded, a carried error must produce no error element.
+check('a new capture renders no error block at all',
+  (await newStory.locator('pre.err').count()) === 0);
 // The control: a capture with a real baseline keeps its comparison.
 const changedStory = page.locator('#story-card--default');
 check('a changed capture still shows both renders',
