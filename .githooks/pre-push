@@ -22,39 +22,68 @@ run_gate npm run typecheck || exit 1
 echo "› npm run test"
 run_gate npm run test || exit 1
 # Shell correctness. Scripts are discovered by shebang over TRACKED files at push time, so a
-# script added later is covered without regenerating this hook. zsh is NOT in the checked set:
+# script added later is covered without regenerating this hook. The classifier is
+# discover-shell-scripts.sh beside this hook — tracked and shebanged like what it classifies,
+# so the scan it implements finds and checks it too. zsh is NOT in the checked set:
 # the checker cannot parse it (SC1071 is a parser-level error no inline directive can silence),
 # so checking it would fail every push on the parser, not on the script. Excluded — and said so
 # at run time below, because a coverage hole that is silent is indistinguishable from coverage.
+# The same honesty splits the unreadable: a regular file that exists but cannot be read blocks
+# the push (coverage would otherwise silently shrink), while a tracked path with nothing readable
+# behind it — a submodule entry, a dangling symlink, a file deleted from the worktree while
+# still tracked — is counted and said so below as skipped, never a block.
 #
 # "the checker", not its name, on purpose: a comment whose first word is that name is read as
 # a DIRECTIVE, and an unparseable directive is itself an error (SC1072/SC1073). A hook that
 # explains why it skips a shell dialect must not break the checker while doing it.
 if command -v shellcheck >/dev/null 2>&1; then
-  scripts=$(git ls-files -z \
-    | xargs -0 -I{} sh -c 'head -1 "{}" 2>/dev/null | grep -qE "^#!.*[/ ](ba|da)?sh( |$)" && echo "{}"' \
-    | sort)
-  zsh_scripts=$(git ls-files -z \
-    | xargs -0 -I{} sh -c 'head -1 "{}" 2>/dev/null | grep -qE "^#!.*[/ ]zsh( |$)" && echo "{}"' \
-    | sort)
-  if [ -n "$zsh_scripts" ]; then
-    echo "› shellcheck: $(printf '%s\n' "$zsh_scripts" | wc -l | tr -d ' ') zsh script(s) excluded — shellcheck cannot parse zsh (SC1071); not checked, not failed"
-  fi
-  if [ -n "$scripts" ]; then
-    echo "› shellcheck ($(printf '%s\n' "$scripts" | wc -l | tr -d ' ') scripts, blocking at severity=warning)"
-    printf '%s\n' "$scripts" | xargs shellcheck -S warning || {
-      echo "  fix, or justify inline with '# shellcheck disable=SCxxxx  # why'"
+  (
+    # POSIX pipelines report only the LAST command's status, so discovery tallies progress in
+    # files — one dot per decision, counted with wc -c after the pipeline — rather than
+    # streaming through it: a pipeline that dies halfway cannot then pass as complete coverage,
+    # and the same tallies carry the counts to the reporting below. The classifier writes the
+    # tallies; this half only reads them.
+    # NUL delimiters preserve filenames; positional arguments avoid xargs -I size limits and
+    # interpreting filenames as shell code (never -I{}). The subshell confines cleanup to
+    # this step. The classifier itself is the tracked, shebanged helper beside this hook, so
+    # the discovery it performs finds and checks it too — the gate covers its own classifier.
+    shellcheck_tmp=$(mktemp -d) || exit 1
+    trap 'rm -rf "$shellcheck_tmp"' 0
+    trap 'exit 1' 1 2 3 15
+    git ls-files -z > "$shellcheck_tmp/tracked" || {
+      echo "etymd: cannot enumerate tracked files for shellcheck" >&2
       exit 1
     }
-    # Everything below the blocking bar, shown once the push is already cleared. Never affects
-    # the exit code — advice that can fail a push is not advice.
-    advice=$(printf '%s\n' "$scripts" | xargs shellcheck -S style -f gcc 2>/dev/null \
-      | grep -v ': warning:\|: error:' || true)
-    if [ -n "$advice" ]; then
-      echo "  · style/info (not blocking):"
-      printf '%s\n' "$advice" | sed 's/^/    /'
+    : > "$shellcheck_tmp/scripts" && : > "$shellcheck_tmp/count" && : > "$shellcheck_tmp/zsh-count" && : > "$shellcheck_tmp/skip-count" || exit 1
+    xargs -0 "$(dirname "$0")/discover-shell-scripts.sh" "$shellcheck_tmp" < "$shellcheck_tmp/tracked" || {
+      echo "etymd: shell script discovery failed; shellcheck coverage is incomplete" >&2
+      exit 1
+    }
+    count=$(wc -c < "$shellcheck_tmp/count") || exit 1
+    zsh_count=$(wc -c < "$shellcheck_tmp/zsh-count") || exit 1
+    skip_count=$(wc -c < "$shellcheck_tmp/skip-count") || exit 1
+    if [ "$skip_count" -gt 0 ]; then
+      echo "› shellcheck: $((skip_count)) tracked path(s) with nothing readable behind them (submodule, dangling symlink, or deleted from the worktree) — not checked, not failed"
     fi
-  fi
+    if [ "$zsh_count" -gt 0 ]; then
+      echo "› shellcheck: $((zsh_count)) zsh script(s) excluded — shellcheck cannot parse zsh (SC1071); not checked, not failed"
+    fi
+    if [ "$count" -gt 0 ]; then
+      echo "› shellcheck ($((count)) scripts, blocking at severity=warning)"
+      xargs -0 shellcheck -S warning -- < "$shellcheck_tmp/scripts" || {
+        echo "  fix, or justify inline with '# shellcheck disable=SCxxxx  # why'"
+        exit 1
+      }
+      # Everything below the blocking bar, shown once the push is already cleared. Never affects
+      # the exit code — advice that can fail a push is not advice.
+      advice=$(xargs -0 shellcheck -S style -f gcc -- < "$shellcheck_tmp/scripts" 2>/dev/null \
+        | grep -v ': warning:\|: error:' || true)
+      if [ -n "$advice" ]; then
+        echo "  · style/info (not blocking):"
+        printf '%s\n' "$advice" | sed 's/^/    /'
+      fi
+    fi
+  ) || exit 1
 else
   echo "› shellcheck skipped (not on PATH) — install it to gate this repo's shell scripts"
 fi
@@ -78,4 +107,4 @@ if [ -x "$GATE" ]; then
 fi
 
 exit 0
-# etymd:generated pack-v12 2d0d3d17f8c2521e
+# etymd:generated pack-v14 90f16e1c0807d4a1
