@@ -1,6 +1,6 @@
 {
   "name": "diopsis",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Visual regression for Storybook — diffs the static build; identical locally and in CI.",
   "type": "module",
   "license": "MIT",
