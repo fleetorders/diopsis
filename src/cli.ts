@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 
 import { acceptCommand } from './commands/accept.ts';
+import { diffCommand } from './commands/diff.ts';
 import { doctorCommand } from './commands/doctor.ts';
 import { initCommand } from './commands/init.ts';
 import { reportCommand } from './commands/report.ts';
@@ -16,6 +17,7 @@ Usage
   diopsis run                  verify against committed baselines   (default)
   diopsis update               regenerate baselines
   diopsis accept [story-id...] adopt the last run's output as the baseline
+  diopsis diff [base]          review the baseline changes a branch makes
   diopsis report               open the last report
   diopsis doctor               audit the setup for what silently breaks a baseline set
   diopsis help                 show this message
@@ -24,6 +26,8 @@ Options belong to their command; a flag another command takes is refused here.
   run, update   --grep <text>   only stories whose id contains <text>
                 --keep          keep the generated Playwright project
   accept        --no-stage      accept without staging the result in git
+  diff          --open          open the report after writing it
+                --platform <t>  only baselines of one platform token, e.g. linux-x64
   init          --force         overwrite an existing config
                 --lfs           set the baselines up for Git LFS
   doctor        --json          print the checks as JSON instead of prose
@@ -42,6 +46,7 @@ const COMMAND_FLAGS: Record<string, ReadonlySet<string>> = {
   run: new Set(['grep', 'keep', 'help']),
   update: new Set(['grep', 'keep', 'help']),
   accept: new Set(['no-stage', 'help']),
+  diff: new Set(['open', 'platform', 'help']),
   init: new Set(['force', 'lfs', 'help']),
   doctor: new Set(['json', 'help']),
   report: new Set(['help']),
@@ -71,7 +76,7 @@ export async function main(argv: string[]): Promise<number> {
   }
 
   const rest = first && !first.startsWith('-') ? argv.slice(1) : argv;
-  let values: { grep?: string; keep?: boolean; force?: boolean; lfs?: boolean; json?: boolean; 'no-stage'?: boolean; help?: boolean };
+  let values: { grep?: string; keep?: boolean; force?: boolean; lfs?: boolean; json?: boolean; open?: boolean; platform?: string; 'no-stage'?: boolean; help?: boolean };
   let positionals: string[];
   let usedFlags: string[];
   try {
@@ -83,6 +88,8 @@ export async function main(argv: string[]): Promise<number> {
         force: { type: 'boolean', default: false },
         lfs: { type: 'boolean', default: false },
         json: { type: 'boolean', default: false },
+        open: { type: 'boolean', default: false },
+        platform: { type: 'string' },
         'no-stage': { type: 'boolean', default: false },
         help: { type: 'boolean', short: 'h', default: false },
       },
@@ -138,6 +145,17 @@ export async function main(argv: string[]): Promise<number> {
         root,
         ...(positionals.length > 0 ? { storyIds: positionals } : {}),
         noStage: values['no-stage'],
+      });
+    case 'diff':
+      if (positionals.length > 1) {
+        process.stderr.write(`diopsis diff takes one base ref at most.\n\n${USAGE}`);
+        return 1;
+      }
+      return diffCommand({
+        root,
+        ...(positionals.length > 0 ? { base: positionals[0] } : {}),
+        open: values.open,
+        ...(values.platform ? { platform: values.platform } : {}),
       });
     case 'init':
       return initCommand({ root, force: values.force, lfs: values.lfs });

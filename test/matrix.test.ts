@@ -6,6 +6,7 @@ import {
   effectiveCompare,
   loosenedStoryIds,
   modesForStory,
+  parseSnapshotPath,
   platformToken,
   resolveMatrix,
   scopeForStory,
@@ -507,5 +508,49 @@ describe('resolveMatrix with modes', () => {
       () => resolveMatrix([story('a b--c'), story('a:b--c')], withModes, 'linux-x64'),
       /baseline/,
     );
+  });
+});
+
+describe('parseSnapshotPath', () => {
+  it('reads a base path back into what it names', () => {
+    assert.deepEqual(parseSnapshotPath(snapshotPathFor('a--one', 320, 'linux-x64')), {
+      storyId: 'a--one',
+      width: 320,
+      platform: 'linux-x64',
+    });
+  });
+
+  it('reads a mode path back, mode included', () => {
+    assert.deepEqual(parseSnapshotPath(snapshotPathFor('a--one', 1280, 'linux-x64', 'dark')), {
+      storyId: 'a--one',
+      width: 1280,
+      mode: 'dark',
+      platform: 'linux-x64',
+    });
+  });
+
+  it('keeps a mode whose name holds a dash apart from the platform token', () => {
+    assert.deepEqual(
+      parseSnapshotPath(snapshotPathFor('a--one', 320, 'linux-x64', 'right-to-left')),
+      {
+        storyId: 'a--one',
+        width: 320,
+        mode: 'right-to-left',
+        platform: 'linux-x64',
+      },
+    );
+  });
+
+  it('round-trips through the safe segment, not the id that was folded into it', () => {
+    // A parse cannot unfold what safeSegment never wrote; the segment is the honest answer.
+    assert.equal(parseSnapshotPath(snapshotPathFor('a b--c', 320, 'linux-x64'))?.storyId, 'a_b--c');
+  });
+
+  it('refuses what the matrix would never write', () => {
+    assert.equal(parseSnapshotPath('320w-linux-x64.png'), undefined); // no story directory
+    assert.equal(parseSnapshotPath('a--one/readme.md'), undefined); // not a PNG
+    assert.equal(parseSnapshotPath('a--one/320w'), undefined); // neither suffix nor platform
+    assert.equal(parseSnapshotPath('a--one/320w-linux'), undefined); // platform token halved
+    assert.equal(parseSnapshotPath('a--one/notes-320w-linux-x64.png'), undefined); // not a width
   });
 });

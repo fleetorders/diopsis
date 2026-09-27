@@ -162,7 +162,7 @@ h1 { margin: 0; font-size: 15px; font-weight: 650; letter-spacing: -0.01em; }
 .chip .dot { width: 7px; height: 7px; border-radius: 2px; }
 .dot.c-changed { background: var(--changed); } .dot.c-new { background: var(--new); }
 .dot.c-failed, .dot.c-render-failed { background: var(--failed); }
-.dot.c-unchanged { background: var(--ok); }
+.dot.c-unchanged { background: var(--ok); } .dot.c-removed { background: var(--muted); }
 
 .search { flex: 1 1 180px; min-width: 130px; max-width: 300px; background: var(--surface);
   border: 1px solid var(--line); border-radius: 6px; color: var(--ink); padding: 5px 9px;
@@ -232,6 +232,11 @@ main { padding: 14px 18px 56px; }
   background: currentColor; }
 .s-changed { color: var(--changed); } .s-new { color: var(--new); }
 .s-failed, .s-render-failed { color: var(--failed); } .s-unchanged { color: var(--ok); }
+/* Removed is a deletion, not a failure: like unstable it claims no status colour, and the
+   badge is the muted outlined one — a deletion is a fact to check, not an alarm. */
+.s-removed { color: var(--muted); }
+.badge.s-removed { border: 1px solid var(--line); border-radius: 5px; padding: 1px 7px; }
+.badge.s-removed::before { display: none; }
 /* Unstable is not a status: the capture passed, so none of the palette colours speak for
    it. A muted, outlined badge marks what the run saw without joining the status
    vocabulary (D-020: a colour means one kind of thing). */
@@ -362,14 +367,18 @@ ${CLIENT_SCRIPT}
 /** Client behaviour. Kept as one string so the report stays a single file with no assets. */
 const CLIENT_SCRIPT = String.raw`
 const data = JSON.parse(document.getElementById('data').textContent);
-const REVIEW = new Set(['changed', 'new', 'render-failed', 'failed']);
-const LABEL = { changed: 'Changed', new: 'New', 'render-failed': 'Render failed',
-  failed: 'Failed', unchanged: 'Unchanged' };
-const order = ['changed', 'new', 'render-failed', 'failed', 'unchanged'];
+const REVIEW = new Set(['changed', 'new', 'removed', 'render-failed', 'failed']);
+const LABEL = { changed: 'Changed', new: 'New', removed: 'Removed',
+  'render-failed': 'Render failed', failed: 'Failed', unchanged: 'Unchanged' };
+const order = ['changed', 'new', 'removed', 'render-failed', 'failed', 'unchanged'];
 
 document.getElementById('meta').textContent =
   data.totals.captures + ' captures across ' + data.totals.stories + ' stories, ' +
-  data.platform + '-' + data.arch + ', ' + data.mode + ', ' + data.createdAt;
+  data.platform + '-' + data.arch + ', ' +
+  // A diff has no moment worth stamping; what its reader needs is what it was diffed against.
+  (data.mode === 'diff'
+    ? 'diff against ' + data.base + ' (' + String(data.mergeBase || '').slice(0, 7) + ')'
+    : data.mode + ', ' + data.createdAt);
 
 const counts = {};
 for (const c of data.captures) counts[c.status] = (counts[c.status] || 0) + 1;
@@ -546,6 +555,22 @@ function stage(capture) {
     box.className = 'stage';
     zoomable(box);
     box.appendChild(picture(img.actual || img.expected, 'This run'));
+    fig.append(cap, box);
+    el.appendChild(fig);
+    return { el, modes: null, setMode: null, nudge: null, jumpRegion: null };
+  }
+  // A removed baseline is the other single-image case: the branch deletes it, so there is
+  // no current render — one labelled column of what is being deleted, where a new capture
+  // shows one column of what was added.
+  if (capture.status === 'removed' && img.expected) {
+    const fig = document.createElement('figure');
+    fig.className = 'solo';
+    const cap = document.createElement('figcaption');
+    cap.textContent = 'Removed — this baseline is deleted by this branch.';
+    const box = document.createElement('div');
+    box.className = 'stage';
+    zoomable(box);
+    box.appendChild(picture(img.expected, 'Deleted baseline of ' + capture.storyId + ' at ' + capture.width + 'px'));
     fig.append(cap, box);
     el.appendChild(fig);
     return { el, modes: null, setMode: null, nudge: null, jumpRegion: null };
@@ -870,6 +895,8 @@ function drawAcceptReviewed() {
 /* A filtered set is one accept call: the command takes any number of story ids, so what is on
    screen is offered as one copyable line rather than one line per story. */
 function drawAcceptVisible(stories) {
+  // Accepting adopts a run's renders; a diff reviews the baseline history and has none.
+  if (data.mode === 'diff') return;
   acceptVisibleEl.innerHTML = '';
   const ids = stories.filter(id => data.changedStories.includes(id));
   if (!ids.length || ids.length === data.changedStories.length) return;
@@ -968,7 +995,9 @@ function applyFilter() {
   emptyEl.hidden = !empty;
   emptyEl.textContent = query
     ? 'No story matches "' + query + '".'
-    : 'Nothing here. Every capture matched its baseline.';
+    : data.mode === 'diff'
+      ? 'No baseline changes against this base.'
+      : 'Nothing here. Every capture matched its baseline.';
   drawAcceptVisible(empty ? [] : storyEls.filter(s => !s.el.hidden).map(s => s.id));
 }
 
@@ -1138,7 +1167,7 @@ function buildAll() {
     det.addEventListener('toggle', () => { if (det.open) build(); });
     if (det.open) build();
 
-    if (captures.some(c => REVIEW.has(c.status))) {
+    if (captures.some(c => REVIEW.has(c.status)) && data.mode !== 'diff') {
       const foot = document.createElement('div');
       foot.className = 'capture';
       foot.appendChild(copyButton('npx diopsis accept ' + storyId));
@@ -1148,7 +1177,7 @@ function buildAll() {
     listEl.appendChild(det);
   }
 
-  if (data.changedStories.length) {
+  if (data.changedStories.length && data.mode !== 'diff') {
     const all = document.createElement('div');
     all.style.marginTop = '18px';
     all.appendChild(copyButton('npx diopsis accept'));

@@ -875,3 +875,25 @@ the first screen.
 the progress beside it counts captures. No tick is transmitted or stored beyond the browser.
 
 **Scope:** repo.
+
+## D-035 — 2026-09-27 — `diopsis diff`: review baseline changes from git, without a browser
+
+**Decision:** `diopsis diff [base]` finds every baseline under the snapshot directory that the
+working tree changes, adds or deletes against the merge base with `base` (default
+`origin/main`, falling back to `main`), reads the old versions from git, compares them in-house,
+and writes the usual self-contained report and a `summary.json` with `mode: "diff"` under
+`<outputDir>/diff/`. A deleted baseline has its own `removed` status, shown as the base image
+alone. It never runs a browser and always exits 0 unless git itself cannot answer. The pixel
+comparison, the PNG encoder and the path parser are part of Diopsis, with no dependency.
+
+**Why:** accepting a change puts new PNGs in a pull request, and no forge shows a reviewer
+more than two images per file (D-005). The run report shows what changed on the machine that
+ran it; the reviewer of the pull request needs what the branch changes, which git alone can
+answer — so the review surface should not require rebuilding the Storybook or a browser.
+
+**Consequences:** the in-house comparison is a plain perceptual colour distance without the
+comparator's anti-aliasing allowance, so its pixel counts can run higher than a `run`'s for the
+same change; it reports, it never gates. `removed` joins the status vocabulary with the
+neutral, outlined treatment unstable uses; it is not a failure.
+
+**Scope:** repo.

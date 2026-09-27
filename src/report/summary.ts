@@ -7,12 +7,14 @@ import type { PlannedCapture } from '../runner/generate.ts';
  *
  * These are the states a reviewer filters by (DECISIONS.md §5); they are deliberately not
  * Playwright's pass/fail, because "a baseline did not exist yet" and "this looks different"
- * both present as a failing test and need entirely different responses.
+ * both present as a failing test and need entirely different responses. `removed` is the
+ * diff report's own: the branch deleted this baseline, so there is a "was" and no "is".
  */
 export type CaptureStatus =
   | 'unchanged'
   | 'changed'
   | 'new'
+  | 'removed'
   | 'render-failed'
   | 'failed';
 
@@ -71,6 +73,8 @@ export interface RunTotals {
   unstable: number;
   changed: number;
   new: number;
+  /** Baselines the branch deleted — a diff-report verdict; a run never produces it. */
+  removed: number;
   renderFailed: number;
   failed: number;
   /** Captures the run never reached — an interrupted run, not a comparison verdict. */
@@ -83,7 +87,10 @@ export interface RunSummary {
   createdAt: string;
   platform: string;
   arch: string;
-  mode: 'run' | 'update';
+  mode: 'run' | 'update' | 'diff';
+  /** The ref a diff compared against, and the commit the two sides meet at; diff only. */
+  base?: string;
+  mergeBase?: string;
   /** Present (true) only when the Playwright run ended interrupted. */
   interrupted?: boolean;
   snapshotDir: string;
@@ -97,9 +104,12 @@ export interface RunSummary {
   captures: CaptureResult[];
 }
 
+// A deleted baseline needs a reviewer's eye as much as an added one; only the diff report
+// produces the status, so a run's counts are untouched by its presence here.
 const REVIEWABLE: ReadonlySet<CaptureStatus> = new Set<CaptureStatus>([
   'changed',
   'new',
+  'removed',
   'render-failed',
   'failed',
 ]);
@@ -171,6 +181,7 @@ export function totalsFor(captures: CaptureResult[]): RunTotals {
     unstable: 0,
     changed: 0,
     new: 0,
+    removed: 0,
     renderFailed: 0,
     failed: 0,
     notRun: 0,
@@ -181,6 +192,7 @@ export function totalsFor(captures: CaptureResult[]): RunTotals {
     if (capture.status === 'unchanged') totals.unchanged += 1;
     else if (capture.status === 'changed') totals.changed += 1;
     else if (capture.status === 'new') totals.new += 1;
+    else if (capture.status === 'removed') totals.removed += 1;
     else if (capture.status === 'render-failed') totals.renderFailed += 1;
     else if (capture.error === NOT_RUN) totals.notRun += 1;
     else totals.failed += 1;
