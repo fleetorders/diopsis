@@ -235,3 +235,23 @@ describe('changedLine', () => {
     assert.equal(changedLine({ kind: 'nothing', base: 'main' }), 'nothing affected since main');
   });
 });
+
+describe('runCommand --changed and baselines', () => {
+  it('does not let changed or new baselines force a full run', async () => {
+    const { root } = await repoWithBuild();
+    // A branch that accepted a change carries new and modified baselines, and the run leaves
+    // its output behind; neither can change how a story renders.
+    await mkdir(path.join(root, '__screenshots__', 'example-button--primary'), { recursive: true });
+    await writeFile(
+      path.join(root, '__screenshots__', 'example-button--primary', '320w-linux-x64.png'),
+      'not really a png',
+    );
+    await mkdir(path.join(root, '.diopsis'), { recursive: true });
+    await writeFile(path.join(root, '.diopsis', 'summary.json'), '{}');
+    const { value: code, out } = await withCapturedStdout(() => runCommand({ root, changed: true }));
+
+    assert.equal(code, 0);
+    assert.match(out, /  changed   nothing affected since main\n/);
+    assert.doesNotMatch(out, /full run/);
+  });
+});

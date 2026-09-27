@@ -282,7 +282,8 @@ everything changed.
 files your branch changed (against `origin/main`, or a ref you name) to the stories that import
 them, and captures only those; every other story is carried from its baseline and listed as
 carried. Anything it cannot prove harmless — Storybook's config, a lockfile, a builder config, a
-file outside the graph, a missing stats file — runs everything, and says why.
+file outside the graph, a missing stats file — runs everything, and says why. Baselines and
+run output are never counted as changes.
 `npx diopsis trace <file>` shows the chain from a file to the stories it reaches.
 
 **Review a branch's baselines** — a pull request that accepts changes shows its reviewers two

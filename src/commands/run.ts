@@ -292,10 +292,16 @@ export async function runCommand(options: RunOptions): Promise<number> {
       typeof options.changed === 'string' ? options.changed : undefined,
     );
     const stats = await readPreviewStats(storybookDir);
+    // Baselines and run output never reach a story's rendering, but they change on every
+    // branch that accepts something — counted as unknown files, they forced a full run on
+    // exactly the branches that most need a fast one.
+    const own = (dir: string): string =>
+      `${path.posix.normalize(dir.split(path.sep).join('/')).replace(/^\.\/|\/$/g, '')}/**`;
     const result = resolveAffected({
       changed: changeSet.files,
       stories,
       ...(stats ? { stats } : {}),
+      options: { ignore: [own(config.snapshotDir), own(config.outputDir)] },
     });
     affected = {
       base: changeSet.base,
