@@ -493,10 +493,34 @@ const stateNames = [];
 for (const c of data.captures) if (c.state && !stateNames.includes(c.state)) stateNames.push(c.state);
 let activeState = 'all';
 
+/* The comparison modes, named once: the page-wide toolbar offers this list, Shift+1–4 walks
+   it, and each capture's own buttons are the labels from it the capture can show. The overlay
+   is first because it alone reads the diff image; the rest need the pair. */
+const ALL_MODES = ['Overlay', 'Side by side', 'Swipe', 'Onion-skin'];
 /* The comparison mode chosen for the whole page. A capture that cannot show it — one with no
    diff image, or no baseline to compare against — keeps its own default instead of going blank. */
-const ALL_MODES = ['Overlay', 'Side by side', 'Swipe', 'Onion-skin'];
 let preferred = ALL_MODES[0];
+
+/* A pair worth comparing: this branch's render beside a baseline it did not write itself — a
+   new capture's "expected" is written from its own render, which would compare an image with
+   itself. The stage and the toolbar's visibility both ask this, so the page-wide control can
+   never appear for a page none of whose captures it could switch. */
+function comparable(capture) {
+  const img = capture.images || {};
+  return capture.status !== 'new' && Boolean(img.expected && img.actual);
+}
+
+/* The labels from ALL_MODES one capture can actually show: the diff image enables the
+   overlay, a comparable pair the rest, and a lone render falls back to the single
+   "Actual" view. */
+function modesFor(capture) {
+  const img = capture.images || {};
+  const modes = [];
+  if (img.diff) modes.push(ALL_MODES[0]);
+  if (comparable(capture)) modes.push(...ALL_MODES.slice(1));
+  if (!modes.length && img.actual) modes.push('Actual');
+  return modes;
+}
 
 /* Triage is remembered per run, not per file: the same report reopened after a fresh run
    describes different pixels, so a stale tick would claim a capture was seen that never was. */
@@ -776,10 +800,7 @@ function stage(capture) {
     return { el, modes: null, setMode: null, nudge: null, jumpRegion: null };
   }
   // The highlight overlay is the default: it answers "what changed?" without any interaction.
-  const modes = [];
-  if (img.diff) modes.push('Overlay');
-  if (img.expected && img.actual) modes.push('Side by side', 'Swipe', 'Onion-skin');
-  if (!modes.length && img.actual) modes.push('Actual');
+  const modes = modesFor(capture);
   if (!modes.length) {
     // An unchanged capture is meant to have no images; saying so on every row of a full
     // matrix reads as a fault report. Only an absence that needs explaining gets a line —
@@ -983,7 +1004,12 @@ function stage(capture) {
     el,
     modes: bar,
     setMode: (i) => select(modes[i]),
-    follow: (m) => select(modes.includes(m) ? m : modes[0]),
+    // A capture already showing the resolved mode keeps its pixels: one page-wide choice then
+    // redraws only the captures that actually change.
+    follow: (m) => {
+      const target = modes.includes(m) ? m : modes[0];
+      if (current !== target) select(target);
+    },
     nudge: (step) => {
       if (!slider) return;
       slider.value = String(Math.min(100, Math.max(0, Number(slider.value) + step)));
@@ -1014,7 +1040,7 @@ function setPreferred(m) {
 }
 // The page-wide control is offered only when some capture has two renders to compare; a run of
 // new captures alone has nothing it could switch between.
-if (data.captures.some(c => c.status !== 'new' && c.images && c.images.expected && c.images.actual)) {
+if (data.captures.some(comparable)) {
   const label = document.createElement('span');
   label.textContent = 'All:';
   viewAllEl.appendChild(label);
