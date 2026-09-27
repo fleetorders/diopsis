@@ -322,6 +322,17 @@ input[type=range] { display: block; width: 100%; margin-top: 9px; accent-color: 
 .err { white-space: pre-wrap; font: 12px/1.5 ui-monospace, monospace; color: var(--failed);
   background: var(--raised); border: 1px solid var(--line); border-radius: 6px; padding: 9px;
   margin-top: 10px; }
+/* Carried is neither a status nor a verdict — the capture was never shot — so it claims no
+   colour of its own: muted grey like removed, reading as bookkeeping, not review. */
+.carried { border: 1px solid var(--line); border-radius: 8px; background: var(--surface);
+  margin-bottom: 10px; }
+.carried > summary { cursor: pointer; padding: 9px 12px; color: var(--muted); font-size: 12px;
+  list-style: none; }
+.carried > summary::-webkit-details-marker { display: none; }
+.carried > summary::before { content: "\\25B8"; margin-right: 8px; font-size: 11px; }
+.carried[open] > summary::before { content: "\\25BE"; }
+.carried-line { border-top: 1px solid var(--line); padding: 4px 12px 4px 26px;
+  color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .accept { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
 code { font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--bg);
   border: 1px solid var(--line); border-radius: 5px; padding: 4px 8px; color: var(--ink);
@@ -449,6 +460,11 @@ filters.appendChild(chip('review', 'Needs review'));
 for (const s of order) if (counts[s]) filters.appendChild(chip(s, LABEL[s], s));
 // Offered only when a run actually saw flake; no dot, because there is no unstable colour.
 if (unstableCount) filters.appendChild(chip('unstable', 'Unstable'));
+/* Carried captures are not in data.captures — they were never shot — so the chip counts the
+   carried list itself and no capture can match its filter: the view it selects is the grey
+   section under the list. */
+const carried = data.carried || [];
+if (carried.length) filters.appendChild(chip('carried', 'Carried'));
 filters.appendChild(chip('all', 'All'));
 
 /* The mode chips sit beside the status chips and compose with them and the search: a mode
@@ -475,11 +491,16 @@ function inFilter(c, key) {
   return key === 'all' ? true
     : key === 'review' ? REVIEW.has(c.status)
     : key === 'unstable' ? !!c.unstable
+    : key === 'carried' ? false
     : c.status === key;
 }
 function inMode(c, key) {
   return key === 'all' ? true : key === 'base' ? !c.mode : c.mode === key;
 }
+/* Carried lines carry only an id, a width and maybe a mode; the search reads the id. */
+const carriedLines = [];
+let carriedEl = null;
+function carriedInSearch(c) { return !query || c.storyId.toLowerCase().includes(query); }
 
 function copyButton(text, label) {
   const wrap = document.createElement('div');
@@ -969,6 +990,17 @@ function applyFilter() {
       data.captures.filter(c => inSearch(c) && inMode(c, key) && inFilter(c, active)).length;
   }
 
+  // The carried chip counts its own list — the captures it stands for were never shot, so
+  // no member of data.captures can ever match the filter it selects.
+  const carriedChip = filters.querySelector('[data-key="carried"]');
+  if (carriedChip) {
+    carriedChip.querySelector('.n').textContent = carried.filter(carriedInSearch).length;
+  }
+  // Carried lines answer only to the search; choosing their chip opens their section.
+  for (const line of carriedLines) line.el.hidden = !carriedInSearch(line.capture);
+  const carriedShown = active === 'carried' && carriedLines.some(l => !l.el.hidden);
+  if (active === 'carried' && carriedEl) carriedEl.open = true;
+
   for (const entry of entries) {
     entry.box.hidden = !inSearch(entry.capture) || !inFilter(entry.capture, active) ||
       !inMode(entry.capture, activeMode);
@@ -989,8 +1021,8 @@ function applyFilter() {
   ovToggle.textContent = 'Overview · ' + shownTiles;
 
   // With nothing to show, the whole list — its accept-everything footer included — steps
-  // aside for one line that says so.
-  const empty = flat.length === 0;
+  // aside for one line that says so, unless the carried section is the view in question.
+  const empty = flat.length === 0 && !carriedShown;
   listEl.hidden = empty;
   emptyEl.hidden = !empty;
   emptyEl.textContent = query
@@ -999,6 +1031,27 @@ function applyFilter() {
       ? 'No baseline changes against this base.'
       : 'Nothing here. Every capture matched its baseline.';
   drawAcceptVisible(empty ? [] : storyEls.filter(s => !s.el.hidden).map(s => s.id));
+}
+
+/* The carried section answers "why wasn't this re-shot?": one grey line per capture the run
+   planned but did not shoot, under the base that decided it. Not review work — no tick, no
+   images, never in the contact sheet — and collapsible, because on a wide change the list
+   of what stood untouched is the longest one in the report. */
+function buildCarried() {
+  const det = document.createElement('details');
+  det.className = 'carried';
+  const sum = document.createElement('summary');
+  sum.textContent = 'Carried · ' + carried.length + ' — not affected since ' +
+    (data.affected ? data.affected.base : '') + '; baselines kept';
+  det.appendChild(sum);
+  for (const c of carried) {
+    const line = document.createElement('div');
+    line.className = 'carried-line';
+    line.textContent = c.storyId + ' @' + c.width + (c.mode ? ' [' + c.mode + ']' : '');
+    det.appendChild(line);
+    carriedLines.push({ el: line, capture: c });
+  }
+  return det;
 }
 
 function buildAll() {
@@ -1188,6 +1241,10 @@ function buildAll() {
     n.className = 'note';
     n.textContent = data.truncated + ' capture(s) had images omitted to keep this file openable.';
     listEl.appendChild(n);
+  }
+  if (carried.length) {
+    carriedEl = buildCarried();
+    listEl.appendChild(carriedEl);
   }
 }
 

@@ -1,7 +1,10 @@
 import { existsSync } from 'node:fs';
+import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
+import { readPreviewStats, resolveAffected } from '../affected.ts';
 import { loadConfig } from '../config.ts';
+import { gitLines, isGitRepo, refExists } from '../git.ts';
 import {
   loosenedStoryIds,
   platformToken,
@@ -9,6 +12,8 @@ import {
   type Capture,
   type ResolvedMatrix,
 } from '../matrix.ts';
+import { renderReport } from '../report/html.ts';
+import { totalsFor, type CarriedCapture, type RunSummary } from '../report/summary.ts';
 import { distRoot, generateProject, projectDir } from '../runner/generate.ts';
 import { runPlaywright } from '../runner/execute.ts';
 import { serveStatic } from '../server.ts';
@@ -20,6 +25,11 @@ export interface RunOptions {
   update?: boolean;
   /** Substring filter on story ids. */
   grep?: string;
+  /**
+   * Capture only the stories a change could reach; everything else is carried from its
+   * baseline. `true` compares against the default base; a string names it.
+   */
+  changed?: string | true;
   /** Keep the generated Playwright project for inspection. */
   keep?: boolean;
   /** Playwright pass-through arguments. */
@@ -57,6 +67,8 @@ export function headerBlock(input: {
   loosened: string[];
   /** Names of the configured modes, when there are any. */
   modes?: string[];
+  /** The --changed decision, already phrased, when change-aware capture shaped the run. */
+  changed?: string;
 }): string {
   // Like the loosened line, the scope line exists to make an exception visible: it appears
   // only when something departs from the whole-page default, and counts the stories that
@@ -83,6 +95,7 @@ export function headerBlock(input: {
     `  config    ${input.configSource}\n` +
     `  storybook ${input.storybookDir}\n` +
     `  baselines ${input.snapshotDir}\n` +
+    (input.changed ? `  changed   ${input.changed}\n` : '') +
     modesLine +
     scopeLine +
     (input.skipped.length ? `  skipped   ${input.skipped.length} stories (diopsis:skip)\n` : '') +
@@ -135,6 +148,94 @@ export function explainEmptyRun(input: {
   ];
 }
 
+export interface ChangedSet {
+  base: string;
+  mergeBase: string;
+  /** Repo-root-relative POSIX paths, deduplicated and sorted. */
+  files: string[];
+}
+
+/**
+ * Everything that differs from `base` (default `origin/main`, falling back to `main` like
+ * `diff`): the branch's commits through its merge base, plus what is staged, unstaged or
+ * untracked in the working tree — a developer editing one component sees the same affected
+ * set locally that CI sees from the commits alone. Deletions are excluded (the diff
+ * filter), so a file gone from the build cannot demand a full matrix it can no longer
+ * affect; renames arrive as their new path.
+ */
+export function changedFilesSince(root: string, requested?: string): ChangedSet {
+  if (!isGitRepo(root)) {
+    throw new Error('Not a git repository — --changed reads the change set from git.');
+  }
+  const base = requested ?? (refExists(root, 'origin/main') ? 'origin/main' : 'main');
+  if (!refExists(root, base)) {
+    throw new Error(
+      requested === undefined
+        ? 'No origin/main and no main to compare against. Name a base: diopsis run --changed <ref>'
+        : `Unknown base "${base}" — git has no such ref.`,
+    );
+  }
+  const merged = gitLines(root, ['merge-base', base, 'HEAD']);
+  if (!merged || merged.length === 0) {
+    throw new Error(`No common history between ${base} and HEAD — nothing to compare.`);
+  }
+  const mergeBase = merged[0]!;
+
+  const files = new Set<string>();
+  // Three views because a change can sit in any one of them alone: committed since the
+  // merge base (including the working tree's edits of it), staged against the merge base
+  // (an edit staged and then reverted in the files), and untracked altogether.
+  for (const args of [
+    ['diff', '--name-only', '-M', '--diff-filter=ACMR', mergeBase],
+    ['diff', '--name-only', '-M', '--diff-filter=ACMR', '--cached', mergeBase],
+    ['ls-files', '--others', '--exclude-standard'],
+  ]) {
+    const listed = gitLines(root, args);
+    if (listed === undefined) {
+      throw new Error(`git could not list changes (${args.join(' ')}).`);
+    }
+    for (const file of listed) files.add(file);
+  }
+  return { base, mergeBase, files: [...files].sort() };
+}
+
+/** The three things the `changed` header line has to say. */
+export type ChangedView =
+  | { kind: 'full'; reason: string }
+  | { kind: 'set'; affected: number; of: number; base: string; shortSha: string }
+  | { kind: 'nothing'; base: string };
+
+export function changedLine(view: ChangedView): string {
+  if (view.kind === 'full') return `full run — ${view.reason}`;
+  if (view.kind === 'nothing') return `nothing affected since ${view.base}`;
+  return `${view.affected} of ${view.of} stories affected since ${view.base} (${view.shortSha})`;
+}
+
+/**
+ * Split the planned captures into what a change could reach — and is therefore shot — and
+ * what it could not, which is carried: its baseline stands, listed in the summary and the
+ * report rather than quietly skipped.
+ */
+export function splitByAffected(
+  captures: Capture[],
+  affected: Iterable<string>,
+): { captures: Capture[]; carried: CarriedCapture[] } {
+  const ids = new Set(affected);
+  const shot: Capture[] = [];
+  const carried: CarriedCapture[] = [];
+  for (const capture of captures) {
+    if (ids.has(capture.storyId)) shot.push(capture);
+    else {
+      carried.push({
+        storyId: capture.storyId,
+        width: capture.width,
+        ...(capture.mode ? { mode: capture.mode } : {}),
+      });
+    }
+  }
+  return { captures: shot, carried };
+}
+
 export async function runCommand(options: RunOptions): Promise<number> {
   const { config, filepath } = await loadConfig(options.root);
   const storybookDir = path.resolve(options.root, config.storybookDir);
@@ -156,7 +257,103 @@ export async function runCommand(options: RunOptions): Promise<number> {
 
   for (const warning of matrix.warnings) process.stderr.write(`warning: ${warning}\n`);
 
-  if (captures.length === 0) {
+  // --changed narrows the matrix to what a change could reach; the rest is carried, its
+  // baseline standing, visibly — a silent cap reads as "all green" when it is not. The
+  // update path never narrows: regenerating baselines always shoots the whole matrix.
+  let planned = captures;
+  let carried: CarriedCapture[] | undefined;
+  let affected: RunSummary['affected'];
+  let changedText: string | undefined;
+  let bypassed = false;
+
+  if (options.changed !== undefined && options.changed !== '' && !options.update) {
+    const changeSet = changedFilesSince(
+      options.root,
+      typeof options.changed === 'string' ? options.changed : undefined,
+    );
+    const stats = await readPreviewStats(storybookDir);
+    const result = resolveAffected({
+      changed: changeSet.files,
+      stories,
+      ...(stats ? { stats } : {}),
+    });
+    affected = {
+      base: changeSet.base,
+      mergeBase: changeSet.mergeBase,
+      changedFiles: changeSet.files.length,
+      ...(result.kind === 'full' ? { full: result.reason } : {}),
+    };
+
+    if (result.kind === 'full') {
+      changedText = changedLine({ kind: 'full', reason: result.reason });
+    } else {
+      const split = splitByAffected(captures, result.storyIds);
+      planned = split.captures;
+      carried = split.carried;
+      // A change that reaches nothing the run watches is a pass, not an empty run: every
+      // question it raises is already answered by the committed baselines.
+      bypassed = planned.length === 0 && carried.length > 0;
+      changedText = changedLine(
+        bypassed
+          ? { kind: 'nothing', base: changeSet.base }
+          : {
+              kind: 'set',
+              affected: new Set(planned.map((capture) => capture.storyId)).size,
+              of: new Set(captures.map((capture) => capture.storyId)).size,
+              base: changeSet.base,
+              shortSha: changeSet.mergeBase.slice(0, 7),
+            },
+      );
+    }
+  }
+
+  // The zero-capture bypass writes the summary without a browser and exits 0: the run is
+  // done, the report says what stood and why, and CI reads a pass.
+  if (bypassed) {
+    process.stdout.write(
+      headerBlock({
+        captures: planned,
+        ...(options.grep ? { grep: options.grep } : {}),
+        ...(changedText ? { changed: changedText } : {}),
+        capture: config.capture,
+        configSource: filepath ? path.relative(options.root, filepath) : 'defaults (no config file)',
+        storybookDir: config.storybookDir,
+        snapshotDir: config.snapshotDir,
+        skipped: matrix.skipped,
+        unwatched: matrix.unwatched,
+        loosened: [],
+      }),
+    );
+
+    const summary: RunSummary = {
+      diopsis: 1,
+      createdAt: new Date().toISOString(),
+      platform: process.platform,
+      arch: process.arch,
+      mode: 'run',
+      snapshotDir: config.snapshotDir,
+      // Bypassed means nothing was shot, so the comparison counts are all zero; what the
+      // summary adds is the carried set that stands in for them.
+      totals: { ...totalsFor([]), carried: carried!.length },
+      changedStories: [],
+      captures: [],
+      ...(affected ? { affected } : {}),
+      carried: carried!,
+    };
+
+    const outputDir = path.resolve(options.root, config.outputDir);
+    await mkdir(outputDir, { recursive: true });
+    const summaryPath = path.join(outputDir, 'summary.json');
+    const reportPath = path.join(outputDir, 'report.html');
+    await writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`, 'utf8');
+    await writeFile(reportPath, await renderReport(summary, outputDir), 'utf8');
+
+    const show = (target: string): string => path.relative(options.root, target) || target;
+    process.stdout.write(`\n  report   ${show(reportPath)}\n  summary  ${show(summaryPath)}\n`);
+    return 0;
+  }
+
+  if (planned.length === 0) {
     for (const line of explainEmptyRun({
       stories,
       matrix,
@@ -172,15 +369,16 @@ export async function runCommand(options: RunOptions): Promise<number> {
   // runtime, repository weight, review effort — scales with captures (DECISIONS.md §3).
   process.stdout.write(
     headerBlock({
-      captures,
+      captures: planned,
       ...(options.grep ? { grep: options.grep } : {}),
+      ...(changedText ? { changed: changedText } : {}),
       capture: config.capture,
       configSource: filepath ? path.relative(options.root, filepath) : 'defaults (no config file)',
       storybookDir: config.storybookDir,
       snapshotDir: config.snapshotDir,
       skipped: matrix.skipped,
       unwatched: matrix.unwatched,
-      loosened: loosenedStoryIds(captures, config.compare),
+      loosened: loosenedStoryIds(planned, config.compare),
       ...(config.modes ? { modes: Object.keys(config.modes) } : {}),
     }),
   );
@@ -191,7 +389,7 @@ export async function runCommand(options: RunOptions): Promise<number> {
     project = await generateProject({
       root: options.root,
       config,
-      captures,
+      captures: planned,
       baseUrl: server.url,
       reporterPath: path.join(distRoot(), 'reporter.js'),
       // The retries the reporter sees are the retries the generated project runs with, so
@@ -207,6 +405,8 @@ export async function runCommand(options: RunOptions): Promise<number> {
         platform: process.platform,
         arch: process.arch,
         createdAt: new Date().toISOString(),
+        ...(affected ? { affected } : {}),
+        ...(carried ? { carried } : {}),
       },
     });
 

@@ -16,6 +16,21 @@ export function isGitRepo(cwd: string): boolean {
   );
 }
 
+/** Whether git can resolve `ref` in `cwd`, quiet either way. */
+export function refExists(cwd: string, ref: string): boolean {
+  return (
+    spawnSync('git', ['rev-parse', '--verify', '--quiet', ref], { cwd, env: gitEnv, stdio: 'ignore' })
+      .status === 0
+  );
+}
+
+/** Run git in `cwd` and return its stdout lines, or undefined when git itself failed. */
+export function gitLines(cwd: string, args: string[]): string[] | undefined {
+  const run = spawnSync('git', args, { cwd, env: gitEnv, encoding: 'utf8' });
+  if (run.status !== 0 || run.error) return undefined;
+  return run.stdout.split('\n').filter((line) => line.length > 0);
+}
+
 /**
  * Ask git's own ignore rules about one path. `check-ignore` answers for every source of
  * ignores — .gitignore at any level, .git/info/exclude, the global config — where a string

@@ -262,6 +262,14 @@ staged for review.
 **Regenerate** — `npx diopsis update` rewrites baselines wholesale, for when you already know
 everything changed.
 
+**Capture only what a change affects** — build Storybook with `--stats-json` and run
+`npx diopsis run --changed`. Diopsis reads the module graph the build wrote, walks it from the
+files your branch changed (against `origin/main`, or a ref you name) to the stories that import
+them, and captures only those; every other story is carried from its baseline and listed as
+carried. Anything it cannot prove harmless — Storybook's config, a lockfile, a builder config, a
+file outside the graph, a missing stats file — runs everything, and says why.
+`npx diopsis trace <file>` shows the chain from a file to the stories it reaches.
+
 **Review a branch's baselines** — a pull request that accepts changes shows its reviewers two
 opaque PNGs per file. `npx diopsis diff` renders the same report straight from git instead:
 every baseline the branch changed, added or deleted against `origin/main` (or a ref you name),
@@ -282,6 +290,7 @@ run across machines.
 | `diopsis accept [story-id...]` | Adopt the last run's output, for the named stories or wholesale |
 | `diopsis report` | Open the last report |
 | `diopsis doctor` | Audit the setup |
+| `diopsis trace <file…>` | Show which stories a file reaches, or why it forces a full run |
 | `diopsis diff [base]` | Report the baseline changes this branch makes against `base` (default `origin/main`) |
 | `diopsis --version` | Print the installed version |
 
@@ -292,6 +301,7 @@ run across machines.
 | `--force` | `init` | Overwrite an existing config |
 | `--lfs` | `init` | Set the baselines up for Git LFS |
 | `--no-stage` | `accept` | Write the files without staging them in git |
+| `--changed [base]` | `run` | Capture only the stories the changes since `base` can affect |
 | `--open` | `diff` | Open the report when it is written |
 | `--platform <token>` | `diff` | Only baselines of one platform, e.g. `linux-x64` |
 | `--json` | `doctor` | Print the audit as one JSON document, for a CI step to read |

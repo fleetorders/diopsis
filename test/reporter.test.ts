@@ -8,7 +8,7 @@ import { deflateSync } from 'node:zlib';
 
 import { resolveConfig } from '../src/config.ts';
 import { resolveMatrix } from '../src/matrix.ts';
-import DiopsisReporter from '../src/reporter.ts';
+import DiopsisReporter, { type DiopsisReporterOptions } from '../src/reporter.ts';
 import { NOT_RUN, type RunSummary } from '../src/report/summary.ts';
 import { planCaptures } from '../src/runner/generate.ts';
 import type { StoryEntry } from '../src/story-index.ts';
@@ -28,6 +28,8 @@ async function setup(
   withStories: StoryEntry[] = stories,
   /** The retries the simulated run was generated with; 0 is a no-retry run. */
   retries = 0,
+  /** Extra reporter options, for the surfaces only some runs carry. */
+  extra: Partial<DiopsisReporterOptions> = {},
 ): Promise<{ reporter: DiopsisReporter; outputDir: string }> {
   const root = await mkdtemp(path.join(tmpdir(), 'diopsis-reporter-'));
   temporaries.push(root);
@@ -58,6 +60,7 @@ async function setup(
     platform: 'linux',
     arch: 'x64',
     createdAt: '2026-01-01T00:00:00Z',
+    ...extra,
   });
   await reporter.onBegin({} as FullConfig);
   return { reporter, outputDir };
@@ -614,5 +617,53 @@ describe('DiopsisReporter modes', () => {
     // The base capture carries no mode key at all, so it stays byte-identical to before.
     assert.equal('mode' in (summary.captures[0] ?? {}), false);
     assert.match(out, /~ a--one @320 \[dark\]  500 px differ/);
+  });
+});
+
+describe('DiopsisReporter change-aware fields', () => {
+  it('records what the affected set was decided against and what it carried', async () => {
+    const { reporter, outputDir } = await setup(
+      stories,
+      0,
+      {
+        affected: {
+          base: 'main',
+          mergeBase: '1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b',
+          changedFiles: 3,
+        },
+        carried: [
+          { storyId: 'b--two', width: 320 },
+          { storyId: 'b--two', width: 320, mode: 'dark' },
+        ],
+      },
+    );
+    await reporter.onEnd({ status: 'passed' } as FullResult);
+
+    const summary = await summaryAt(outputDir);
+    assert.equal(summary.affected?.base, 'main');
+    assert.equal(summary.affected?.mergeBase, '1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b');
+    assert.equal(summary.affected?.changedFiles, 3);
+    assert.equal(summary.affected?.full, undefined);
+    assert.equal(summary.totals.carried, 2);
+    assert.deepEqual(summary.carried, [
+      { storyId: 'b--two', width: 320 },
+      { storyId: 'b--two', width: 320, mode: 'dark' },
+    ]);
+  });
+
+  it('states the reason a full run was forced', async () => {
+    const { reporter, outputDir } = await setup(stories, 0, {
+      affected: {
+        base: 'main',
+        mergeBase: 'ffffffffffffffffffffffffffffffffffffffff',
+        changedFiles: 1,
+        full: 'package.json is a package manifest or lockfile',
+      },
+    });
+    await reporter.onEnd({ status: 'passed' } as FullResult);
+    const summary = await summaryAt(outputDir);
+    assert.match(summary.affected?.full ?? '', /package manifest or lockfile/);
+    assert.equal(summary.totals.carried, undefined);
+    assert.equal(summary.carried, undefined);
   });
 });

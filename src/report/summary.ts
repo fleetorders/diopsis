@@ -79,6 +79,19 @@ export interface RunTotals {
   failed: number;
   /** Captures the run never reached — an interrupted run, not a comparison verdict. */
   notRun: number;
+  /**
+   * Captures a change-aware run planned but did not shoot, carried from their baselines.
+   * Present only in summaries such a run wrote; they are not a comparison verdict.
+   */
+  carried?: number;
+}
+
+/** A capture a change-aware run planned but did not shoot; its baseline stands as it was. */
+export interface CarriedCapture {
+  storyId: string;
+  width: number;
+  /** The configured mode the capture would have run under; absent for the base capture. */
+  mode?: string;
 }
 
 export interface RunSummary {
@@ -102,6 +115,13 @@ export interface RunSummary {
    * capture (v2, DECISIONS.md §4) diffs against this to know what a previous run covered.
    */
   captures: CaptureResult[];
+  /**
+   * Change-aware runs: what the affected set was decided against, and — when the run shot
+   * the whole matrix anyway — the reason it had to.
+   */
+  affected?: { base: string; mergeBase: string; changedFiles: number; full?: string };
+  /** Change-aware runs: the planned captures not shot, carried from their baselines. */
+  carried?: CarriedCapture[];
 }
 
 // A deleted baseline needs a reviewer's eye as much as an added one; only the diff report

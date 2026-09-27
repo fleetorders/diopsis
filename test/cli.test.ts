@@ -82,6 +82,26 @@ describe('main', () => {
     assert.match(out, /accept \[story-id\.\.\.\]/);
     assert.match(out, /--shard=1\/2/);
     assert.match(out, /doctor +--json/);
+    assert.match(out, /--changed \[base\]/);
+    assert.match(out, /diopsis trace <file\.\.\.>/);
+  });
+
+  it('refuses --changed on the commands it does not shape', async () => {
+    assert.match(
+      (await runMain(['update', '--changed'])).err,
+      /diopsis update does not take --changed\./,
+    );
+    assert.match(
+      (await runMain(['accept', '--changed', 'main'])).err,
+      /diopsis accept does not take --changed\./,
+    );
+  });
+
+  it('requires a file to trace', async () => {
+    const { code, err } = await runMain(['trace']);
+    assert.equal(code, 1);
+    assert.match(err, /diopsis trace takes at least one file/);
+    assert.match(err, /Usage/);
   });
 
   it('prints doctor’s audit as JSON for --json, with nothing else on stderr', async () => {
