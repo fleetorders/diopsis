@@ -114,9 +114,15 @@ export interface RequestTracker {
   dispose(): void;
 }
 
+/** Pages that already carry the timer probe; an init script added twice runs twice. */
+const probed = new WeakSet<Page>();
+
 /** Count the page's requests and short timers from before navigation, so none are missed. */
 export async function trackRequests(page: Page): Promise<RequestTracker> {
-  await page.addInitScript(timerProbe, TIMER_HORIZON_MS);
+  if (!probed.has(page)) {
+    await page.addInitScript(timerProbe, TIMER_HORIZON_MS);
+    probed.add(page);
+  }
   let inflight = 0;
   let lastChange = Date.now();
   const started = (): void => {
@@ -245,12 +251,43 @@ export async function stabilize(
   );
 }
 
+/**
+ * Forget everything the previous story left behind.
+ *
+ * A page is reused across the captures one worker takes, because creating a browser context
+ * per capture was a third of a run's time. Reuse is only sound if no story can see another's
+ * state, so before each navigation the origin's storage is cleared through the browser itself —
+ * local storage, IndexedDB, cache storage, service workers and cookies — and session storage,
+ * which lives with the tab rather than the origin, is cleared in the page. In-memory state goes
+ * with the document on navigation.
+ */
+export async function isolate(page: Page): Promise<void> {
+  const current = page.url();
+  if (!/^https?:/.test(current)) return;
+  const origin = new URL(current).origin;
+  await page.evaluate(() => {
+    try {
+      sessionStorage.clear();
+    } catch {
+      // A document that denies storage access has nothing to clear.
+    }
+  }).catch(() => undefined);
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    await cdp.send('Storage.clearDataForOrigin', { origin, storageTypes: 'all' });
+  } finally {
+    await cdp.detach().catch(() => undefined);
+  }
+  await page.context().clearCookies();
+}
+
 /** Navigate to a story and leave the page ready to be photographed. */
 export async function openStory(
   page: Page,
   url: string,
   options: StabilizeOptions,
 ): Promise<void> {
+  await isolate(page);
   await preparePage(page, options);
   const requests = options.waitForNetworkIdle ? await trackRequests(page) : undefined;
   try {

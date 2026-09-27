@@ -98,6 +98,25 @@ try {
 
   const cleared = await cost('cleared.html');
   check('a cleared timer is not waited for', cleared < 300, `+${cleared} ms`);
+
+  // A reused page must not carry one story's state into the next.
+  await writeFile(path.join(work, 'writes.html'), page(`
+    localStorage.setItem('k', 'leaked'); sessionStorage.setItem('k', 'leaked');
+    document.cookie = 'k=leaked; path=/';
+    indexedDB.open('db').onupgradeneeded = (e) => e.target.result.createObjectStore('s');
+    document.getElementById('out').textContent = 'wrote';`));
+  await writeFile(path.join(work, 'reads.html'), page(`
+    indexedDB.databases().then((dbs) => {
+      document.getElementById('out').textContent = [localStorage.getItem('k'),
+        sessionStorage.getItem('k'), document.cookie || null, dbs.length || null].join(',');
+    });`));
+  const context = await browser.newContext();
+  const shared = await context.newPage();
+  await openStory(shared, `${server.url}/writes.html`, defaultConfig.stabilize);
+  await openStory(shared, `${server.url}/reads.html`, defaultConfig.stabilize);
+  const seen = await shared.locator('#out').textContent();
+  check('a reused page starts each story with empty storage', seen === ',,,', seen);
+  await context.close();
 } finally {
   await browser.close();
   await server.close();
