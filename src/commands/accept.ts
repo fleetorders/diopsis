@@ -83,7 +83,11 @@ export async function acceptCommand(options: AcceptOptions): Promise<number> {
   if (missing.length > 0) {
     process.stderr.write(
       `Cannot accept — ${missing.length} run ${missing.length === 1 ? 'image is' : 'images are'} missing:\n` +
-        missing.map((from) => `  ${path.relative(options.root, from)}`).join('\n') +
+        // Forward slashes on every platform: the list is read, pasted and compared against
+        // the artifact's contents, which never depend on the machine that printed it.
+        missing
+          .map((from) => `  ${path.relative(options.root, from).split(path.sep).join('/')}`)
+          .join('\n') +
         `\nA run artifact must include ${config.outputDir}/test-results.\n`,
     );
     return 1;

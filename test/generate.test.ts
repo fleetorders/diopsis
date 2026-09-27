@@ -105,8 +105,9 @@ describe('generateProject', () => {
 describe('planCaptures baseline paths', () => {
   it('carries the absolute baseline path the spec checks before comparing', () => {
     const { captures } = resolveMatrix(stories, resolveConfig(), 'linux-x64');
-    const planned = planCaptures(captures, '/repo/__screenshots__');
-    assert.equal(planned[0]?.baselinePath, '/repo/__screenshots__/a--one/320w-linux-x64.png');
+    const root = path.resolve('/repo/__screenshots__');
+    const planned = planCaptures(captures, root);
+    assert.equal(planned[0]?.baselinePath, path.join(root, 'a--one', '320w-linux-x64.png'));
   });
 });
 
