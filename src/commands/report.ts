@@ -15,6 +15,16 @@ function opener(): { command: string; args: string[] } {
   return { command: 'xdg-open', args: [] };
 }
 
+/** Open a file with the desktop default, detached — the CLI does not wait for the viewer. */
+export function openWithDesktop(target: string): void {
+  const { command, args } = opener();
+  const child = spawn(command, [...args, target], { stdio: 'ignore', detached: true });
+  child.on('error', () => {
+    process.stdout.write(`${target}\n`);
+  });
+  child.unref();
+}
+
 export async function reportCommand(options: ReportOptions): Promise<number> {
   const { config } = await loadConfig(options.root);
   const reportPath = path.resolve(options.root, config.outputDir, 'report.html');
@@ -26,11 +36,6 @@ export async function reportCommand(options: ReportOptions): Promise<number> {
     return 1;
   }
 
-  const { command, args } = opener();
-  const child = spawn(command, [...args, reportPath], { stdio: 'ignore', detached: true });
-  child.on('error', () => {
-    process.stdout.write(`${reportPath}\n`);
-  });
-  child.unref();
+  openWithDesktop(reportPath);
   return 0;
 }

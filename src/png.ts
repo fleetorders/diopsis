@@ -16,7 +16,7 @@ export interface DecodedPng {
   rgba: Uint8Array;
 }
 
-const SIGNATURE = Uint8Array.of(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a);
+export const PNG_SIGNATURE = Uint8Array.of(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a);
 
 /** Channels per colour type; a type missing from this map is rejected outright. */
 const CHANNELS: Record<number, number> = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 };
@@ -38,7 +38,7 @@ const CRC_TABLE = (() => {
   return table;
 })();
 
-function crc32(bytes: Uint8Array): number {
+export function crc32(bytes: Uint8Array): number {
   let crc = 0xffffffff;
   for (let i = 0; i < bytes.length; i++) {
     crc = (CRC_TABLE[(crc ^ (bytes[i] ?? 0)) & 0xff] ?? 0) ^ (crc >>> 8);
@@ -88,8 +88,8 @@ function readChunk(view: DataView, bytes: Uint8Array, offset: number): Chunk {
 }
 
 function checkSignature(bytes: Uint8Array): void {
-  for (let i = 0; i < SIGNATURE.length; i++) {
-    if (bytes[i] !== SIGNATURE[i]) {
+  for (let i = 0; i < PNG_SIGNATURE.length; i++) {
+    if (bytes[i] !== PNG_SIGNATURE[i]) {
       throw new Error('not a PNG file: the leading signature does not match');
     }
   }

@@ -259,6 +259,12 @@ staged for review.
 **Regenerate** — `npx diopsis update` rewrites baselines wholesale, for when you already know
 everything changed.
 
+**Review a branch's baselines** — a pull request that accepts changes shows its reviewers two
+opaque PNGs per file. `npx diopsis diff` renders the same report straight from git instead:
+every baseline the branch changed, added or deleted against `origin/main` (or a ref you name),
+with the same comparison views and changed regions, and no browser run at all. It always exits
+0 — it is for looking, not gating.
+
 Add `--grep <text>` to `run` or `update` to limit them to stories whose id contains `<text>`.
 Anything after `--` goes to Playwright unchanged, so `npx diopsis run -- --shard=1/3` splits a
 run across machines.
@@ -273,6 +279,7 @@ run across machines.
 | `diopsis accept [story-id...]` | Adopt the last run's output, for the named stories or wholesale |
 | `diopsis report` | Open the last report |
 | `diopsis doctor` | Audit the setup |
+| `diopsis diff [base]` | Report the baseline changes this branch makes against `base` (default `origin/main`) |
 | `diopsis --version` | Print the installed version |
 
 | Flag | Applies to | Effect |
@@ -282,6 +289,8 @@ run across machines.
 | `--force` | `init` | Overwrite an existing config |
 | `--lfs` | `init` | Set the baselines up for Git LFS |
 | `--no-stage` | `accept` | Write the files without staging them in git |
+| `--open` | `diff` | Open the report when it is written |
+| `--platform <token>` | `diff` | Only baselines of one platform, e.g. `linux-x64` |
 | `--json` | `doctor` | Print the audit as one JSON document, for a CI step to read |
 | `-- <args>` | `run`, `update` | Pass the rest to Playwright, e.g. `--shard=1/3` |
 

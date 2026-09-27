@@ -42,6 +42,7 @@ function summaryOf(captures: CaptureResult[]): RunSummary {
       unstable: 0,
       changed: 0,
       new: 0,
+      removed: 0,
       renderFailed: 0,
       failed: 0,
       notRun: 0,

@@ -214,6 +214,45 @@ export function snapshotPathFor(
     : `${segment}/${width}w-${mode}-${platform}.png`;
 }
 
+export interface ParsedSnapshotPath {
+  /** The path's directory segment: the story id as `safeSegment` wrote it. */
+  storyId: string;
+  width: number;
+  /** The mode the baseline was captured under; absent for the base capture. */
+  mode?: string;
+  platform: string;
+}
+
+/**
+ * Read a baseline path back into what it names — the inverse of `snapshotPathFor`, kept
+ * beside it so the two cannot drift. `diff` has nothing but the paths git reports, so
+ * every story, width, mode and platform it shows comes out of this parse. `storyId` is
+ * the segment, not the id that was folded into it: a parse cannot unfold what
+ * `safeSegment` never wrote. Anything the matrix would not have written there returns
+ * undefined.
+ */
+export function parseSnapshotPath(relative: string): ParsedSnapshotPath | undefined {
+  const slash = relative.lastIndexOf('/');
+  const segment = slash === -1 ? '' : relative.slice(0, slash);
+  const filename = slash === -1 ? relative : relative.slice(slash + 1);
+  // A baseline always sits inside its story's directory, and is always a PNG.
+  if (!segment || !filename.endsWith('.png')) return undefined;
+  const stem = filename.slice(0, -'.png'.length);
+  const width = /^(\d+)w-/.exec(stem);
+  if (!width) return undefined;
+  // The platform token is the final two dash-separated words — a platform and an
+  // architecture, neither of which contains a dash — and whatever lies between it and the
+  // width is the mode, whose name is free to hold dashes of its own.
+  const parts = stem.slice(width[0].length).split('-');
+  if (parts.length < 2) return undefined;
+  return {
+    storyId: segment,
+    width: Number.parseInt(width[1] ?? '', 10),
+    ...(parts.length > 2 ? { mode: parts.slice(0, -2).join('-') } : {}),
+    platform: parts.slice(-2).join('-'),
+  };
+}
+
 /**
  * Widths for one story.
  *

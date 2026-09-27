@@ -687,6 +687,57 @@ check('a run without modes shows no mode chips',
   (await page.locator('#modefilters .chip').count()) === 0);
 await page.close();
 
+// A diff report: what a branch did to the baseline set, read from git without a run. A
+// removed baseline is its one last image, labelled as deleted, in the muted treatment — a
+// deletion is a fact to check, not a failure.
+const diffCaptures = [
+  capture({ t: 'Card', n: 'Default', id: 'card--default', w: 640, s: 'changed', px: 12840, r: 0.0412,
+    a: { expected: 'shots/a-base.png', actual: 'shots/a-act.png', diff: 'shots/a-diff.png' } }),
+  capture({ t: 'Card', n: 'Gone', id: 'card--gone', w: 380, s: 'removed',
+    a: { expected: 'shots/b-base.png' } }),
+  capture({ t: 'Header', n: 'Default', id: 'header--default', w: 1280, s: 'unchanged' }),
+];
+const diffSummary = {
+  ...summary,
+  mode: 'diff', base: 'origin/main',
+  mergeBase: 'e0f1e2d3c4b5a6978695a4b3c2d1e0f1e2d3c4b5',
+  totals: { stories: 3, captures: 3, unchanged: 1, unstable: 0, changed: 1, new: 0,
+    removed: 1, renderFailed: 0, failed: 0 },
+  changedStories: ['card--default', 'card--gone'],
+  captures: diffCaptures,
+};
+await writeFile(path.join(work, 'diff.html'), await renderReport(diffSummary, work));
+page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+page.on('pageerror', (e) => crashes.push(String(e)));
+page.on('console', (m) => { if (m.type() === 'error') crashes.push(m.text()); });
+await page.goto('file://' + path.join(work, 'diff.html'));
+await page.waitForTimeout(250);
+
+check('the meta names what the diff is against',
+  (await page.locator('#meta').textContent()).includes('diff against origin/main (e0f1e2d)'));
+const removedStory = page.locator('#story-card--gone');
+check('a removed baseline shows exactly its one last image',
+  (await removedStory.locator('img').count()) === 1);
+check('a removed capture is labelled as deleted by the branch',
+  (await removedStory.locator('figcaption').first().textContent()).startsWith('Removed —'));
+check('a removed capture offers no comparison modes',
+  (await removedStory.locator('.modes button').count()) === 0);
+check('the removed badge is the muted outlined one',
+  (await removedStory.locator('.badge.s-removed').getAttribute('class')) === 'badge s-removed');
+check('a removed capture is offered under its own chip',
+  (await page.locator('.chip[data-key=removed] .n').textContent()) === '1');
+check('a deleted baseline counts as needing review',
+  (await page.locator('.chip[data-key=review] .n').textContent()) === '2');
+check('a removed capture tiles as its status, not as its image',
+  (await page.locator('.tile[data-key="card--gone@380"] img').count()) === 0 &&
+  (await page.locator('.tile[data-key="card--gone@380"]').textContent()).includes('Removed'));
+check('a diff report offers nothing to accept',
+  (await page.locator('.accept').count()) === 0 &&
+  !(await page.locator('main').textContent()).includes('diopsis accept'));
+check('a changed capture in a diff keeps its full comparison',
+  (await page.locator('#story-card--default .modes button').count()) === 4);
+await page.close();
+
 // Past the embed budget the artifacts exist as files; the report must point at them instead
 // of claiming they are missing, and must count an image's cost before embedding it so one
 // image cannot overshoot the budget on its own.
