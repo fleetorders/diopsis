@@ -6,17 +6,18 @@ import { needsReview, type CaptureResult, type RunSummary } from './summary.ts';
 /** Total embedded-image budget. Past this the report links to files instead of inlining. */
 const EMBED_BUDGET_BYTES = 40 * 1024 * 1024;
 
-async function dataUri(file: string): Promise<string | undefined> {
-  try {
-    const bytes = await readFile(file);
-    return `data:image/png;base64,${bytes.toString('base64')}`;
-  } catch {
-    return undefined;
-  }
+/** A PNG's header carries its size: width at byte 16, height at 20, both big endian. */
+function pngSizeOf(bytes: Buffer): { width: number; height: number } | undefined {
+  if (bytes.length < 24) return undefined;
+  return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
 }
 
 interface EmbeddedCapture extends CaptureResult {
   images: { expected?: string; actual?: string; diff?: string };
+  /** Pixel size of the actual render, so the report can state a share Playwright rounded away. */
+  size?: { width: number; height: number };
+  /** Set when artifacts exist on disk but stayed out to keep the report inside its budget. */
+  truncated?: true;
 }
 
 /**
@@ -29,9 +30,10 @@ interface EmbeddedCapture extends CaptureResult {
 async function embed(
   summary: RunSummary,
   outputDir: string,
+  budget: number,
 ): Promise<{ captures: EmbeddedCapture[]; truncated: number }> {
   let spent = 0;
-  let truncated = 0;
+  let truncatedCaptures = 0;
   const captures: EmbeddedCapture[] = [];
 
   for (const capture of summary.captures) {
@@ -41,6 +43,8 @@ async function embed(
     }
 
     const images: EmbeddedCapture['images'] = {};
+    let size: EmbeddedCapture['size'];
+    let truncated = false;
     // A new capture's "expected" is the baseline the comparator just wrote from this very
     // render — the same bytes as the actual — and no diff exists, because nothing was
     // compared. Embedding the duplicate would double a first-run report, the one run that
@@ -51,19 +55,34 @@ async function embed(
     for (const kind of kinds) {
       const relative = capture.artifacts[kind];
       if (!relative) continue;
-      if (spent >= EMBED_BUDGET_BYTES) {
-        truncated += 1;
+      let bytes: Buffer;
+      try {
+        bytes = await readFile(path.resolve(outputDir, relative));
+      } catch {
         continue;
       }
-      const uri = await dataUri(path.resolve(outputDir, relative));
-      if (!uri) continue;
-      spent += uri.length;
-      images[kind] = uri;
+      // The cost is accounted before embedding, in the base64 form the report actually
+      // carries: counting only after an image is in would let one large image push the file
+      // far past a budget every later image is then refused for.
+      const cost = 'data:image/png;base64,'.length + Math.ceil(bytes.length / 3) * 4;
+      if (spent + cost > budget) {
+        truncated = true;
+        continue;
+      }
+      if (kind === 'actual') size = pngSizeOf(bytes);
+      images[kind] = `data:image/png;base64,${bytes.toString('base64')}`;
+      spent += cost;
     }
-    captures.push({ ...capture, images });
+    captures.push({
+      ...capture,
+      images,
+      ...(size ? { size } : {}),
+      ...(truncated ? { truncated: true } : {}),
+    });
+    if (truncated) truncatedCaptures += 1;
   }
 
-  return { captures, truncated };
+  return { captures, truncated: truncatedCaptures };
 }
 
 function escapeHtml(value: string): string {
@@ -82,8 +101,13 @@ function embedJson(value: unknown): string {
     .replace(/\u2029/g, '\\u2029');
 }
 
-export async function renderReport(summary: RunSummary, outputDir: string): Promise<string> {
-  const { captures, truncated } = await embed(summary, outputDir);
+export async function renderReport(
+  summary: RunSummary,
+  outputDir: string,
+  /** Budget override, so the truncation path can be exercised with a value small enough to bite. */
+  budget: number = EMBED_BUDGET_BYTES,
+): Promise<string> {
+  const { captures, truncated } = await embed(summary, outputDir, budget);
   const payload = { ...summary, captures, truncated };
 
   return `<!doctype html>
@@ -149,7 +173,7 @@ h1 { margin: 0; font-size: 15px; font-weight: 650; letter-spacing: -0.01em; }
 
 main { padding: 14px 18px 56px; }
 .story { border: 1px solid var(--line); border-radius: 8px; margin-bottom: 10px;
-  background: var(--surface); overflow: hidden; }
+  background: var(--surface); overflow: hidden; position: relative; }
 .story > summary { cursor: pointer; padding: 9px 12px; display: flex; gap: 10px;
   align-items: center; list-style: none; }
 .story > summary::-webkit-details-marker { display: none; }
@@ -157,9 +181,14 @@ main { padding: 14px 18px 56px; }
 .story[open] > summary::before { content: "\\25BE"; }
 .title { font-weight: 600; font-size: 14px; }
 .sub { color: var(--muted); font-size: 12px; }
-.anchor { margin-left: auto; background: transparent; border: 0; color: var(--muted);
-  font: inherit; font-size: 12px; cursor: pointer; padding: 2px 4px; border-radius: 4px; }
+.anchor { position: absolute; top: 8px; right: 12px; background: transparent; border: 0;
+  color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; padding: 2px 4px;
+  border-radius: 4px; }
 .anchor:hover { color: var(--accent); background: var(--raised); }
+/* The copy-link button sits over the summary's right end but is not inside it: a control
+   nested in <summary> hijacks its toggling and is unreachable for assistive tech. The
+   badge keeps the right edge clear of it. */
+.story > summary .badge { margin-left: auto; margin-right: 26px; }
 
 /* Status reads as a coloured word, not an outlined pill: the pill drew a box around every
    label and left the page looking like a form. */
@@ -256,7 +285,7 @@ button.copy:hover { background: var(--raised); }
     <div class="totals" id="filters"></div>
     <input class="search" id="q" type="search" placeholder="Filter stories" autocomplete="off"
       spellcheck="false" aria-label="Filter stories">
-    <span class="progress" id="progress"></span>
+    <span class="progress" id="progress" aria-live="polite"></span>
     <span id="acceptvisible"></span>
     <div class="viewall" id="viewall" role="group" aria-label="Comparison mode for every capture"
       hidden></div>
@@ -315,7 +344,9 @@ const filters = document.getElementById('filters');
 const progressEl = document.getElementById('progress');
 const acceptVisibleEl = document.getElementById('acceptvisible');
 
-const maxRatio = data.captures.reduce((m, c) => Math.max(m, c.diffRatio || 0), 0);
+// One measure for the ordering and the meters: differing pixels. Ranking captures by ratio
+// instead left the two disagreeing — a story led the list while its meter sat below another's.
+const maxDiffPixels = data.captures.reduce((m, c) => Math.max(m, c.diffPixels || 0), 0);
 
 function chip(key, label, status) {
   const b = document.createElement('button');
@@ -331,14 +362,14 @@ function chip(key, label, status) {
   const n = document.createElement('span');
   n.className = 'n';
   b.append(text, n);
-  b.onclick = () => { active = key; render(); };
+  b.onclick = () => { active = key; applyFilter(); };
   return b;
 }
 filters.appendChild(chip('review', 'Needs review'));
 for (const s of order) if (counts[s]) filters.appendChild(chip(s, LABEL[s], s));
 filters.appendChild(chip('all', 'All'));
 
-searchEl.oninput = () => { query = searchEl.value.trim().toLowerCase(); render(); };
+searchEl.oninput = () => { query = searchEl.value.trim().toLowerCase(); applyFilter(); };
 
 function textOf(c) {
   return (c.storyId + ' ' + c.storyTitle + ' ' + c.storyName).toLowerCase();
@@ -366,6 +397,20 @@ function copyButton(text, label) {
   return wrap;
 }
 
+/* Past the embed budget the artifacts exist as files but never made it into the report.
+   "No image artifacts" would be false — the line says why they are absent and where they
+   are, relative to the report itself. */
+function truncatedNote(capture, parent) {
+  const p = document.createElement('p');
+  p.className = 'note';
+  const where = capture.artifacts.actual || capture.artifacts.expected || capture.artifacts.diff;
+  p.append('Images not embedded to keep this report openable — see ');
+  const code = document.createElement('code');
+  code.textContent = where || '';
+  p.appendChild(code);
+  parent.appendChild(p);
+}
+
 /* One image is drawn at a time and only once its story is open: every capture needing review
    carries three inlined PNGs, and decoding the whole matrix up front is what made a large
    report slow to become interactive. */
@@ -384,7 +429,7 @@ function stage(capture) {
     const box = document.createElement('div');
     box.className = 'stage';
     zoomable(box);
-    box.appendChild(picture(img.actual || img.expected));
+    box.appendChild(picture(img.actual || img.expected, 'This run'));
     fig.append(cap, box);
     el.appendChild(fig);
     return { el, modes: null, setMode: null, nudge: null };
@@ -396,8 +441,11 @@ function stage(capture) {
   if (!modes.length && img.actual) modes.push('Actual');
   if (!modes.length) {
     // An unchanged capture is meant to have no images; saying so on every row of a full
-    // matrix reads as a fault report. Only an absence that needs explaining gets a line.
-    if (REVIEW.has(capture.status)) {
+    // matrix reads as a fault report. Only an absence that needs explaining gets a line —
+    // and images left unembedded are files that exist, so the line points at them rather
+    // than claiming they are missing.
+    if (capture.truncated) truncatedNote(capture, el);
+    else if (REVIEW.has(capture.status)) {
       el.className = 'note';
       el.textContent = 'No image artifacts for this capture.';
     }
@@ -407,11 +455,15 @@ function stage(capture) {
   const body = document.createElement('div');
   let current = modes.includes(preferred) ? preferred : modes[0];
   let slider = null;
+  // Alt text names what a tool that cannot see the image is reading out; the baseline also
+  // names the story and width, because that pair is what a reviewer quotes back.
+  const baselineAlt = 'Baseline of ' + capture.storyId + ' at ' + capture.width + 'px';
 
-  function picture(src) {
+  function picture(src, alt) {
     const i = document.createElement('img');
     i.loading = 'lazy';
     i.decoding = 'async';
+    i.alt = alt;
     i.src = src;
     return i;
   }
@@ -430,18 +482,19 @@ function stage(capture) {
       const box = document.createElement('div');
       box.className = 'stage';
       zoomable(box);
-      box.appendChild(picture(current === 'Overlay' ? img.diff : img.actual));
+      box.appendChild(picture(current === 'Overlay' ? img.diff : img.actual,
+        current === 'Overlay' ? 'Difference highlight' : 'This run'));
       body.appendChild(box);
     } else if (current === 'Side by side') {
       const pair = document.createElement('div');
       pair.className = 'pair';
-      for (const [src, cap] of [[img.expected, 'Baseline'], [img.actual, 'This run']]) {
+      for (const [src, cap, alt] of [[img.expected, 'Baseline', baselineAlt], [img.actual, 'This run', 'This run']]) {
         const f = document.createElement('figure');
         const c = document.createElement('figcaption');
         c.textContent = cap;
         const s = document.createElement('div');
         s.className = 'stage';
-        s.appendChild(picture(src));
+        s.appendChild(picture(src, alt));
         f.append(c, s);
         pair.appendChild(f);
       }
@@ -452,8 +505,8 @@ function stage(capture) {
       zoomable(box);
       const wrap = document.createElement('div');
       wrap.className = current === 'Swipe' ? 'swipe' : 'overlaywrap';
-      const base = picture(img.expected);
-      const top = picture(img.actual);
+      const base = picture(img.expected, baselineAlt);
+      const top = picture(img.actual, 'This run');
       top.className = 'top';
       wrap.append(base, top);
       box.appendChild(wrap);
@@ -462,6 +515,7 @@ function stage(capture) {
       slider.min = '0';
       slider.max = '100';
       slider.value = '50';
+      slider.setAttribute('aria-label', current === 'Swipe' ? 'Swipe divider position' : 'Overlay opacity');
       slider.onclick = (e) => e.stopPropagation();
       slider.oninput = () => {
         if (current === 'Swipe') top.style.clipPath = 'inset(0 ' + (100 - slider.value) + '% 0 0)';
@@ -492,6 +546,9 @@ function stage(capture) {
   }
   draw();
   el.appendChild(body);
+  // Some of the capture's images may have fit the budget while the rest did not; what was
+  // shown still deserves the pointer to the files next to it.
+  if (capture.truncated) truncatedNote(capture, el);
 
   return {
     el,
@@ -506,7 +563,10 @@ function stage(capture) {
   };
 }
 
-/** Every capture currently on the page, in reading order — the target list for j/k. */
+/** Every capture entry, built once; filtering after that only shows and hides them. */
+const entries = [];
+const storyEls = [];
+/** The visible captures in reading order — the target list for j/k. */
 let flat = [];
 
 const viewAllEl = document.getElementById('viewall');
@@ -516,7 +576,9 @@ function setPreferred(m) {
     b.setAttribute('aria-pressed', String(b.textContent === m));
   }
   // Only captures already drawn need redrawing; the rest read the choice when they are built.
-  for (const entry of flat) if (entry.built && entry.built.follow) entry.built.follow(m);
+  // Every entry, not just the visible ones: a capture hidden by a filter keeps the choice
+  // for when it is shown again.
+  for (const entry of entries) if (entry.built && entry.built.follow) entry.built.follow(m);
 }
 // The page-wide control is offered only when some capture has two renders to compare; a run of
 // new captures alone has nothing it could switch between.
@@ -577,7 +639,19 @@ function drawAcceptVisible(stories) {
   acceptVisibleEl.appendChild(holder);
 }
 
-function render() {
+const out = document.getElementById('out');
+// Everything filterable lives in the list; the empty-state line sits beside it, with one of
+// the two always hidden.
+const listEl = document.createElement('div');
+const emptyEl = document.createElement('p');
+emptyEl.className = 'empty';
+emptyEl.hidden = true;
+out.append(listEl, emptyEl);
+
+/* Filtering hides and shows what was built once. Rebuilding on every keystroke threw away
+   every drawn image stage — and with it the comparison mode and zoom a reviewer had already
+   chosen — to change nothing but which rows are on screen. */
+function applyFilter() {
   for (const b of filters.children) {
     const key = b.dataset.key;
     b.setAttribute('aria-pressed', String(key === active));
@@ -585,26 +659,28 @@ function render() {
       data.captures.filter(c => inSearch(c) && inFilter(c, key)).length;
   }
 
-  const visible = data.captures.filter(c => inSearch(c) && inFilter(c, active));
-  const out = document.getElementById('out');
-  out.innerHTML = '';
-  flat = [];
+  for (const entry of entries) {
+    entry.box.hidden = !inSearch(entry.capture) || !inFilter(entry.capture, active);
+  }
+  // A story stays on the page while any of its captures does; its other rows hide with it.
+  for (const story of storyEls) story.el.hidden = story.entries.every(e => e.box.hidden);
+  flat = entries.filter(e => !e.box.hidden && !e.story.hidden);
   cursor = -1;
 
-  if (!visible.length) {
-    const p = document.createElement('p');
-    p.className = 'empty';
-    p.textContent = query
-      ? 'No story matches "' + query + '".'
-      : 'Nothing here. Every capture matched its baseline.';
-    out.appendChild(p);
-    drawProgress();
-    drawAcceptVisible([]);
-    return;
-  }
+  // With nothing to show, the whole list — its accept-everything footer included — steps
+  // aside for one line that says so.
+  const empty = flat.length === 0;
+  listEl.hidden = empty;
+  emptyEl.hidden = !empty;
+  emptyEl.textContent = query
+    ? 'No story matches "' + query + '".'
+    : 'Nothing here. Every capture matched its baseline.';
+  drawAcceptVisible(empty ? [] : storyEls.filter(s => !s.el.hidden).map(s => s.id));
+}
 
+function buildAll() {
   const byStory = new Map();
-  for (const c of visible) {
+  for (const c of data.captures) {
     if (!byStory.has(c.storyId)) byStory.set(c.storyId, []);
     byStory.get(c.storyId).push(c);
   }
@@ -623,6 +699,7 @@ function render() {
     det.className = 'story';
     det.id = 'story-' + storyId;
     det.open = REVIEW.has(worst);
+    const storyEntry = { el: det, id: storyId, entries: [] };
 
     const sum = document.createElement('summary');
     const t = document.createElement('span');
@@ -635,21 +712,22 @@ function render() {
     const badge = document.createElement('span');
     badge.className = 'badge s-' + worst;
     badge.textContent = LABEL[worst];
-    // A reviewer's finding has to survive the trip into a pull-request comment.
+    // A reviewer's finding has to survive the trip into a pull-request comment. The button
+    // sits over the summary's right end but is a sibling of it — see the .anchor style — so
+    // a click needs no defending against the summary's own toggling.
     const anchor = document.createElement('button');
     anchor.className = 'anchor';
     anchor.textContent = '#';
     anchor.title = 'Copy a link to this story';
-    anchor.onclick = async (e) => {
-      e.preventDefault();
-      e.stopPropagation();
+    anchor.setAttribute('aria-label', 'Copy a link to this story');
+    anchor.onclick = async () => {
       location.hash = det.id;
       try { await navigator.clipboard.writeText(location.href); anchor.textContent = 'copied'; }
       catch (err) { anchor.textContent = location.hash; }
       setTimeout(() => (anchor.textContent = '#'), 1600);
     };
-    sum.append(t, s, anchor, badge);
-    det.appendChild(sum);
+    sum.append(t, s, badge);
+    det.append(sum, anchor);
 
     for (const c of captures) {
       const box = document.createElement('div');
@@ -659,17 +737,28 @@ function render() {
       bar.className = 'bar';
       const w = document.createElement('span');
       w.className = 'w';
-      w.textContent = c.width + 'px' +
-        (c.diffPixels != null ? ', ' + c.diffPixels.toLocaleString() + ' px differ (' +
-          (c.diffRatio * 100).toFixed(2) + '%)' : '');
+      // Playwright states its ratio rounded to two decimals, so a small change can arrive as
+      // "0.00%" — a number that says nothing moved. Where the actual image's pixel size is
+      // known the share is recomputed from the pixels; where it is not, a share that would
+      // print as zero is left out rather than shown as one.
+      let share = null;
+      if (c.diffPixels != null) {
+        const pixels = c.size ? c.size.width * c.size.height : 0;
+        if (pixels > 0) share = (c.diffPixels / pixels) * 100;
+        else if (c.diffRatio != null && c.diffRatio * 100 >= 0.005) share = c.diffRatio * 100;
+      }
+      w.textContent = c.width + 'px' + (c.diffPixels == null
+        ? ''
+        : ', ' + c.diffPixels.toLocaleString() + ' px differ' +
+          (share == null ? '' : ' (' + Number(share.toPrecision(2)) + '%)'));
       bar.appendChild(w);
 
-      if (c.diffRatio != null && maxRatio > 0) {
+      if (c.diffPixels != null && maxDiffPixels > 0) {
         const meter = document.createElement('div');
         meter.className = 'meter';
-        meter.title = 'Relative to the largest change in this run';
+        meter.title = "Share of this run's largest pixel difference";
         const fill = document.createElement('i');
-        fill.style.width = Math.max(4, (c.diffRatio / maxRatio) * 100) + '%';
+        fill.style.width = Math.max(4, (c.diffPixels / maxDiffPixels) * 100) + '%';
         meter.appendChild(fill);
         bar.appendChild(meter);
       }
@@ -716,10 +805,11 @@ function render() {
         box.appendChild(e);
       }
       det.appendChild(box);
-      flat.push(entry);
+      entries.push(entry);
+      storyEntry.entries.push(entry);
     }
 
-    const build = () => { for (const e of flat) if (e.story === det) e.build(); };
+    const build = () => { for (const e of storyEntry.entries) e.build(); };
     det.addEventListener('toggle', () => { if (det.open) build(); });
     if (det.open) build();
 
@@ -729,38 +819,37 @@ function render() {
       foot.appendChild(copyButton('npx diopsis accept ' + storyId));
       det.appendChild(foot);
     }
-    out.appendChild(det);
+    storyEls.push(storyEntry);
+    listEl.appendChild(det);
   }
 
   if (data.changedStories.length) {
     const all = document.createElement('div');
     all.style.marginTop = '18px';
     all.appendChild(copyButton('npx diopsis accept'));
-    out.appendChild(all);
+    listEl.appendChild(all);
   }
   if (data.truncated) {
     const n = document.createElement('p');
     n.className = 'note';
     n.textContent = data.truncated + ' capture(s) had images omitted to keep this file openable.';
-    out.appendChild(n);
+    listEl.appendChild(n);
   }
-
-  drawProgress();
-  drawAcceptVisible([...byStory.keys()]);
 }
 
-/* A link into the report has to land even when the current filter excludes its target, so a
-   miss widens the view once and tries again rather than scrolling nowhere. */
+/* A link into the report has to land even when the current filter excludes its target. Every
+   story is built — a filtered-out one is hidden, not absent — so a hidden target widens the
+   view once and tries again rather than scrolling nowhere. */
 function focusHash() {
   const id = decodeURIComponent(location.hash.slice(1));
   if (!id.startsWith('story-')) return;
-  if (!document.getElementById(id)) {
+  const target = document.getElementById(id);
+  if (target && target.hidden) {
     active = 'all';
     query = '';
     searchEl.value = '';
-    render();
+    applyFilter();
   }
-  const target = document.getElementById(id);
   if (!target) return;
   target.open = true;
   target.scrollIntoView({ block: 'start' });
@@ -770,13 +859,15 @@ document.addEventListener('keydown', (e) => {
   const typing = e.target instanceof HTMLElement &&
     (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA');
   if (e.key === 'Escape') {
-    if (typing) { searchEl.value = ''; query = ''; searchEl.blur(); render(); }
+    if (typing) { searchEl.value = ''; query = ''; searchEl.blur(); applyFilter(); }
     return;
   }
   if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key === '/') { e.preventDefault(); searchEl.focus(); searchEl.select(); return; }
-  if (e.key === 'j' || e.key === 'ArrowDown') { e.preventDefault(); setCursor(cursor + 1); return; }
-  if (e.key === 'k' || e.key === 'ArrowUp') { e.preventDefault(); setCursor(cursor - 1); return; }
+  // Only the horizontal arrows are ours, and only for the current capture's slider; the
+  // vertical ones stay with the page, so a keyboard user can still scroll a long report.
+  if (e.key === 'j') { e.preventDefault(); setCursor(cursor + 1); return; }
+  if (e.key === 'k') { e.preventDefault(); setCursor(cursor - 1); return; }
   // Shift turns a number into a page-wide choice. The code, not the key, identifies the digit:
   // with Shift held the key reads as whatever symbol the layout puts above it.
   const digit = /^Digit([1-4])$/.exec(e.code);
@@ -803,6 +894,8 @@ document.addEventListener('keydown', (e) => {
 
 window.addEventListener('hashchange', focusHash);
 
-render();
+buildAll();
+applyFilter();
+drawProgress();
 focusHash();
 `;
