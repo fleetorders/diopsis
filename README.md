@@ -237,6 +237,7 @@ run across machines.
 | `--force` | `init` | Overwrite an existing config |
 | `--lfs` | `init` | Set the baselines up for Git LFS |
 | `--no-stage` | `accept` | Write the files without staging them in git |
+| `--json` | `doctor` | Print the audit as one JSON document, for a CI step to read |
 | `-- <args>` | `run`, `update` | Pass the rest to Playwright, e.g. `--shard=1/3` |
 
 A flag given to a command it does not belong to is refused rather than ignored. The config is

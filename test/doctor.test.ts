@@ -1,11 +1,18 @@
 import assert from 'node:assert/strict';
-import { cp, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { cp, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, it } from 'node:test';
 
-import { findForeignIgnoreAttributes, runChecks, type Check } from '../src/commands/doctor.ts';
+import {
+  doctorCommand,
+  findCiImageReferences,
+  findForeignIgnoreAttributes,
+  runChecks,
+  type Check,
+} from '../src/commands/doctor.ts';
 import { ciRecipe, gitattributesLines, initCommand } from '../src/commands/init.ts';
 
 const fixture = path.join(
@@ -29,6 +36,22 @@ afterEach(async () => {
 
 function find(checks: Check[], pattern: RegExp): Check | undefined {
   return checks.find((check) => pattern.test(check.title));
+}
+
+/** Commands print their report on stdout; capture it so it can be asserted on. */
+async function captureStdout(run: () => Promise<number>): Promise<{ code: number; out: string }> {
+  const write = process.stdout.write;
+  let out = '';
+  process.stdout.write = ((chunk: unknown) => {
+    out += String(chunk);
+    return true;
+  }) as typeof write;
+  try {
+    const code = await run();
+    return { code, out };
+  } finally {
+    process.stdout.write = write;
+  }
 }
 
 describe('findForeignIgnoreAttributes', () => {
@@ -167,5 +190,153 @@ describe('runChecks with an empty default set', () => {
     assert.equal(check?.level, 'warn');
     // The two untagged Button stories; the tagged Banner stories still capture.
     assert.match(check?.title ?? '', /2 stories/);
+  });
+});
+
+describe('runChecks against git’s own ignore rules', () => {
+  it('fails on an anchored pattern the exact-line check cannot see', async () => {
+    const root = await project();
+    spawnSync('git', ['init'], { cwd: root, stdio: 'ignore' });
+    // `/__screenshots__/` ignores the baselines while matching no line the string check
+    // compares; inside a real repository git itself is asked.
+    await writeFile(path.join(root, '.gitignore'), '/__screenshots__/\n');
+    const check = find(await runChecks({ root }), /excludes __screenshots__/);
+    assert.equal(check?.level, 'fail');
+  });
+
+  it('keeps the exact-line check outside a repository, where git cannot be asked', async () => {
+    const root = await project();
+    await writeFile(path.join(root, '.gitignore'), '/__screenshots__/\n');
+    // No repository here, so the anchored pattern is beyond the fallback's reach — the
+    // known limit of the string check, and the reason the git path exists.
+    assert.equal(find(await runChecks({ root }), /excludes __screenshots__/), undefined);
+  });
+
+  it('accepts an output directory git ignores without naming it literally', async () => {
+    const root = await project();
+    spawnSync('git', ['init'], { cwd: root, stdio: 'ignore' });
+    // `.*` ignores the dot-prefixed output directory without the string ".diopsis" ever
+    // appearing in the file.
+    await writeFile(path.join(root, '.gitignore'), '.*\n');
+    assert.equal(find(await runChecks({ root }), /is not ignored/), undefined);
+  });
+});
+
+describe('runChecks on the CI image', () => {
+  it('fails, naming the file and both images, when a workflow pins a different tag', async () => {
+    const root = await project();
+    await mkdir(path.join(root, '.github', 'workflows'), { recursive: true });
+    await writeFile(
+      path.join(root, '.github', 'workflows', 'visual.yml'),
+      'jobs:\n  visual:\n    image: mcr.microsoft.com/playwright:v1.50.0-jammy\n',
+    );
+    const check = find(await runChecks({ root }), /different Playwright image/);
+    assert.equal(check?.level, 'fail');
+    assert.match(check?.detail ?? '', /\.github\/workflows\/visual\.yml runs mcr\.microsoft\.com\/playwright:v1\.50\.0-jammy/);
+    assert.match(check?.detail ?? '', /the config pins mcr\.microsoft\.com\/playwright:v1\.62\.1-jammy/);
+  });
+
+  it('is satisfied when CI names the pinned image in any host’s file', async () => {
+    const root = await project();
+    await writeFile(
+      path.join(root, '.gitlab-ci.yml'),
+      'image: mcr.microsoft.com/playwright:v1.62.1-jammy\n',
+    );
+    const check = find(await runChecks({ root }), /CI runs the pinned image/);
+    assert.equal(check?.level, 'ok');
+    assert.match(check?.detail ?? '', /\.gitlab-ci\.yml/);
+  });
+
+  it('leaves a neutral note when no CI file names a Playwright image', async () => {
+    const root = await project();
+    const check = find(await runChecks({ root }), /No CI file names a Playwright image/);
+    assert.equal(check?.level, 'ok');
+    assert.match(
+      check?.detail ?? '',
+      /Make sure CI runs in mcr\.microsoft\.com\/playwright:v1\.62\.1-jammy\./,
+    );
+  });
+
+  it('warns when the installed @playwright/test differs from the image’s browser build', async () => {
+    const root = await project();
+    await mkdir(path.join(root, 'node_modules', '@playwright', 'test'), { recursive: true });
+    await writeFile(
+      path.join(root, 'node_modules', '@playwright', 'test', 'package.json'),
+      '{"version":"1.70.0"}',
+    );
+    const check = find(await runChecks({ root }), /does not match the pinned image/);
+    assert.equal(check?.level, 'warn');
+    assert.match(check?.title ?? '', /1\.70\.0/);
+  });
+
+  it('finds workflow files under either extension', async () => {
+    const root = await project();
+    await mkdir(path.join(root, '.github', 'workflows'), { recursive: true });
+    await writeFile(
+      path.join(root, '.github', 'workflows', 'visual.yaml'),
+      'image: mcr.microsoft.com/playwright:v1.50.0-jammy\n',
+    );
+    const references = await findCiImageReferences(root);
+    assert.deepEqual(references, [
+      { file: '.github/workflows/visual.yaml', image: 'mcr.microsoft.com/playwright:v1.50.0-jammy' },
+    ]);
+  });
+});
+
+describe('doctorCommand --json', () => {
+  it('prints machine-readable JSON, and nothing else, with the usual exit code', async () => {
+    const root = await project();
+    const { code, out } = await captureStdout(() => doctorCommand({ root, json: true }));
+    // The test runner's own stdout bookkeeping can interleave with an awaited command's
+    // output; the document is anchored on its first line, and ends at the only `}` that
+    // sits at column zero.
+    const start = out.indexOf('{\n  "diopsis": 1');
+    const end = out.indexOf('\n}', start) + 2;
+    const json = out.slice(start, end);
+    const payload = JSON.parse(json) as { diopsis?: number; ok?: boolean; checks?: Check[] };
+    assert.equal(payload.diopsis, 1);
+    assert.equal(typeof payload.ok, 'boolean');
+    assert.ok(Array.isArray(payload.checks));
+    for (const check of payload.checks ?? []) {
+      assert.ok(['ok', 'warn', 'fail'].includes(check.level));
+      assert.ok(typeof check.title === 'string');
+    }
+    assert.equal(payload.ok, code === 0);
+  });
+});
+
+describe('initCommand --force with an existing config', () => {
+  it('keeps the git settings, cost table and CI recipe on the config being replaced', async () => {
+    const root = await project();
+    await writeFile(
+      path.join(root, 'diopsis.config.mjs'),
+      'export default { snapshotDir: \'__baselines__\', outputDir: \'.visual\', ' +
+        "image: 'registry.example/pw:v9.9.9-x', viewports: { default: [375, 1280] } };",
+    );
+    const { code, out } = await captureStdout(() => initCommand({ root, force: true }));
+    assert.equal(code, 0);
+
+    const attributes = await readFile(path.join(root, '.gitattributes'), 'utf8');
+    assert.match(attributes, /__baselines__\/\*\*\/\*\.png binary -merge -diff/);
+    const ignore = await readFile(path.join(root, '.gitignore'), 'utf8');
+    assert.match(ignore, /^\.visual\/$/m);
+
+    // The recipe names the configured image, and "(configured)" marks the configured
+    // widths — a row of their own, not whichever preset has two entries.
+    assert.match(out, /registry\.example\/pw:v9\.9\.9-x/);
+    assert.match(out, /375, 1280[^\n]*\(configured\)/);
+    assert.doesNotMatch(out, /320, 1280[^\n]*\(configured\)/);
+  });
+
+  it('falls back to the defaults, said in one line, when the config cannot load', async () => {
+    const root = await project();
+    await writeFile(path.join(root, 'diopsis.config.mjs'), 'export default 42;');
+    const { code, out } = await captureStdout(() => initCommand({ root, force: true }));
+    assert.equal(code, 0);
+    assert.match(out, /Could not load diopsis\.config\.mjs/);
+
+    const attributes = await readFile(path.join(root, '.gitattributes'), 'utf8');
+    assert.match(attributes, /__screenshots__/);
+    assert.match(out, /320, 1280[^\n]*\(configured\)/);
   });
 });

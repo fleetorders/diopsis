@@ -1,8 +1,10 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { readdir, readFile, stat } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 
 import { findConfigFile, loadConfig, supportsTypeStripping } from '../config.ts';
+import { gitIgnores, isGitRepo } from '../git.ts';
 import { platformToken, resolveMatrix } from '../matrix.ts';
 import { readStoryIndex } from '../story-index.ts';
 
@@ -16,6 +18,8 @@ export interface Check {
 
 export interface DoctorOptions {
   root: string;
+  /** Print the checks as JSON to stdout, with no prose around them. */
+  json?: boolean;
 }
 
 /** Any `data-…-ignore` attribute that is not ours — an unfinished migration (D-008). */
@@ -50,6 +54,69 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** Fixed-name CI files that can name the job's container, one per host. */
+const CI_FILES: readonly string[] = [
+  '.gitlab-ci.yml',
+  '.circleci/config.yml',
+  'bitbucket-pipelines.yml',
+  'azure-pipelines.yml',
+];
+
+/** A Playwright image reference as a CI file writes it, tag or digest included. */
+const PLAYWRIGHT_IMAGE = /mcr\.microsoft\.com\/playwright[^\s'"`]+/g;
+
+/**
+ * Every Playwright image a CI file names, with the file it came from. GitHub keeps its
+ * workflows in a directory (both spellings of the extension); every other host uses one
+ * fixed filename at the root.
+ */
+export async function findCiImageReferences(
+  root: string,
+): Promise<Array<{ file: string; image: string }>> {
+  const candidates: string[] = [];
+  try {
+    for (const entry of await readdir(path.join(root, '.github', 'workflows'))) {
+      if (entry.endsWith('.yml') || entry.endsWith('.yaml')) {
+        candidates.push(path.join('.github', 'workflows', entry));
+      }
+    }
+  } catch {
+    // No workflows directory; the fixed-name files below still get their chance.
+  }
+  candidates.push(...CI_FILES);
+
+  const found: Array<{ file: string; image: string }> = [];
+  for (const candidate of candidates) {
+    let text: string;
+    try {
+      text = await readFile(path.join(root, candidate), 'utf8');
+    } catch {
+      continue;
+    }
+    for (const match of text.matchAll(PLAYWRIGHT_IMAGE)) {
+      found.push({ file: candidate.split(path.sep).join('/'), image: match[0] });
+    }
+  }
+  return found;
+}
+
+/**
+ * The @playwright/test version installed for this project, when there is one. Resolved
+ * through Node's own resolution so hoisted and nested installs are both found; a peer
+ * dependency that is not installed here is simply nothing to compare against.
+ */
+export function installedPlaywrightVersion(root: string): string | undefined {
+  try {
+    const require = createRequire(path.join(root, 'package.json'));
+    const manifest = JSON.parse(
+      readFileSync(require.resolve('@playwright/test/package.json'), 'utf8'),
+    ) as { version?: string };
+    return manifest.version;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -97,6 +164,55 @@ export async function runChecks(options: DoctorOptions): Promise<Check[]> {
           detail: 'Without one, baselines and CI can disagree with nothing to catch it.',
         },
   );
+
+  if (config.image) {
+    // The CI recipe `init` prints promises this check: a pinned image is only a guarantee
+    // while CI runs it, and drift surfaces as every baseline differing at once.
+    const references = await findCiImageReferences(options.root);
+    if (references.length === 0) {
+      checks.push({
+        level: 'ok',
+        title: 'No CI file names a Playwright image',
+        detail: `Make sure CI runs in ${config.image}.`,
+      });
+    } else {
+      const drifting = references.filter((reference) => reference.image !== config.image);
+      checks.push(
+        drifting.length === 0
+          ? {
+              level: 'ok',
+              title: 'CI runs the pinned image',
+              detail: [...new Set(references.map((reference) => reference.file))].join(', '),
+            }
+          : {
+              level: 'fail',
+              title: 'CI runs a different Playwright image than the config pins',
+              detail:
+                drifting
+                  .map((d) => `${d.file} runs ${d.image}; the config pins ${config.image}.`)
+                  .join(' ') +
+                ' Screenshots from a different browser build differ, so every baseline would ' +
+                'diff at once.',
+            },
+      );
+    }
+
+    // The image carries the browser build CI captures in; the installed @playwright/test
+    // decides the one this machine captures in. When they differ, local baselines and CI's
+    // cannot match, whatever the config promises.
+    const imageVersion = /:v(\d+\.\d+\.\d+)/.exec(config.image)?.[1];
+    const installed = installedPlaywrightVersion(options.root);
+    if (imageVersion && installed && installed !== imageVersion) {
+      checks.push({
+        level: 'warn',
+        title: `Installed @playwright/test ${installed} does not match the pinned image`,
+        detail:
+          `${config.image} carries Playwright ${imageVersion}. Screenshots from a different ` +
+          'browser build differ, so align the dependency and the image, then regenerate the ' +
+          'baselines.',
+      });
+    }
+  }
 
   // Storybook build and the capture count.
   let captureCount = 0;
@@ -248,9 +364,19 @@ export async function runChecks(options: DoctorOptions): Promise<Check[]> {
 
   const ignorePath = path.join(options.root, '.gitignore');
   const ignore = existsSync(ignorePath) ? await readFile(ignorePath, 'utf8') : '';
-  const ignoresBaselines = ignore
-    .split('\n')
-    .some((line) => line.trim() === `${config.snapshotDir}/` || line.trim() === config.snapshotDir);
+  // Inside a repository, git's own rules decide — `/__screenshots__` and
+  // `**/__screenshots__/` both ignore the baselines while matching no exact line a
+  // .gitignore string scan compares. The probe is a file inside the directory, because a
+  // pattern can target a directory's contents while missing its name. Outside a
+  // repository, or when git could not answer, the exact-line check stands.
+  const inRepo = isGitRepo(options.root);
+  const byGit = (dir: string): boolean | undefined =>
+    inRepo ? gitIgnores(options.root, path.join(dir, 'probe.png')) : undefined;
+  const ignoresBaselines =
+    byGit(snapshotDir) ??
+    ignore
+      .split('\n')
+      .some((line) => line.trim() === `${config.snapshotDir}/` || line.trim() === config.snapshotDir);
   if (ignoresBaselines) {
     checks.push({
       level: 'fail',
@@ -258,7 +384,9 @@ export async function runChecks(options: DoctorOptions): Promise<Check[]> {
       detail: 'The baselines are the point — ignored, every run compares against nothing.',
     });
   }
-  if (!ignore.includes(config.outputDir)) {
+  const ignoresOutput =
+    byGit(path.resolve(options.root, config.outputDir)) ?? ignore.includes(config.outputDir);
+  if (!ignoresOutput) {
     checks.push({
       level: 'warn',
       title: `${config.outputDir}/ is not ignored`,
@@ -271,6 +399,23 @@ export async function runChecks(options: DoctorOptions): Promise<Check[]> {
 
 export async function doctorCommand(options: DoctorOptions): Promise<number> {
   const checks = await runChecks(options);
+  const failures = checks.filter((check) => check.level === 'fail').length;
+
+  if (options.json) {
+    // The JSON document is the whole of stdout — a caller piping it to jq or a CI script
+    // must not have to strip a prose report off it first. The exit code still says
+    // pass/fail, so a plain `diopsis doctor` and a scripted one disagree on nothing.
+    const payload = {
+      diopsis: 1,
+      ok: failures === 0,
+      checks: checks.map(({ level, title, detail }) =>
+        detail === undefined ? { level, title } : { level, title, detail },
+      ),
+    };
+    process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+    return failures > 0 ? 1 : 0;
+  }
+
   const lines = ['', 'Diopsis doctor', ''];
   for (const check of checks) {
     const symbol = check.level === 'ok' ? '·' : check.level === 'warn' ? '!' : '×';
@@ -278,7 +423,6 @@ export async function doctorCommand(options: DoctorOptions): Promise<number> {
     if (check.detail) lines.push(`      ${check.detail}`);
   }
 
-  const failures = checks.filter((check) => check.level === 'fail').length;
   const warnings = checks.filter((check) => check.level === 'warn').length;
   lines.push(
     '',

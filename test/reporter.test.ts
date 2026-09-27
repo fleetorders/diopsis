@@ -149,4 +149,33 @@ describe('DiopsisReporter', () => {
     assert.equal(summary.interrupted, undefined);
     assert.equal(summary.totals.notRun, 0);
   });
+
+  it('formats differing pixel counts with a pinned locale, not the machine’s', async () => {
+    const { reporter } = await setup();
+    const original = Number.prototype.toLocaleString;
+    // A machine whose locale groups with dots prints "1.234.567 px differ" from the same
+    // run unless the locale is pinned; the terminal output must read the same everywhere.
+    Number.prototype.toLocaleString = function (this: Number, locale?: string | string[]) {
+      return original.call(this, locale ?? 'de-DE');
+    };
+    let out: string;
+    try {
+      ({ out } = await withCapturedStdout(async () => {
+        reporter.onTestEnd(
+          testTitled('a--one @320'),
+          result({
+            status: 'failed',
+            errors: [
+              { message: '1,234,567 pixels (ratio 0.5 of all image pixels) are different.' },
+            ],
+            annotations: [{ type: 'diopsis-baseline', description: 'present' }],
+          }),
+        );
+        await reporter.onEnd({ status: 'failed' } as FullResult);
+      }));
+    } finally {
+      Number.prototype.toLocaleString = original;
+    }
+    assert.match(out, /~ a--one @320  1,234,567 px differ/);
+  });
 });

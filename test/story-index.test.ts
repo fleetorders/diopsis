@@ -74,6 +74,21 @@ describe('parseStoryIndex', () => {
     );
   });
 
+  it('sorts by code units, not the machine’s collation', () => {
+    // ICU collation orders these two opposite to code units (lowercase first); run order
+    // and the baseline paths derived from it must not depend on the machine's ICU data.
+    const stories = parseStoryIndex({
+      entries: {
+        'a--one': { type: 'story', id: 'a--one', name: 'One', title: 'A' },
+        'A--one': { type: 'story', id: 'A--one', name: 'One', title: 'A' },
+      },
+    });
+    assert.deepEqual(
+      stories.map((s) => s.id),
+      ['A--one', 'a--one'],
+    );
+  });
+
   it('rejects an index it cannot recognise', () => {
     assert.throws(() => parseStoryIndex({ v: 5 }), /entries.*stories/);
     assert.throws(() => parseStoryIndex('nope'), /not an object/);

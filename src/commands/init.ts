@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { defaultConfig, findConfigFile, supportsTypeStripping } from '../config.ts';
+import { defaultConfig, findConfigFile, loadConfig, supportsTypeStripping } from '../config.ts';
 import { resolveMatrix } from '../matrix.ts';
 import { readStoryIndex } from '../story-index.ts';
 
@@ -113,26 +113,46 @@ export async function initCommand(options: InitOptions): Promise<number> {
     return 1;
   }
 
+  // With --force, the config being replaced still decides the scaffolding around it: its
+  // snapshotDir and outputDir are what .gitattributes and .gitignore must keep guarding,
+  // and its widths and image are what the cost table and the CI recipe describe — a
+  // re-run must not quietly repoint git settings at the default directories. A config
+  // that cannot be loaded falls back to the defaults, said in one line rather than
+  // silently.
+  let config = defaultConfig;
+  const notes: string[] = [];
+  if (existing) {
+    try {
+      config = (await loadConfig(options.root)).config;
+    } catch {
+      notes.push(
+        `Could not load ${path.basename(existing)}; the git settings, cost table and CI ` +
+          'recipe below use the defaults.',
+      );
+    }
+  }
+
   const typescript = supportsTypeStripping();
   const configName = typescript ? 'diopsis.config.ts' : 'diopsis.config.mjs';
   await writeFile(path.join(options.root, configName), configSource(typescript), 'utf8');
 
   const wroteAttributes = await appendLines(
     path.join(options.root, '.gitattributes'),
-    gitattributesLines(defaultConfig.snapshotDir, options.lfs ?? false),
+    gitattributesLines(config.snapshotDir, options.lfs ?? false),
     'Diopsis baselines: binary, and never auto-merged.',
   );
   const wroteIgnore = await appendLines(
     path.join(options.root, '.gitignore'),
-    [`${defaultConfig.outputDir}/`],
+    [`${config.outputDir}/`],
     'Diopsis run output (the report and its artifacts) is not committed.',
   );
 
   const lines: string[] = [
     '',
     `Wrote ${configName}`,
+    ...notes,
     ...(wroteAttributes ? ['Wrote .gitattributes entries for the baselines'] : []),
-    ...(wroteIgnore ? [`Wrote .gitignore entry for ${defaultConfig.outputDir}/`] : []),
+    ...(wroteIgnore ? [`Wrote .gitignore entry for ${config.outputDir}/`] : []),
     '',
   ];
 
@@ -145,22 +165,30 @@ export async function initCommand(options: InitOptions): Promise<number> {
   }
 
   // The cost of the matrix, before it is inherited rather than chosen.
-  const storybookDir = path.resolve(options.root, defaultConfig.storybookDir);
+  const storybookDir = path.resolve(options.root, config.storybookDir);
   if (existsSync(storybookDir)) {
     try {
       const stories = await readStoryIndex(storybookDir);
       lines.push('Cost of the matrix, for this Storybook:', '');
       lines.push('  widths                     captures    estimated weight');
-      for (const widths of [[1280], [320, 1280], [320, 768, 1024, 1280]]) {
+      const sameWidths = (a: number[], b: number[]) =>
+        a.length === b.length && a.every((width, i) => width === b[i]);
+      const configured = config.viewports.default ?? [];
+      // The configured widths are one of the standard rows when they can be; otherwise
+      // they get a row of their own, so "(configured)" always marks this project's real
+      // widths rather than whichever preset happens to have two entries.
+      const rows: number[][] = [[1280], [320, 1280], [320, 768, 1024, 1280]];
+      if (!rows.some((widths) => sameWidths(widths, configured))) rows.push(configured);
+      for (const widths of rows) {
         const matrix = resolveMatrix(stories, {
           viewports: { default: widths },
-          viewportHeight: defaultConfig.viewportHeight,
+          viewportHeight: config.viewportHeight,
         });
         const label = widths.join(', ').padEnd(25);
         const count = String(matrix.captures.length).padStart(8);
         const weight = formatBytes(matrix.captures.length * ESTIMATED_BYTES_PER_CAPTURE);
         lines.push(
-          `  ${label}${count}    ${weight}${widths.length === 2 ? '   (configured)' : ''}`,
+          `  ${label}${count}    ${weight}${sameWidths(widths, configured) ? '   (configured)' : ''}`,
         );
       }
       lines.push(
@@ -171,11 +199,11 @@ export async function initCommand(options: InitOptions): Promise<number> {
         '',
       );
     } catch {
-      lines.push(`Could not read the story index in ${defaultConfig.storybookDir}.`, '');
+      lines.push(`Could not read the story index in ${config.storybookDir}.`, '');
     }
   } else {
     lines.push(
-      `No build at ${defaultConfig.storybookDir} yet, so the capture count could not be`,
+      `No build at ${config.storybookDir} yet, so the capture count could not be`,
       'estimated. Build the Storybook and run `diopsis doctor` to see it.',
       '',
     );
@@ -184,7 +212,7 @@ export async function initCommand(options: InitOptions): Promise<number> {
   lines.push(
     'CI recipe:',
     '',
-    ...ciRecipe(defaultConfig.image, defaultConfig.snapshotDir)
+    ...ciRecipe(config.image, config.snapshotDir)
       .trimEnd()
       .split('\n')
       .map((line) => `  ${line}`),
