@@ -111,6 +111,8 @@ describe('serveStatic error handling', () => {
     if (typeof process.getuid === 'function' && process.getuid() === 0) {
       return t.skip('root can read a mode-000 file');
     }
+    // Windows has no read-permission bits for chmod to take away.
+    if (process.platform === 'win32') return t.skip('file modes do not deny reads on Windows');
     const dir = await mkdtemp(path.join(tmpdir(), 'diopsis-server-'));
     errorTemporaries.push(dir);
     // stat succeeds without read permission; opening the stream then fails, which is the
