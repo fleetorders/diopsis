@@ -1,4 +1,5 @@
 import type { CompareOptions } from '../config.ts';
+import type { Region } from '../regions.ts';
 import type { PlannedCapture } from '../runner/generate.ts';
 
 /**
@@ -36,6 +37,15 @@ export interface CaptureResult {
   diffPixels?: number;
   /** Differing pixels as a share of the image. */
   diffRatio?: number;
+  /** Pixel size of the actual render, from its PNG header. */
+  size?: { width: number; height: number };
+  /**
+   * Where the capture changed: rectangles of differing pixels in the diff image, largest
+   * first. Present only when the diff image existed and could be decoded.
+   */
+  regions?: Region[];
+  /** Regions that existed but fell past the cap; present only when some were dropped. */
+  regionsDropped?: number;
   /** Why a capture failed, when it did. */
   error?: string;
   artifacts: CaptureArtifacts;

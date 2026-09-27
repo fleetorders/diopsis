@@ -75,10 +75,31 @@ await shot('b-diff.png', fixture('Long card', 'A second story, unchanged in widt
   '<p style="background:#f0c;height:6px;margin-top:6px"></p>'), 380);
 await shot('c-act.png', fixture('Brand new', 'No baseline exists for this one yet.', 18, ''), 480);
 
+// The one diff that has to read as a diff: a comparator's vocabulary is pure red for a real
+// change on a greyed-out backdrop, and Chromium renders solid integer-positioned blocks as
+// exact pixels — so the geometry below survives into the PNG the assertions run against.
+// The image is tall and wide on purpose: at fit-to-width it still scrolls inside its stage,
+// at actual size it scrolls both ways, which is what the region jumps have to work through.
+const regionBlocks = [
+  { x: 400, y: 400, width: 160, height: 100, pixels: 16000 },
+  { x: 1200, y: 780, width: 60, height: 40, pixels: 2400 },
+];
+const regionDiff = `<!doctype html><meta charset=utf-8><style>body{margin:0}
+#d{position:relative;width:1600px;height:1200px;background:#808080}
+#d div{position:absolute;background:#f00}</style>
+<div id=d><div style="left:400px;top:400px;width:160px;height:100px"></div>
+<div style="left:1200px;top:780px;width:60px;height:40px"></div></div>`;
+await shot('e-base.png', fixture('Region card', 'A story whose change has a place, not just a size.', 18, ''), 1600);
+await shot('e-act.png', fixture('Region card', 'A story whose change has a place, not just a size.', 30, ''), 1600);
+await shot('d-diff.png', regionDiff, 1600);
+
 const capture = (o) => ({
   storyTitle: o.t, storyName: o.n, storyId: o.id, width: o.w, status: o.s,
   snapshotPath: `${o.id}-${o.w}.png`, artifacts: o.a || {},
   ...(o.px != null ? { diffPixels: o.px, diffRatio: o.r } : {}),
+  ...(o.regions ? { regions: o.regions } : {}),
+  ...(o.dropped != null ? { regionsDropped: o.dropped } : {}),
+  ...(o.size ? { size: o.size } : {}),
   ...(o.err ? { error: o.err } : {}),
 });
 
@@ -102,13 +123,19 @@ const captures = [
   capture({ t: 'Header', n: 'Sticky', id: 'header--sticky', w: 1280, s: 'render-failed',
     err: 'StoryRenderError: the story never left its loading state' }),
   capture({ t: 'Footer', n: 'Default', id: 'footer--default', w: 1280, s: 'unchanged' }),
+  // The regions are the two blocks d-diff.png paints, as the reporter would record them;
+  // the dropped count is synthetic, to exercise the "+M" the bar adds.
+  capture({ t: 'Region', n: 'Blocks', id: 'region--blocks', w: 1600, s: 'changed', px: 4600, r: 0.0024,
+    a: { expected: 'shots/e-base.png', actual: 'shots/e-act.png', diff: 'shots/d-diff.png' },
+    regions: regionBlocks, dropped: 3, size: { width: 1600, height: 1200 } }),
 ];
 
 const summary = {
   diopsis: 1, createdAt: '2026-01-01T00:00:00.000Z', platform: 'linux', arch: 'x64',
   mode: 'run', snapshotDir: '__screenshots__',
-  totals: { stories: 5, captures: captures.length, unchanged: 2, changed: 3, new: 1, renderFailed: 1, failed: 0 },
-  changedStories: ['card--brand-new', 'card--default', 'card--long', 'card--sliver', 'header--sticky'],
+  totals: { stories: 6, captures: captures.length, unchanged: 2, changed: 4, new: 1, renderFailed: 1, failed: 0 },
+  changedStories: ['card--brand-new', 'card--default', 'card--long', 'card--sliver',
+    'header--sticky', 'region--blocks'],
   captures,
 };
 
@@ -218,7 +245,7 @@ await page.locator('body').click({ position: { x: 5, y: 300 } });
 await page.keyboard.press('Shift+Digit2');
 await page.waitForTimeout(150);
 check('shift and a number set every capture',
-  (await pressed('main')).every((m) => m === 'Side by side') && (await pressed('main')).length === 3);
+  (await pressed('main')).every((m) => m === 'Side by side') && (await pressed('main')).length === 4);
 check('the page-wide control shows the choice',
   (await page.locator('#viewall button[aria-pressed=true]').textContent()) === 'Side by side');
 check('a capture that cannot compare keeps its one image',
@@ -237,7 +264,7 @@ check('a page-wide choice overrides every capture again',
 await page.locator('.chip[data-key=changed]').click();
 await page.waitForTimeout(150);
 check('a capture shown again keeps the page-wide mode',
-  (await pressed('main')).length === 3 && (await pressed('main')).every((m) => m === 'Swipe'));
+  (await pressed('main')).length === 4 && (await pressed('main')).every((m) => m === 'Swipe'));
 await page.locator('#viewall').getByRole('button', { name: 'Overlay' }).click();
 await page.locator('.chip[data-key=review]').click();
 await page.waitForTimeout(150);
@@ -276,9 +303,9 @@ check('ArrowDown is left to scroll the page',
 // The contact sheet above the list — the overview D-020 deferred. One tile per capture
 // needing review, in the list's own order and under the same filter and search.
 check('a tile per capture needing review',
-  (await page.locator('.tile:not([hidden])').count()) === 5);
+  (await page.locator('.tile:not([hidden])').count()) === 6);
 check('the overview header counts its tiles',
-  (await page.locator('#ov-toggle').textContent()) === 'Overview · 5');
+  (await page.locator('#ov-toggle').textContent()) === 'Overview · 6');
 check('a new capture tiles as its one render',
   (await page.locator('.tile[data-key="card--brand-new@480"] img').count()) === 1);
 check('a tile reuses the embedded image, not a second copy',
@@ -365,6 +392,143 @@ check('a review capture with no images still says so',
   (await page.locator('#story-header--sticky').textContent()).includes('No image artifacts'));
 check('a quantified change is not dressed up as an error',
   !(await page.locator('main').textContent()).includes('toHaveScreenshot'));
+await page.close();
+
+// Changed regions: where a capture changed, not only how much. The boxes over the overlay,
+// the n/N jumps between them, and the sheet's tile cropped to the largest region.
+page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+page.on('pageerror', (e) => crashes.push(String(e)));
+page.on('console', (m) => { if (m.type() === 'error') crashes.push(m.text()); });
+await page.goto(url);
+await page.waitForFunction(() => {
+  const i = document.querySelector('#story-region--blocks .diffwrap img');
+  return i && i.complete && i.naturalWidth > 0;
+});
+
+const regionBar = await page.locator('#story-region--blocks .capture .bar').first().textContent();
+check('the bar counts the regions, with the dropped ones summed',
+  regionBar.includes('2 regions') && regionBar.includes('+3'));
+check('the overlay outlines every region',
+  (await page.locator('#story-region--blocks .stage .region').count()) === 2);
+
+// A box's placing is checked against the region it stands for, as shares of the image's
+// natural size — the same arithmetic at every scale, which is the point of the percentages.
+const boxGeometry = () => page.locator('#story-region--blocks .diffwrap').evaluate((wrap) => {
+  const img = wrap.querySelector('img');
+  const ir = img.getBoundingClientRect();
+  const boxes = [...wrap.querySelectorAll('.region')].map((b) => {
+    const r = b.getBoundingClientRect();
+    return {
+      x: (r.x - ir.x) / ir.width, y: (r.y - ir.y) / ir.height,
+      width: r.width / ir.width, height: r.height / ir.height,
+    };
+  });
+  return { boxes, natural: { width: img.naturalWidth, height: img.naturalHeight } };
+});
+const onTheRegion = (geo) => geo.boxes.length === regionBlocks.length &&
+  geo.boxes.every((b, i) => {
+    const r = regionBlocks[i];
+    return Math.abs(b.x - r.x / 1600) < 0.01 && Math.abs(b.y - r.y / 1200) < 0.01 &&
+      Math.abs(b.width - r.width / 1600) < 0.01 && Math.abs(b.height - r.height / 1200) < 0.01;
+  });
+const geoFit = await boxGeometry();
+check('the fixture image really is the size the data claims',
+  geoFit.natural.width === 1600 && geoFit.natural.height === 1200);
+check('each box sits on its region at fit-to-width', onTheRegion(geoFit));
+
+// The jumps. The capture is left in Side by side first, so n has to switch it back.
+const flashState = () => page.locator('#story-region--blocks').evaluate((story) => {
+  const stage = story.querySelector('.capture.current .stage');
+  const box = story.querySelector('.region.flash');
+  if (!stage || !box) return { at: -1, visible: false };
+  const sr = stage.getBoundingClientRect();
+  const br = box.getBoundingClientRect();
+  return {
+    at: Number(box.dataset.i),
+    visible: br.left >= sr.left - 2 && br.right <= sr.right + 2 &&
+      br.top >= sr.top - 2 && br.bottom <= sr.bottom + 2,
+  };
+});
+const flashAt = (i) => page.waitForFunction((want) => {
+  const b = document.querySelector('#story-region--blocks .region.flash');
+  return b && b.dataset.i === String(want);
+}, i);
+await page.locator('.tile[data-key="region--blocks@1600"]').click();
+await page.locator('body').click({ position: { x: 5, y: 300 } });
+await page.keyboard.press('2');
+await page.waitForTimeout(150);
+check('the boxes belong to the overlay, not the capture',
+  (await page.locator('#story-region--blocks .stage .region').count()) === 0 &&
+  (await page.locator('#story-region--blocks .capture.current .modes button[aria-pressed=true]')
+    .textContent()) === 'Side by side');
+await page.keyboard.press('n');
+await flashAt(0);
+const firstJump = await flashState();
+check('n switches the capture to the overlay and centres the first region',
+  firstJump.at === 0 && firstJump.visible);
+await page.keyboard.press('n');
+await flashAt(1);
+check('n again reaches the next region',
+  (await flashState()).at === 1 && (await flashState()).visible);
+await page.keyboard.press('N');
+await flashAt(0);
+check('N goes back to the previous region', (await flashState()).at === 0);
+await page.waitForTimeout(950);
+check('the emphasis hands the box back after a moment',
+  (await page.locator('#story-region--blocks .region.flash').count()) === 0);
+
+// The same jumps with the stage at actual size: the boxes are placed in percentages, so
+// they must stay on their pixels when the image stops being scaled down.
+await page.locator('#story-region--blocks .capture.current .stage').click({ position: { x: 30, y: 30 } });
+check('the stage shows actual pixels',
+  (await page.locator('#story-region--blocks .stage.actual').count()) === 1);
+await page.keyboard.press('n');
+await flashAt(1);
+const actualJump = await flashState();
+check('the jump works at actual size too', actualJump.at === 1 && actualJump.visible);
+check('each box still sits on its region at actual size', onTheRegion(await boxGeometry()));
+await page.close();
+
+// The sheet's crop: a changed capture with regions shows its largest region, not the top
+// of the whole image — by width-scaled CSS, so no second image is embedded.
+page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+await page.goto(url);
+await page.waitForTimeout(250);
+const cropped = await page.locator('.tile[data-key="region--blocks@1600"] .thumb').evaluate((t) => {
+  const img = t.querySelector('img');
+  return { tile: t.clientWidth, img: img.clientWidth };
+});
+check('a tile with regions crops to the largest one, scaled past the tile',
+  cropped.tile > 0 && cropped.img > cropped.tile * 3);
+check('a tile without regions keeps the whole-image view',
+  await page.locator('.tile[data-key="card--long@380"] .thumb').evaluate(
+    (t) => t.querySelector('img').clientWidth === t.clientWidth));
+await page.close();
+
+// A diff that cannot be decoded — the reporter records no regions for such a capture, and
+// the report has to render anyway: the boxes are an aid, never a load-bearing feature.
+await writeFile(path.join(work, 'not-a-png.txt'), 'this file is not a PNG, whatever its name says');
+const brokenCapture = capture({ t: 'Broken', n: 'Undecodable', id: 'broken--undecodable', w: 380,
+  s: 'changed', px: 512, r: 0.002,
+  a: { expected: 'shots/b-base.png', actual: 'shots/b-act.png', diff: 'shots/not-a-png.txt' } });
+const brokenSummary = {
+  ...summary,
+  captures: [captures[0], brokenCapture],
+  totals: { ...summary.totals, stories: 2, captures: 2, unchanged: 0, changed: 2, new: 0, renderFailed: 0 },
+  changedStories: ['broken--undecodable', 'card--default'],
+};
+await writeFile(path.join(work, 'broken.html'), await renderReport(brokenSummary, work));
+page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+page.on('pageerror', (e) => crashes.push(String(e)));
+page.on('console', (m) => { if (m.type() === 'error') crashes.push(m.text()); });
+await page.goto('file://' + path.join(work, 'broken.html'));
+await page.waitForTimeout(250);
+check('a run with an undecodable diff still renders the report',
+  (await page.locator('#meta').textContent()).includes('captures across'));
+check('an undecodable diff reports no regions',
+  !(await page.locator('#story-broken--undecodable').textContent()).includes('region'));
+check('no boxes are drawn for it',
+  (await page.locator('#story-broken--undecodable .region').count()) === 0);
 await page.close();
 
 // A link into the report lands even when the active filter excludes its target.

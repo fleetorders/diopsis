@@ -14,8 +14,6 @@ function pngSizeOf(bytes: Buffer): { width: number; height: number } | undefined
 
 interface EmbeddedCapture extends CaptureResult {
   images: { expected?: string; actual?: string; diff?: string };
-  /** Pixel size of the actual render, so the report can state a share Playwright rounded away. */
-  size?: { width: number; height: number };
   /** Set when artifacts exist on disk but stayed out to keep the report inside its budget. */
   truncated?: true;
 }
@@ -43,7 +41,9 @@ async function embed(
     }
 
     const images: EmbeddedCapture['images'] = {};
-    let size: EmbeddedCapture['size'];
+    // The summary carries the size once the reporter has read it; the header read below is
+    // the fallback for summaries that did not come from a run, so "size" has one meaning.
+    let size = capture.size;
     let truncated = false;
     // A new capture's "expected" is the baseline the comparator just wrote from this very
     // render — the same bytes as the actual — and no diff exists, because nothing was
@@ -69,7 +69,7 @@ async function embed(
         truncated = true;
         continue;
       }
-      if (kind === 'actual') size = pngSizeOf(bytes);
+      if (kind === 'actual' && !size) size = pngSizeOf(bytes);
       images[kind] = `data:image/png;base64,${bytes.toString('base64')}`;
       spent += cost;
     }
@@ -196,6 +196,9 @@ main { padding: 14px 18px 56px; }
 .thumb { display: block; height: 160px; overflow: hidden; border-radius: 5px;
   background: var(--matte-alt); }
 .thumb img { display: block; width: 100%; height: auto; }
+/* A changed capture with regions crops its tile to the largest one: inline width and
+   offsets make the image deliberately wider than the tile and shifted so the region
+   fills the frame, and the thumb's overflow clips the rest. */
 .thumb.text { display: flex; align-items: center; justify-content: center; }
 .tile-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .tile-title { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden;
@@ -287,6 +290,18 @@ main { padding: 14px 18px 56px; }
 .overlaywrap, .swipe { display: grid; line-height: 0; }
 .overlaywrap > img, .swipe > img { grid-area: 1 / 1; place-self: start; }
 .swipe > img.top { clip-path: inset(0 50% 0 0); }
+/* The overlay's region boxes sit on the diff, placed in percentages of its natural size
+   so a box stays on its pixels at fit and at actual size alike. Outlined, never filled —
+   the diff underneath is the evidence. The border is the status colour because every box
+   is a change; the accent joins only to mark the one a jump selected (D-020). */
+.diffwrap { position: relative; line-height: 0; width: fit-content; max-width: 100%; }
+/* The box layer is the wrapper's box, so the wrapper needs the same release to the full
+   image the image itself gets at actual size, or the percentages resolve against a
+   clamped width and every box slides left of its region. */
+.stage.actual .diffwrap { max-width: none; }
+.regions { position: absolute; inset: 0; pointer-events: none; }
+.region { position: absolute; border: 2px solid var(--changed); border-radius: 3px; }
+.region.flash { border-color: var(--accent); }
 /* The slider tracks the width of the image it drives, not the width of the row. */
 .stagewrap { width: fit-content; max-width: 100%; margin: 0 auto; }
 input[type=range] { display: block; width: 100%; margin-top: 9px; accent-color: var(--accent); }
@@ -311,8 +326,8 @@ button.copy:hover { background: var(--raised); }
     <h1>Diopsis</h1>
     <div class="meta" id="meta"></div>
     <div class="keys"><b>/</b> search &middot; <b>j k</b> move &middot; <b>1&ndash;4</b> mode
-      &middot; <b>&#8679;1&ndash;4</b> all &middot; <b>r</b> reviewed &middot; <b>o</b>
-      overview</div>
+      &middot; <b>&#8679;1&ndash;4</b> all &middot; <b>n N</b> region &middot; <b>r</b>
+      reviewed &middot; <b>o</b> overview</div>
   </div>
   <div class="tools">
     <div class="totals" id="filters"></div>
@@ -465,7 +480,7 @@ function stage(capture) {
     box.appendChild(picture(img.actual || img.expected, 'This run'));
     fig.append(cap, box);
     el.appendChild(fig);
-    return { el, modes: null, setMode: null, nudge: null };
+    return { el, modes: null, setMode: null, nudge: null, jumpRegion: null };
   }
   // The highlight overlay is the default: it answers "what changed?" without any interaction.
   const modes = [];
@@ -482,7 +497,7 @@ function stage(capture) {
       el.className = 'note';
       el.textContent = 'No image artifacts for this capture.';
     }
-    return { el, modes: null, setMode: null, nudge: null };
+    return { el, modes: null, setMode: null, nudge: null, jumpRegion: null };
   }
 
   const body = document.createElement('div');
@@ -508,6 +523,62 @@ function stage(capture) {
     return box;
   }
 
+  /* Where this capture changed. Each box is grown past its region on every side, so the
+     border frames the change without sitting on the pixels that changed, and percentage
+     placing keeps it on those pixels at fit and at actual size alike — the wrapper is
+     exactly the image's box at either scale. */
+  const regions = capture.regions || [];
+  let regionAt = -1;
+  let flashTimer = 0;
+  function drawRegions(wrap) {
+    if (!regions.length || !capture.size) return;
+    const w = capture.size.width, h = capture.size.height;
+    const layer = document.createElement('div');
+    layer.className = 'regions';
+    regions.forEach((r, i) => {
+      const b = document.createElement('div');
+      b.className = 'region';
+      b.dataset.i = String(i);
+      b.style.left = 'calc(' + (r.x / w * 100) + '% - 2px)';
+      b.style.top = 'calc(' + (r.y / h * 100) + '% - 2px)';
+      b.style.width = 'calc(' + (r.width / w * 100) + '% + 4px)';
+      b.style.height = 'calc(' + (r.height / h * 100) + '% + 4px)';
+      layer.appendChild(b);
+    });
+    wrap.appendChild(layer);
+  }
+  /* n/N walk the regions. The jump is the reader selecting a box: the capture switches to
+     the overlay, the stage scrolls the box to its centre, and the accent outlines it
+     briefly before the status colour takes it back. */
+  function jumpRegion(step) {
+    if (!img.diff || !regions.length || !capture.size) return;
+    regionAt = regionAt < 0
+      ? (step > 0 ? 0 : regions.length - 1)
+      : (regionAt + step + regions.length) % regions.length;
+    if (current !== 'Overlay') select('Overlay');
+    const stageEl = body.querySelector('.stage');
+    const image = body.querySelector('.diffwrap img');
+    const target = body.querySelector('.region[data-i="' + regionAt + '"]');
+    if (!stageEl || !image || !target) return;
+    const place = () => {
+      if (!target.isConnected) return;
+      el.scrollIntoView({ block: 'nearest' });
+      const sr = stageEl.getBoundingClientRect();
+      const br = target.getBoundingClientRect();
+      stageEl.scrollLeft += br.left + br.width / 2 - sr.left - sr.width / 2;
+      stageEl.scrollTop += br.top + br.height / 2 - sr.top - sr.height / 2;
+      const prev = body.querySelector('.region.flash');
+      if (prev) prev.classList.remove('flash');
+      target.classList.add('flash');
+      clearTimeout(flashTimer);
+      flashTimer = setTimeout(() => target.classList.remove('flash'), 800);
+    };
+    // Centring needs the image laid out at its intrinsic size; before that its rects are
+    // zero and the scroll would aim at nothing.
+    if (image.complete && image.naturalWidth) place();
+    else image.decode().then(place, () => {});
+  }
+
   function draw() {
     body.innerHTML = '';
     slider = null;
@@ -515,8 +586,16 @@ function stage(capture) {
       const box = document.createElement('div');
       box.className = 'stage';
       zoomable(box);
-      box.appendChild(picture(current === 'Overlay' ? img.diff : img.actual,
-        current === 'Overlay' ? 'Difference highlight' : 'This run'));
+      if (current === 'Overlay') {
+        // The boxes belong to the diff image; they are drawn over it and nothing else.
+        const wrap = document.createElement('div');
+        wrap.className = 'diffwrap';
+        wrap.appendChild(picture(img.diff, 'Difference highlight'));
+        drawRegions(wrap);
+        box.appendChild(wrap);
+      } else {
+        box.appendChild(picture(img.actual, 'This run'));
+      }
       body.appendChild(box);
     } else if (current === 'Side by side') {
       const pair = document.createElement('div');
@@ -593,6 +672,7 @@ function stage(capture) {
       slider.value = String(Math.min(100, Math.max(0, Number(slider.value) + step)));
       slider.oninput();
     },
+    jumpRegion,
   };
 }
 
@@ -846,6 +926,20 @@ function buildAll() {
         bar.appendChild(meter);
       }
 
+      // Where, to go with how much: the regions the change broke into, with the ones past
+      // the cap summed as "+M" rather than each listed.
+      if (c.regions && c.regions.length) {
+        const count = document.createElement('span');
+        count.className = 'w';
+        count.textContent = c.regions.length +
+          (c.regions.length === 1 ? ' region' : ' regions') +
+          (c.regionsDropped ? ' +' + c.regionsDropped : '');
+        if (c.regionsDropped) {
+          count.title = c.regionsDropped + ' smaller regions are not shown';
+        }
+        bar.appendChild(count);
+      }
+
       // The story row already carries this status; repeating it is only worth the space when
       // this capture disagrees with it.
       if (c.status !== worst) {
@@ -923,6 +1017,18 @@ function buildAll() {
 /* One tile per capture needing review, in the list's own order — worst story first, largest
    change first. Each thumbnail reuses a data URI the report already carries: the sheet
    multiplies what there is to see, not the size of the file. */
+
+/** Padding around a tile's crop region, in image pixels. */
+const TILE_CROP_PAD = 24;
+/* The window a cropped tile shows: the region padded and clamped to the image. Only the
+   horizontal extent is returned — the tile scales by width and clips what hangs below. */
+function tileCrop(region, size) {
+  const x = Math.max(0, region.x - TILE_CROP_PAD);
+  const y = Math.max(0, region.y - TILE_CROP_PAD);
+  const width = Math.min(size.width, region.x + region.width + TILE_CROP_PAD) - x;
+  return { x, y, width };
+}
+
 function buildOverview() {
   for (const entry of entries) {
     const c = entry.capture;
@@ -946,6 +1052,20 @@ function buildOverview() {
       i.alt = (c.status === 'changed' ? 'Difference thumbnail of ' : 'First render of ') +
         c.storyTitle + ' › ' + c.storyName + ' at ' + c.width + 'px';
       i.src = src;
+      // A change with known regions is shown at the change: the tile crops to the largest
+      // region and scales it by width to the tile, answering "where" without a second
+      // embedded image. Every offset is a percentage of the tile's width — margins resolve
+      // against the container's width on both axes, so the vertical offset divides by the
+      // crop's width too.
+      const crop = c.status === 'changed' && c.regions && c.regions.length && c.size
+        ? tileCrop(c.regions[0], c.size)
+        : null;
+      if (crop) {
+        thumb.classList.add('crop');
+        i.style.width = (c.size.width / crop.width * 100) + '%';
+        i.style.marginLeft = (-crop.x / crop.width * 100) + '%';
+        i.style.marginTop = (-crop.y / crop.width * 100) + '%';
+      }
       thumb.appendChild(i);
     } else {
       thumb.classList.add('text');
@@ -1032,6 +1152,11 @@ document.addEventListener('keydown', (e) => {
   if (cursor < 0 || !flat[cursor]) return;
   const entry = flat[cursor];
   if (e.key === 'r') { e.preventDefault(); toggleReviewed(entry); return; }
+  if (e.key === 'n' || e.key === 'N') {
+    e.preventDefault();
+    if (entry.built && entry.built.jumpRegion) entry.built.jumpRegion(e.key === 'n' ? 1 : -1);
+    return;
+  }
   if (e.key >= '1' && e.key <= '4') {
     e.preventDefault();
     if (entry.built && entry.built.setMode) entry.built.setMode(Number(e.key) - 1);

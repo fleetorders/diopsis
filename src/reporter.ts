@@ -10,6 +10,8 @@ import type {
   TestResult,
 } from '@playwright/test/reporter';
 
+import { decodePng, pngSize } from './png.ts';
+import { findRegions } from './regions.ts';
 import { renderReport } from './report/html.ts';
 import {
   changedStoriesOf,
@@ -65,6 +67,12 @@ export function artifactsOf(
 /** Playwright colours its error messages; a JSON file and an HTML report want neither. */
 const ANSI = /\u001b\[[0-9;]*m/g;
 
+/**
+ * Regions kept per capture: enough to navigate and to crop a tile to, few enough that a
+ * heavily changed capture still reads as a handful of places rather than a texture.
+ */
+const MAX_REGIONS = 20;
+
 export function stripAnsi(value: string): string {
   return value.replace(ANSI, '');
 }
@@ -106,6 +114,8 @@ function notRunCapture(planned: PlannedCapture): CaptureResult {
 export default class DiopsisReporter implements Reporter {
   private readonly options: DiopsisReporterOptions;
   private readonly results = new Map<string, CaptureResult>();
+  /** Region passes in flight; onEnd awaits every one before writing the summary. */
+  private readonly regionWork: Promise<void>[] = [];
   private plan: RunPlan | undefined;
   private planByTitle: Map<string, PlannedCapture> | undefined;
 
@@ -159,7 +169,8 @@ export default class DiopsisReporter implements Reporter {
       baseline: baselineOf(result),
     });
 
-    this.results.set(planned.title, {
+    const artifacts = this.artifactsFor(planned.snapshotPath, result);
+    const capture: CaptureResult = {
       storyId: planned.storyId,
       storyTitle: planned.storyTitle,
       storyName: planned.storyName,
@@ -172,11 +183,53 @@ export default class DiopsisReporter implements Reporter {
       ...(verdict.status === 'unchanged' || !errorText
         ? {}
         : { error: errorText.split('\n').slice(0, 4).join('\n') }),
-      artifacts: this.artifactsFor(planned.snapshotPath, result),
-    });
+      artifacts,
+    };
+    this.results.set(planned.title, capture);
+
+    // Where the capture changed is asked for after the run, so the work starts now, off
+    // this callback's critical path, and fills the result in as captures continue.
+    if (verdict.status === 'changed' && artifacts.diff) {
+      const actual = artifacts.actual
+        ? path.resolve(this.options.outputDir, artifacts.actual)
+        : undefined;
+      this.regionWork.push(
+        this.locateRegions(capture, path.resolve(this.options.outputDir, artifacts.diff), actual),
+      );
+    }
+  }
+
+  /**
+   * Decode a changed capture's diff and record where it changed, plus the pixel size of
+   * the actual render. The pass closes over the result object rather than looking it up
+   * by title, so a retried capture's earlier pass can only ever touch an orphaned result.
+   * Anything unreadable — a missing file, a format the decoder rejects — leaves the
+   * capture without regions: the run's verdicts never depended on this pass.
+   */
+  private async locateRegions(capture: CaptureResult, diffPath: string, actualPath?: string): Promise<void> {
+    try {
+      const [diff, actual] = await Promise.all([
+        readFile(diffPath),
+        actualPath ? readFile(actualPath) : undefined,
+      ]);
+      // The diff is what the boxes are drawn over, so its decoded dimensions are the
+      // coordinates regions live in; the actual render is the same size whenever a
+      // diff exists, and is what `size` documents.
+      const image = decodePng(diff);
+      const { regions, dropped } = findRegions(image.rgba, image.width, image.height, {
+        max: MAX_REGIONS,
+      });
+      capture.size = actual ? pngSize(actual) : { width: image.width, height: image.height };
+      if (regions.length > 0) capture.regions = regions;
+      if (dropped > 0) capture.regionsDropped = dropped;
+    } catch {
+      // A diff that cannot be decoded is not a verdict about the capture.
+    }
   }
 
   async onEnd(runResult: FullResult): Promise<void> {
+    // Every region pass must land before the summary freezes the results it mutates.
+    await Promise.all(this.regionWork);
     const interrupted = runResult.status === 'interrupted';
     // Report in plan order, so the list is stable between runs rather than finish-order.
     // A capture the run never reached is still listed: an interrupted run must not

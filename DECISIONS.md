@@ -745,3 +745,24 @@ A story that sets only a pixel count is no longer bounded by the configured rati
 point; `doctor` is where that is seen.
 
 **Scope:** repo.
+
+## D-030 — 2026-09-27 — The report says where a capture changed
+
+**Decision:** For every changed capture the reporter decodes the comparator's diff image,
+groups its changed pixels into regions — connected pixels, merged when their boxes lie within
+8 px — and records up to 20 of them, largest first, in `summary.json`. The report outlines each
+region over the overlay, `n` and `N` step through them, and a contact-sheet tile crops to its
+capture's largest region. Decoding runs while later captures are still being taken, and a diff
+that cannot be decoded leaves the capture without regions rather than failing the run. The
+decoder and the region finder are part of Diopsis, with no dependency.
+
+**Why:** a pixel count says how much changed and nothing about where. On a tall or wide
+capture the reader had to scan the whole image for the red, and a thumbnail of a 1280-wide
+render showed the change as a smudge. Regions turn "4,864 px differ" into "these three places",
+which is the question a reviewer is actually asking.
+
+**Consequences:** region outlines use the status colour, and the one being stepped to flashes
+in the accent, keeping D-020's rule that colour means one thing at a time. Only pure-red diff
+pixels count; anti-aliasing differences, which the comparator marks yellow, are not regions.
+
+**Scope:** repo.

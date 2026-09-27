@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 import type { FullConfig, FullResult, TestCase, TestResult } from '@playwright/test/reporter';
+import { deflateSync } from 'node:zlib';
 
 import { resolveConfig } from '../src/config.ts';
 import { resolveMatrix } from '../src/matrix.ts';
@@ -82,6 +83,107 @@ async function withCapturedStdout<T>(run: () => Promise<T>): Promise<{ value: T;
   } finally {
     process.stdout.write = write;
   }
+}
+
+/*
+ * A just-enough PNG encoder for the region tests: filter-0 scanlines of opaque pixels.
+ * The png suite's encoder is deliberately richer; this one stays minimal and private so
+ * the two cannot share a mistake.
+ */
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+function crc32(bytes: Buffer): number {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit++) {
+      crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type: string, data: Buffer): Buffer {
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length);
+  const body = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(body));
+  return Buffer.concat([length, body, crc]);
+}
+
+function pngOf(width: number, height: number, rgba: Uint8Array): Buffer {
+  const stride = width * 4 + 1;
+  const raw = Buffer.alloc(height * stride); // one filter byte (0) per scanline
+  for (let y = 0; y < height; y++) {
+    Buffer.from(rgba.buffer, rgba.byteOffset + y * width * 4, width * 4).copy(raw, y * stride + 1);
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 6; // truecolour with alpha
+  return Buffer.concat([
+    PNG_SIGNATURE,
+    pngChunk('IHDR', ihdr),
+    pngChunk('IDAT', deflateSync(raw)),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+/** A diff-shaped image: the greyed-out baseline with pure-red blocks painted on it. */
+function diffPng(
+  width: number,
+  height: number,
+  blocks: ReadonlyArray<readonly [number, number, number, number]> = [],
+): Buffer {
+  const rgba = new Uint8Array(width * height * 4);
+  for (let i = 0; i < rgba.length; i += 4) {
+    rgba[i] = 128;
+    rgba[i + 1] = 128;
+    rgba[i + 2] = 128;
+    rgba[i + 3] = 255;
+  }
+  for (const [x, y, w, h] of blocks) {
+    for (let dy = 0; dy < h; dy++) {
+      for (let dx = 0; dx < w; dx++) {
+        const i = ((y + dy) * width + (x + dx)) * 4;
+        rgba[i] = 255;
+        rgba[i + 1] = 0;
+        rgba[i + 2] = 0;
+      }
+    }
+  }
+  return pngOf(width, height, rgba);
+}
+
+/** One changed capture whose artifacts are real files, run through to the written summary. */
+async function runChanged(
+  reporter: DiopsisReporter,
+  outputDir: string,
+  actual: Buffer,
+  diff: Buffer,
+): Promise<RunSummary> {
+  const actualPath = path.join(outputDir, 'a--one-320-actual.png');
+  const diffPath = path.join(outputDir, 'a--one-320-diff.png');
+  await writeFile(actualPath, actual);
+  await writeFile(diffPath, diff);
+  await withCapturedStdout(async () => {
+    reporter.onTestEnd(
+      testTitled('a--one @320'),
+      result({
+        status: 'failed',
+        errors: [{ message: '12 pixels (ratio 0.06 of all image pixels) are different.' }],
+        annotations: [{ type: 'diopsis-baseline', description: 'present' }],
+        attachments: [
+          { name: 'actual-image', contentType: 'image/png', path: actualPath },
+          { name: 'diff-image', contentType: 'image/png', path: diffPath },
+        ],
+      }),
+    );
+    await reporter.onEnd({ status: 'failed' } as FullResult);
+  });
+  return summaryAt(outputDir);
 }
 
 describe('DiopsisReporter', () => {
@@ -203,5 +305,57 @@ describe('DiopsisReporter per-story tolerance', () => {
       summary.captures.find((c) => c.storyId === 'b--two' && c.width === 320)?.tolerance,
       undefined,
     );
+  });
+});
+
+describe('DiopsisReporter changed regions', () => {
+  it('locates the regions of a changed capture and the size of its actual image', async () => {
+    const { reporter, outputDir } = await setup();
+    const summary = await runChanged(
+      reporter,
+      outputDir,
+      diffPng(20, 10),
+      diffPng(20, 10, [[4, 3, 6, 2]]),
+    );
+
+    const changed = summary.captures.find((c) => c.storyId === 'a--one' && c.width === 320);
+    assert.equal(changed?.status, 'changed');
+    assert.deepEqual(changed?.regions, [{ x: 4, y: 3, width: 6, height: 2, pixels: 12 }]);
+    assert.deepEqual(changed?.size, { width: 20, height: 10 });
+    assert.equal(changed?.regionsDropped, undefined);
+  });
+
+  it('records no regions when the diff cannot be decoded, and the run still completes', async () => {
+    const { reporter, outputDir } = await setup();
+    const summary = await runChanged(
+      reporter,
+      outputDir,
+      diffPng(20, 10),
+      Buffer.from('this file is not a PNG, whatever its name says', 'utf8'),
+    );
+
+    const changed = summary.captures.find((c) => c.storyId === 'a--one' && c.width === 320);
+    assert.equal(changed?.status, 'changed');
+    assert.equal(changed?.regions, undefined);
+    assert.equal(changed?.size, undefined);
+    assert.equal(changed?.regionsDropped, undefined);
+  });
+
+  it('caps the recorded regions at 20 and counts the rest as dropped', async () => {
+    // Twenty-five single-pixel dots on a 5x5 grid, 20px apart — beyond the merge gap, so
+    // each is its own region and the cap is what drops the last five.
+    const dots: Array<readonly [number, number, number, number]> = [];
+    for (let gy = 0; gy < 5; gy++) {
+      for (let gx = 0; gx < 5; gx++) dots.push([5 + gx * 20, 5 + gy * 20, 1, 1]);
+    }
+    const { reporter, outputDir } = await setup();
+    const summary = await runChanged(reporter, outputDir, diffPng(100, 100), diffPng(100, 100, dots));
+
+    const changed = summary.captures.find((c) => c.storyId === 'a--one' && c.width === 320);
+    assert.equal(changed?.regions?.length, 20);
+    assert.equal(changed?.regionsDropped, 5);
+    // Ties on pixel count order top-down then left-to-right, so the first rows survive.
+    assert.deepEqual(changed?.regions?.[0], { x: 5, y: 5, width: 1, height: 1, pixels: 1 });
+    assert.deepEqual(changed?.regions?.[19], { x: 85, y: 65, width: 1, height: 1, pixels: 1 });
   });
 });

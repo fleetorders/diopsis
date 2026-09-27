@@ -211,7 +211,8 @@ the masked element's own bounding box moves.
 is one self-contained HTML file, so it also opens straight from a CI artifact with nothing
 beside it, and it follows whichever theme your system is set to. Every capture offers the same
 pair four ways: **diff-highlight overlay** — the default, because it answers "what changed?"
-with no interaction — plus side-by-side, swipe, and onion-skin. The toolbar switches every
+with no interaction — plus side-by-side, swipe, and onion-skin. In the overlay each changed
+region is outlined, and `n` and `N` step through them. The toolbar switches every
 capture at once, and each capture can still be switched on its own. Click a capture to stop fitting
 it to the page and see it at actual size, which is the only way a one-pixel shift survives
 being looked at. Unchanged stories stay collapsed, the largest change leads, and each changed
@@ -380,8 +381,10 @@ dashboard, or an agent wiring Diopsis into something else reads this, not the te
 | `captures` | object[] | **Every capture the run planned**, in plan order — not only the interesting ones |
 
 Per capture: `status` is one of `unchanged`, `changed`, `new`, `render-failed`, `failed`.
-`diffPixels` and `diffRatio` appear only when the comparator reported them, `error` only when
-something failed, and `artifacts` holds whichever of `expected`, `actual` and `diff` exist, as
+`diffPixels` and `diffRatio` appear only when the comparator reported them. A changed capture
+also carries `regions` — up to 20 boxes `{ x, y, width, height, pixels }` in image pixels,
+largest first, with `regionsDropped` counting any beyond that — and `size`, the dimensions of
+its render. `error` appears only when something failed, and `artifacts` holds whichever of `expected`, `actual` and `diff` exist, as
 paths **relative to `outputDir`** so a run stays portable when the directory is moved or
 downloaded from CI.
 
