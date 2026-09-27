@@ -180,6 +180,38 @@ check('a changed capture still shows both renders',
 check('a changed capture still offers the comparison modes',
   (await changedStory.locator('.modes button').count()) === 4);
 
+// One comparison mode for every capture at once, with each capture still free to differ.
+const pressed = (scope) => page.locator(scope + ' .modes button[aria-pressed=true]').allTextContents();
+check('the page-wide mode control is offered', await page.locator('#viewall').isVisible());
+await page.locator('body').click({ position: { x: 5, y: 300 } });
+await page.keyboard.press('Shift+Digit2');
+await page.waitForTimeout(150);
+check('shift and a number set every capture',
+  (await pressed('main')).every((m) => m === 'Side by side') && (await pressed('main')).length === 2);
+check('the page-wide control shows the choice',
+  (await page.locator('#viewall button[aria-pressed=true]').textContent()) === 'Side by side');
+check('a capture that cannot compare keeps its one image',
+  (await newStory.locator('img').count()) === 1);
+await page.locator('#story-card--long').getByRole('button', { name: 'Onion-skin' }).click();
+await page.waitForTimeout(150);
+check('a capture can still differ from the page-wide choice',
+  (await pressed('#story-card--long')).join() === 'Onion-skin' &&
+  (await pressed('#story-card--default')).join() === 'Side by side');
+await page.locator('#viewall').getByRole('button', { name: 'Swipe' }).click();
+await page.waitForTimeout(150);
+check('a page-wide choice overrides every capture again',
+  (await pressed('main')).every((m) => m === 'Swipe'));
+// Captures built after the choice — here, rebuilt by a filter change — open in it too.
+await page.locator('.chip[data-key=changed]').click();
+await page.waitForTimeout(150);
+check('a capture drawn later opens in the page-wide mode',
+  (await pressed('main')).length === 2 && (await pressed('main')).every((m) => m === 'Swipe'));
+await page.locator('#viewall').getByRole('button', { name: 'Overlay' }).click();
+await page.locator('.chip[data-key=review]').click();
+await page.waitForTimeout(150);
+await page.locator('body').click({ position: { x: 5, y: 300 } });
+await page.keyboard.press('j');
+
 // Triage, and its survival across a reload.
 await page.keyboard.press('r');
 await page.waitForTimeout(100);

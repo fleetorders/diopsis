@@ -180,12 +180,18 @@ main { padding: 14px 18px 56px; }
   overflow: hidden; }
 .meter i { display: block; height: 100%; background: var(--changed); }
 .modes { display: flex; gap: 4px; margin-left: auto; }
-.modes button, .mark { background: transparent; border: 1px solid var(--line);
+/* One control sets the comparison for every capture on the page; each capture's own buttons
+   still override just that capture until the next page-wide choice. */
+.viewall { display: flex; gap: 4px; align-items: center; margin-left: auto; }
+.viewall > span { color: var(--muted); font-size: 12px; margin-right: 2px; }
+.viewall[hidden] { display: none; }
+.modes button, .viewall button, .mark { background: transparent; border: 1px solid var(--line);
   color: var(--muted); border-radius: 5px; padding: 3px 9px; font: inherit; font-size: 12px;
   cursor: pointer; }
-.modes button[aria-pressed="true"], .mark[aria-pressed="true"] { border-color: var(--accent);
+.modes button[aria-pressed="true"], .viewall button[aria-pressed="true"],
+.mark[aria-pressed="true"] { border-color: var(--accent);
   color: var(--accent); }
-.modes button:hover, .mark:hover { background: var(--raised); }
+.modes button:hover, .viewall button:hover, .mark:hover { background: var(--raised); }
 
 /* The stage shrink-wraps its image: a narrow capture must not sit in a full-width void.
    Its backdrop is a neutral chequerboard so a transparent region reads as transparent
@@ -244,7 +250,7 @@ button.copy:hover { background: var(--raised); }
     <h1>Diopsis</h1>
     <div class="meta" id="meta"></div>
     <div class="keys"><b>/</b> search &middot; <b>j k</b> move &middot; <b>1&ndash;4</b> mode
-      &middot; <b>r</b> reviewed</div>
+      &middot; <b>&#8679;1&ndash;4</b> all &middot; <b>r</b> reviewed</div>
   </div>
   <div class="tools">
     <div class="totals" id="filters"></div>
@@ -252,6 +258,8 @@ button.copy:hover { background: var(--raised); }
       spellcheck="false" aria-label="Filter stories">
     <span class="progress" id="progress"></span>
     <span id="acceptvisible"></span>
+    <div class="viewall" id="viewall" role="group" aria-label="Comparison mode for every capture"
+      hidden></div>
   </div>
 </header>
 <main id="out"></main>
@@ -283,6 +291,11 @@ for (const c of data.captures) counts[c.status] = (counts[c.status] || 0) + 1;
 let active = order.find(s => REVIEW.has(s) && counts[s]) ? 'review' : 'all';
 let query = '';
 let cursor = -1;
+
+/* The comparison mode chosen for the whole page. A capture that cannot show it — one with no
+   diff image, or no baseline to compare against — keeps its own default instead of going blank. */
+const ALL_MODES = ['Overlay', 'Side by side', 'Swipe', 'Onion-skin'];
+let preferred = ALL_MODES[0];
 
 /* Triage is remembered per run, not per file: the same report reopened after a fresh run
    describes different pixels, so a stale tick would claim a capture was seen that never was. */
@@ -392,7 +405,7 @@ function stage(capture) {
   }
 
   const body = document.createElement('div');
-  let current = modes[0];
+  let current = modes.includes(preferred) ? preferred : modes[0];
   let slider = null;
 
   function picture(src) {
@@ -484,6 +497,7 @@ function stage(capture) {
     el,
     modes: bar,
     setMode: (i) => select(modes[i]),
+    follow: (m) => select(modes.includes(m) ? m : modes[0]),
     nudge: (step) => {
       if (!slider) return;
       slider.value = String(Math.min(100, Math.max(0, Number(slider.value) + step)));
@@ -494,6 +508,31 @@ function stage(capture) {
 
 /** Every capture currently on the page, in reading order — the target list for j/k. */
 let flat = [];
+
+const viewAllEl = document.getElementById('viewall');
+function setPreferred(m) {
+  preferred = m;
+  for (const b of viewAllEl.querySelectorAll('button')) {
+    b.setAttribute('aria-pressed', String(b.textContent === m));
+  }
+  // Only captures already drawn need redrawing; the rest read the choice when they are built.
+  for (const entry of flat) if (entry.built && entry.built.follow) entry.built.follow(m);
+}
+// The page-wide control is offered only when some capture has two renders to compare; a run of
+// new captures alone has nothing it could switch between.
+if (data.captures.some(c => c.status !== 'new' && c.images && c.images.expected && c.images.actual)) {
+  const label = document.createElement('span');
+  label.textContent = 'All:';
+  viewAllEl.appendChild(label);
+  for (const m of ALL_MODES) {
+    const b = document.createElement('button');
+    b.textContent = m;
+    b.setAttribute('aria-pressed', String(m === preferred));
+    b.onclick = () => setPreferred(m);
+    viewAllEl.appendChild(b);
+  }
+  viewAllEl.hidden = false;
+}
 
 function setCursor(next) {
   if (!flat.length) return;
@@ -738,6 +777,15 @@ document.addEventListener('keydown', (e) => {
   if (e.key === '/') { e.preventDefault(); searchEl.focus(); searchEl.select(); return; }
   if (e.key === 'j' || e.key === 'ArrowDown') { e.preventDefault(); setCursor(cursor + 1); return; }
   if (e.key === 'k' || e.key === 'ArrowUp') { e.preventDefault(); setCursor(cursor - 1); return; }
+  // Shift turns a number into a page-wide choice. The code, not the key, identifies the digit:
+  // with Shift held the key reads as whatever symbol the layout puts above it.
+  const digit = /^Digit([1-4])$/.exec(e.code);
+  if (digit && e.shiftKey) {
+    if (viewAllEl.hidden) return;
+    e.preventDefault();
+    setPreferred(ALL_MODES[Number(digit[1]) - 1]);
+    return;
+  }
   if (cursor < 0 || !flat[cursor]) return;
   const entry = flat[cursor];
   if (e.key === 'r') { e.preventDefault(); toggleReviewed(entry); return; }

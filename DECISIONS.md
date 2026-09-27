@@ -583,3 +583,23 @@ rendering branches on the capture's status rather than on which artifacts happen
 present, so a result carrying both references still shows one column.
 
 **Scope:** repo.
+
+## D-022 — 2026-09-27 — One comparison mode for the whole report, overridable per capture
+
+**Decision:** The report offers a page-wide comparison control, in the toolbar and on
+Shift+1–4, that sets every capture to the same mode. Each capture's own mode buttons and the
+unshifted 1–4 keys still change only that capture, until the next page-wide choice resets all
+of them. A capture that cannot show the chosen mode keeps its own default rather than going
+blank, and captures drawn after the choice open in it. The choice lasts for the open page
+only; it is not stored.
+
+**Why:** reviewing a large run is usually one question asked of every pair — "show me each
+one side by side" — and a per-capture control made that question cost one click per capture.
+Keeping the per-capture override means an outlier can still be inspected differently without
+giving up the page-wide view.
+
+**Consequences:** the page-wide control is offered only when some capture has two renders to
+compare; a run made entirely of new captures shows no control, because there is nothing it
+could switch between.
+
+**Scope:** repo.
