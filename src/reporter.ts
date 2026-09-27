@@ -321,7 +321,8 @@ export default class DiopsisReporter implements Reporter {
     const { totals } = summary;
     // Relative to where the command was run: an absolute path is noise to a reader and
     // machine-specific to anyone the output is pasted to.
-    const show = (target: string): string => path.relative(process.cwd(), target) || target;
+    const show = (target: string): string =>
+      (path.relative(process.cwd(), target) || target).split(path.sep).join('/');
 
     const counts = [
       `${totals.unchanged} unchanged`,

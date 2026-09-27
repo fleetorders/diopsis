@@ -536,7 +536,9 @@ describe('runChecks on the weight budget', () => {
   it('reports this platform\'s share beside the total in the inventory', async () => {
     const root = await project();
     await baselineAt(root, `button--primary/320w-${process.platform}-${process.arch}.png`, 1024);
-    await baselineAt(root, 'button--primary/320w-linux-x64.png', 2048);
+    // Another platform's set — any token but this machine's, or the two would be one file.
+    const other = `${process.platform}-${process.arch}` === 'linux-x64' ? 'darwin-arm64' : 'linux-x64';
+    await baselineAt(root, `button--primary/320w-${other}.png`, 2048);
     const check = find(await runChecks({ root }), /baselines, /);
     assert.match(check?.detail ?? '', /1 KB on this platform/);
     assert.match(check?.detail ?? '', /3 KB in total/);

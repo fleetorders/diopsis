@@ -359,10 +359,13 @@ export async function diffCommand(options: DiffOptions): Promise<number> {
   for (const warning of warnings) process.stderr.write(`warning: ${warning}\n`);
 
   const { totals } = summary;
-  const show = (target: string): string => path.relative(options.root, target) || target;
+  // Forward slashes on every platform, like the rest of Diopsis's output: these lines are
+  // pasted into reviews and read the same whichever machine printed them.
+  const show = (target: string): string =>
+    (path.relative(options.root, target) || target).split(path.sep).join('/');
   const lines = [
     `Diopsis · diff against ${base} (${mergeBase.slice(0, 7)})`,
-    `  config    ${filepath ? path.relative(options.root, filepath) : 'defaults (no config file)'}`,
+    `  config    ${filepath ? show(filepath) : 'defaults (no config file)'}`,
     `  baselines ${snapshotDir}`,
     ...(options.platform ? [`  platform  ${options.platform}`] : []),
     '',
