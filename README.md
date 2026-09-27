@@ -282,6 +282,7 @@ run across machines.
 | `diopsis accept [story-id...]` | Adopt the last run's output, for the named stories or wholesale |
 | `diopsis report` | Open the last report |
 | `diopsis doctor` | Audit the setup |
+| `diopsis prune` | List baselines no capture would write any more; `--yes` deletes and stages them |
 | `diopsis diff [base]` | Report the baseline changes this branch makes against `base` (default `origin/main`) |
 | `diopsis --version` | Print the installed version |
 
@@ -322,6 +323,7 @@ captured.
 | `mask` | `['[data-diopsis-ignore]']` | Selectors painted over before comparison |
 | `capture` | `page` | `component` photographs the rendered component instead of the whole canvas |
 | `modes` | none | Named sets of Storybook globals; each story is also captured in each set |
+| `budget` | none | `{ weight: '25 MB', captures: 800 }` — doctor fails past either, and warns at 90% |
 | `compare.threshold` | `0.2` | Per-pixel colour tolerance, 0–1 |
 | `compare.maxDiffPixelRatio` | `0.001` | Share of differing pixels tolerated |
 | `compare.maxDiffPixels` | unset | Number of differing pixels tolerated; with the ratio, the stricter applies |

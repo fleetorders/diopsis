@@ -76,6 +76,12 @@ export interface DiopsisConfig {
   /** Selectors painted over before comparison. */
   mask: string[];
   compare: CompareOptions;
+  /**
+   * Ceilings on the baseline set's cost, so growth is a decision someone sees rather than
+   * a slow accumulation. `weight` caps the bytes under `snapshotDir` — a number of bytes,
+   * or text like "800 KB" / "25 MB"; `captures` caps the size of the matrix.
+   */
+  budget?: { weight?: string | number; captures?: number };
   /** `'all'` in v1; `'auto'` (change-aware capture) lands in v2 — DECISIONS.md §4. */
   affected: 'all' | 'auto';
   /** Per-capture timeout in ms. */
@@ -135,6 +141,7 @@ export function resolveConfig(user: UserConfig = {}): DiopsisConfig {
     viewports: user.viewports ?? defaultConfig.viewports,
     stabilize: { ...defaultConfig.stabilize, ...user.stabilize },
     compare: { ...defaultConfig.compare, ...user.compare },
+    ...(user.budget ? { budget: { ...user.budget } } : {}),
   };
 }
 
@@ -153,6 +160,35 @@ function isPositiveIntegers(value: unknown): boolean {
 
 function isUnitInterval(value: unknown): boolean {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
+/** Bytes in each unit a size may name. A kilobyte is 1024 bytes, as written. */
+const SIZE_UNITS: Record<string, number> = { b: 1, kb: 1024, mb: 1024 ** 2, gb: 1024 ** 3 };
+
+/**
+ * A size as the budget accepts it: a number of bytes, or text like "800 KB" / "25 MB" —
+ * case-insensitive, optional space, binary multiples. Undefined when the value names no
+ * positive size, so `validateConfig` can report the key rather than the parse failing.
+ */
+export function parseSize(value: string | number): number | undefined {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) && value > 0 ? value : undefined;
+  }
+  const match = /^\s*(\d+(?:\.\d+)?)\s*(b|kb|mb|gb)?\s*$/i.exec(value);
+  if (!match) return undefined;
+  const bytes = Number(match[1]) * (SIZE_UNITS[(match[2] ?? 'b').toLowerCase()] ?? 0);
+  return bytes > 0 ? bytes : undefined;
+}
+
+/**
+ * Bytes at the scale a person reads: "812 B", "800 KB", "31.2 MB". The one formatter for
+ * every weight the tool reports, so two surfaces never show one set of bytes as two
+ * different numbers.
+ */
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1).replace(/\.0$/, '')} MB`;
 }
 
 /**
@@ -213,6 +249,25 @@ export function validateConfig(config: DiopsisConfig): string[] {
             );
           }
         }
+      }
+    }
+  }
+
+  // A budget caps what the viewports and modes below it multiply into, so it is judged
+  // right beside them.
+  if (config.budget !== undefined) {
+    if (!isPlainObject(config.budget)) {
+      problems.push(`budget must be an object (got ${show(config.budget)})`);
+    } else {
+      const { weight, captures } = config.budget;
+      if (weight !== undefined && parseSize(weight) === undefined) {
+        problems.push(
+          `budget.weight must be a number of bytes or a size like "800 KB" / "25 MB" ` +
+            `(got ${show(weight)})`,
+        );
+      }
+      if (captures !== undefined && !(Number.isInteger(captures) && captures > 0)) {
+        problems.push(`budget.captures must be a positive integer (got ${show(captures)})`);
       }
     }
   }

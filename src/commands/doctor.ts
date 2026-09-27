@@ -1,9 +1,15 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { readdir, readFile, stat } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 
-import { findConfigFile, loadConfig, supportsTypeStripping } from '../config.ts';
+import {
+  expectedBaselines,
+  orphanedBaselines,
+  renameHints,
+  walkBaselines,
+} from '../baselines.ts';
+import { findConfigFile, formatBytes, loadConfig, parseSize, supportsTypeStripping } from '../config.ts';
 import { gitIgnores, isGitRepo } from '../git.ts';
 import { loosenedStoryIds, platformToken, resolveMatrix } from '../matrix.ts';
 import { readStoryIndex } from '../story-index.ts';
@@ -48,12 +54,6 @@ async function walk(dir: string): Promise<string[]> {
     else out.push(full);
   }
   return out;
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 /** Fixed-name CI files that can name the job's container, one per host. */
@@ -228,7 +228,9 @@ export async function runChecks(options: DoctorOptions): Promise<Check[]> {
       const stories = await readStoryIndex(storybookDir);
       const matrix = resolveMatrix(stories, config);
       captureCount = matrix.captures.length;
-      expected = new Set(matrix.captures.map((capture) => capture.snapshotPath));
+      // Doctor judges only this platform's set; every other platform's baselines are
+      // expected to be here without being in this run's capture list.
+      expected = expectedBaselines(matrix.captures, [platformToken()]);
       checks.push({
         level: 'ok',
         title: `${stories.length} stories → ${captureCount} captures`,
@@ -238,6 +240,29 @@ export async function runChecks(options: DoctorOptions): Promise<Check[]> {
             .join(' · ')}` +
           (matrix.skipped.length ? ` · ${matrix.skipped.length} skipped` : ''),
       });
+      const budgetCaptures = config.budget?.captures;
+      if (budgetCaptures !== undefined) {
+        const count = matrix.captures.length;
+        checks.push(
+          count > budgetCaptures
+            ? {
+                level: 'fail',
+                title: `Matrix produces ${count} captures, over the ${budgetCaptures} budget`,
+                detail:
+                  'Every capture is one baseline, one comparison and one review row — drop ' +
+                  'widths or stories to bring the set back inside it.',
+              }
+            : count >= 0.9 * budgetCaptures
+              ? {
+                  level: 'warn',
+                  title: `Matrix produces ${count} captures, within 10% of the ${budgetCaptures} budget`,
+                }
+              : {
+                  level: 'ok',
+                  title: `Matrix produces ${count} captures, under the ${budgetCaptures} budget`,
+                },
+        );
+      }
       if (matrix.unwatched.length > 0) {
         checks.push({
           level: 'warn',
@@ -292,7 +317,7 @@ export async function runChecks(options: DoctorOptions): Promise<Check[]> {
     }
   }
 
-  // The baseline set: weight, platform suffixes, orphans.
+  // The baseline set: weight, budget, platform suffixes, orphans.
   if (!existsSync(snapshotDir)) {
     checks.push({
       level: 'warn',
@@ -300,20 +325,50 @@ export async function runChecks(options: DoctorOptions): Promise<Check[]> {
       detail: 'Generate them with `diopsis update`.',
     });
   } else {
-    const files = (await walk(snapshotDir)).filter((file) => file.endsWith('.png'));
-    let bytes = 0;
-    for (const file of files) bytes += (await stat(file)).size;
+    const files = await walkBaselines(snapshotDir);
+    const bytes = files.reduce((total, file) => total + file.bytes, 0);
+    const localBytes = files
+      .filter((file) => file.platform === platformToken())
+      .reduce((total, file) => total + file.bytes, 0);
 
     checks.push({
       level: 'ok',
       title: `${files.length} baselines, ${formatBytes(bytes)}`,
       detail:
-        'Every intentional change adds another set to history permanently — this figure ' +
-        'only grows.',
+        `${formatBytes(localBytes)} on this platform (${platformToken()}), ` +
+        `${formatBytes(bytes)} in total — every intentional change adds another set to ` +
+        'history permanently, so the total only grows.',
     });
 
-    const relative = files.map((file) => path.relative(snapshotDir, file).split(path.sep).join('/'));
-    const unsuffixed = relative.filter((file) => !/-[a-z0-9]+-[a-z0-9]+\.png$/.test(file));
+    const budgetWeight =
+      config.budget?.weight !== undefined ? parseSize(config.budget.weight) : undefined;
+    if (budgetWeight !== undefined) {
+      checks.push(
+        bytes > budgetWeight
+          ? {
+              level: 'fail',
+              title: `Baselines weigh ${formatBytes(bytes)}, over the ${formatBytes(budgetWeight)} budget`,
+              detail:
+                `${formatBytes(localBytes)} of it is this platform's set — ` +
+                '`diopsis prune` deletes what no capture would write; fewer widths or ' +
+                'stories cut the rest.',
+            }
+          : bytes >= 0.9 * budgetWeight
+            ? {
+                level: 'warn',
+                title:
+                  `Baselines weigh ${formatBytes(bytes)}, within 10% of the ` +
+                  `${formatBytes(budgetWeight)} budget`,
+                detail: `${formatBytes(localBytes)} of it is this platform's set.`,
+              }
+            : {
+                level: 'ok',
+                title: `Baselines weigh ${formatBytes(bytes)} of the ${formatBytes(budgetWeight)} budget`,
+              },
+      );
+    }
+
+    const unsuffixed = files.filter((file) => file.platform === undefined);
     checks.push(
       unsuffixed.length === 0
         ? {
@@ -325,34 +380,47 @@ export async function runChecks(options: DoctorOptions): Promise<Check[]> {
             level: 'fail',
             title: `${unsuffixed.length} baselines have no platform suffix`,
             detail:
-              `e.g. ${unsuffixed[0]} — a run on another platform would overwrite these ` +
-              'rather than compare against them.',
+              `e.g. ${unsuffixed[0]?.relative} — a run on another platform would overwrite ` +
+              'these rather than compare against them.',
           },
     );
 
     if (expected.size > 0) {
-      const orphans = relative.filter((file) => !expected.has(file));
-      const platforms = new Set(
-        relative
-          .map((file) => /-([a-z0-9]+-[a-z0-9]+)\.png$/.exec(file)?.[1])
-          .filter((token): token is string => Boolean(token)),
+      const orphans = orphanedBaselines(files, expected).filter(
+        (file) => file.platform === platformToken(),
       );
-      // Only this platform's set can be judged orphaned; other platforms' baselines are
-      // expected to be here and are not in this run's capture list.
-      const localOrphans = orphans.filter((file) => file.includes(platformToken()));
+      const hints = await renameHints(
+        orphans,
+        snapshotDir,
+        path.resolve(options.root, config.outputDir),
+      );
+      const shown = [...hints.values()]
+        .slice(0, 3)
+        .map((hint) => `looks renamed: ${hint.from} → ${hint.to}`);
       checks.push(
-        localOrphans.length === 0
+        orphans.length === 0
           ? { level: 'ok', title: 'No orphaned baselines for this platform' }
           : {
-              level: 'warn',
               // A mode baseline names a mode the config no longer carries as readily as a
               // story the index no longer lists; both are dead weight until deleted.
+              level: 'warn',
               title:
-                `${localOrphans.length} baselines belong to ` +
-                `${localOrphans.length === 1 ? 'a story or mode' : 'stories or modes'} ` +
+                `${orphans.length} ${orphans.length === 1 ? 'baseline belongs' : 'baselines belong'} ` +
+                `to ${orphans.length === 1 ? 'a story or mode' : 'stories or modes'} ` +
                 'that no longer exist',
-              detail: `e.g. ${localOrphans[0]} — delete them so the set stops carrying dead weight.`,
+              detail:
+                `e.g. ${orphans[0]?.relative} — run \`diopsis prune\` to delete them.` +
+                (shown.length
+                  ? ` ${shown.join('; ')}` +
+                    (hints.size > 3 ? ` (+${hints.size - 3} more)` : '') +
+                    '.'
+                  : ''),
             },
+      );
+      const platforms = new Set(
+        files
+          .map((file) => file.platform)
+          .filter((token): token is string => Boolean(token)),
       );
       if (platforms.size > 1) {
         checks.push({

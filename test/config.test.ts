@@ -8,6 +8,7 @@ import {
   defaultConfig,
   findConfigFile,
   loadConfig,
+  parseSize,
   resolveConfig,
   supportsTypeStripping,
   type UserConfig,
@@ -159,6 +160,7 @@ describe('validateConfig', () => {
     fullPage?: unknown;
     mask?: unknown;
     affected?: unknown;
+    budget?: unknown;
     stabilize?: Record<string, unknown>;
     compare?: Record<string, unknown>;
   }): DiopsisConfig {
@@ -294,6 +296,31 @@ describe('validateConfig', () => {
     );
   });
 
+  it('accepts a weight in bytes or text beside a positive capture count', () => {
+    assert.deepEqual(validateConfig(configWith({ budget: { weight: '25 MB', captures: 120 } })), []);
+    assert.deepEqual(validateConfig(configWith({ budget: { weight: 26214400 } })), []);
+  });
+
+  it('names budget.weight on a value that is no size', () => {
+    const problems = validateConfig(configWith({ budget: { weight: '25 MBs' } }));
+    assert.equal(problems.length, 1);
+    assert.match(
+      problems[0] ?? '',
+      /budget\.weight must be a number of bytes or a size like "800 KB" \/ "25 MB" \(got "25 MBs"\)/,
+    );
+  });
+
+  it('names budget.captures on a count that is not a positive integer', () => {
+    const problems = validateConfig(configWith({ budget: { captures: 4.5 } }));
+    assert.equal(problems.length, 1);
+    assert.match(problems[0] ?? '', /budget\.captures must be a positive integer \(got 4\.5\)/);
+  });
+
+  it('reports both problems at once when both keys are wrong', () => {
+    const problems = validateConfig(configWith({ budget: { weight: 'big', captures: 0 } }));
+    assert.equal(problems.length, 2);
+  });
+
   it('accepts waitForPlay as a boolean and nothing else', () => {
     assert.deepEqual(validateConfig(configWith({ stabilize: { waitForPlay: false } })), []);
     const problems = validateConfig(configWith({ stabilize: { waitForPlay: 'yes' } }));
@@ -388,8 +415,33 @@ describe('validateConfig modes', () => {
     assert.match(problems[3] ?? '', /modes\.dark\.locale must be a non-empty string.*"ar;en"/);
   });
 
+  it('accepts the budget key through the public UserConfig type', () => {
+    const user: UserConfig = { budget: { weight: '25 MB' } };
+    assert.deepEqual(resolveConfig(user).budget, { weight: '25 MB' });
+  });
+
   it('accepts the modes key through the public UserConfig type', () => {
     const user: UserConfig = { modes: { rtl: { direction: 'rtl' } } };
     assert.deepEqual(resolveConfig(user).modes, { rtl: { direction: 'rtl' } });
+  });
+});
+
+describe('parseSize', () => {
+  it('reads bytes as a number and sizes as text, on binary multiples', () => {
+    assert.equal(parseSize(800), 800);
+    assert.equal(parseSize('800 KB'), 800 * 1024);
+    assert.equal(parseSize('25 MB'), 25 * 1024 * 1024);
+    assert.equal(parseSize('25mb'), 25 * 1024 * 1024);
+    assert.equal(parseSize('1.5 GB'), 1.5 * 1024 ** 3);
+    assert.equal(parseSize('1024'), 1024);
+  });
+
+  it('refuses what names no positive size', () => {
+    assert.equal(parseSize('25 MBs'), undefined);
+    assert.equal(parseSize('25 MB/s'), undefined);
+    assert.equal(parseSize('-5 MB'), undefined);
+    assert.equal(parseSize('0 KB'), undefined);
+    assert.equal(parseSize(0), undefined);
+    assert.equal(parseSize(''), undefined);
   });
 });

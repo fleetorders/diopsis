@@ -1,7 +1,8 @@
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 
-import { loadConfig } from '../config.ts';
+import { baselineWeight } from '../baselines.ts';
+import { formatBytes, loadConfig, parseSize } from '../config.ts';
 import {
   loosenedStoryIds,
   platformToken,
@@ -57,6 +58,8 @@ export function headerBlock(input: {
   loosened: string[];
   /** Names of the configured modes, when there are any. */
   modes?: string[];
+  /** Budget usage against each configured ceiling, in the numbers the line prints. */
+  budget?: { weight?: { used: number; cap: number }; captures?: { used: number; cap: number } };
 }): string {
   // Like the loosened line, the scope line exists to make an exception visible: it appears
   // only when something departs from the whole-page default, and counts the stories that
@@ -78,11 +81,26 @@ export function headerBlock(input: {
   // every capture, so the names belong where the cost is read.
   const modesLine = input.modes?.length ? `  modes     ${input.modes.join(', ')}\n` : '';
 
+  // The budget line exists only when there is something to say: a ceiling crossed, or
+  // within 10% of it. A budget comfortably met is the set's normal state, not news.
+  const verdict = (used: number, cap: number): 'over' | 'near' => (used > cap ? 'over' : 'near');
+  const nearOrOver = (used: number, cap: number): boolean => used > cap || used >= 0.9 * cap;
+  const weight = input.budget?.weight;
+  const captureBudget = input.budget?.captures;
+  const budgetLines =
+    (weight && nearOrOver(weight.used, weight.cap)
+      ? `  budget    ${formatBytes(weight.used)} of ${formatBytes(weight.cap)} — ${verdict(weight.used, weight.cap)}\n`
+      : '') +
+    (captureBudget && nearOrOver(captureBudget.used, captureBudget.cap)
+      ? `  budget    ${captureBudget.used} of ${captureBudget.cap} captures — ${verdict(captureBudget.used, captureBudget.cap)}\n`
+      : '');
+
   return (
     `${headerLine(input.captures, input.grep)}\n` +
     `  config    ${input.configSource}\n` +
     `  storybook ${input.storybookDir}\n` +
     `  baselines ${input.snapshotDir}\n` +
+    budgetLines +
     modesLine +
     scopeLine +
     (input.skipped.length ? `  skipped   ${input.skipped.length} stories (diopsis:skip)\n` : '') +
@@ -168,6 +186,27 @@ export async function runCommand(options: RunOptions): Promise<number> {
     return 1;
   }
 
+  // A budget is judged against the whole set — the full matrix and every platform's bytes —
+  // so a --grep run cannot report a budget as met by measuring a slice of it.
+  const weightCap =
+    config.budget?.weight !== undefined ? parseSize(config.budget.weight) : undefined;
+  const budgetInput =
+    weightCap !== undefined || config.budget?.captures !== undefined
+      ? {
+          ...(weightCap !== undefined
+            ? {
+                weight: {
+                  used: await baselineWeight(path.resolve(options.root, config.snapshotDir)),
+                  cap: weightCap,
+                },
+              }
+            : {}),
+          ...(config.budget?.captures !== undefined
+            ? { captures: { used: matrix.captures.length, cap: config.budget.captures } }
+            : {}),
+        }
+      : undefined;
+
   // Captures, not stories: a viewport matrix multiplies, and every cost that matters —
   // runtime, repository weight, review effort — scales with captures (DECISIONS.md §3).
   process.stdout.write(
@@ -181,6 +220,7 @@ export async function runCommand(options: RunOptions): Promise<number> {
       skipped: matrix.skipped,
       unwatched: matrix.unwatched,
       loosened: loosenedStoryIds(captures, config.compare),
+      ...(budgetInput ? { budget: budgetInput } : {}),
       ...(config.modes ? { modes: Object.keys(config.modes) } : {}),
     }),
   );

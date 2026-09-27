@@ -456,3 +456,110 @@ describe('initCommand --force with modes configured', () => {
     assert.match(out, /320, 1280\s+7\s+560 KB\s+\(configured\)/);
   });
 });
+
+describe('runChecks on the weight budget', () => {
+  async function baselineAt(root: string, relative: string, bytes: number): Promise<void> {
+    await mkdir(path.join(root, '__screenshots__', path.dirname(relative)), { recursive: true });
+    await writeFile(path.join(root, '__screenshots__', relative), 'x'.repeat(bytes));
+  }
+
+  it('fails, naming both numbers, when the baselines outweigh the budget', async () => {
+    const root = await project();
+    await writeFile(
+      path.join(root, 'diopsis.config.mjs'),
+      "export default { budget: { weight: '1 KB' } };",
+    );
+    await baselineAt(root, `button--primary/320w-${process.platform}-${process.arch}.png`, 2048);
+    const check = find(await runChecks({ root }), /over the .* budget/);
+    assert.equal(check?.level, 'fail');
+    assert.match(check?.title ?? '', /2 KB, over the 1 KB budget/);
+  });
+
+  it('warns within 10% of the budget, and reads ok under it', async () => {
+    const root = await project();
+    await writeFile(
+      path.join(root, 'diopsis.config.mjs'),
+      "export default { budget: { weight: '2 KB' } };",
+    );
+    // 1900 B is 93% of 2048 B: the warning zone, without crossing it.
+    await baselineAt(root, `button--primary/320w-${process.platform}-${process.arch}.png`, 1900);
+    const near = find(await runChecks({ root }), /within 10% of the .* budget/);
+    assert.equal(near?.level, 'warn');
+
+    const other = await project();
+    await writeFile(
+      path.join(other, 'diopsis.config.mjs'),
+      "export default { budget: { weight: '2 KB' } };",
+    );
+    await baselineAt(other, `button--primary/320w-${process.platform}-${process.arch}.png`, 500);
+    const under = find(await runChecks({ root: other }), /budget/);
+    assert.equal(under?.level, 'ok');
+    assert.match(under?.title ?? '', /500 B of the 2 KB budget/);
+  });
+
+  it('reports this platform\'s share beside the total in the inventory', async () => {
+    const root = await project();
+    await baselineAt(root, `button--primary/320w-${process.platform}-${process.arch}.png`, 1024);
+    await baselineAt(root, 'button--primary/320w-linux-x64.png', 2048);
+    const check = find(await runChecks({ root }), /baselines, /);
+    assert.match(check?.detail ?? '', /1 KB on this platform/);
+    assert.match(check?.detail ?? '', /3 KB in total/);
+  });
+
+  it('prints no budget line when none is configured', async () => {
+    const root = await project();
+    await baselineAt(root, `button--primary/320w-${process.platform}-${process.arch}.png`, 1024);
+    assert.equal(find(await runChecks({ root }), /budget/), undefined);
+  });
+});
+
+describe('runChecks on the capture budget', () => {
+  it('fails, naming the count, when the matrix outgrows the budget', async () => {
+    const root = await project();
+    await writeFile(
+      path.join(root, 'diopsis.config.mjs'),
+      'export default { budget: { captures: 6 } };',
+    );
+    const check = find(await runChecks({ root }), /captures, over the/);
+    assert.equal(check?.level, 'fail');
+    assert.match(check?.title ?? '', /7 captures, over the 6 budget/);
+  });
+
+  it('warns when the matrix sits within 10% of the budget', async () => {
+    const root = await project();
+    await writeFile(
+      path.join(root, 'diopsis.config.mjs'),
+      'export default { budget: { captures: 7 } };',
+    );
+    const check = find(await runChecks({ root }), /captures, within 10%/);
+    assert.equal(check?.level, 'warn');
+  });
+});
+
+describe('runChecks rename hints', () => {
+  it('names the move when an orphan\'s bytes match a baseline the last run called new', async () => {
+    const root = await project();
+    const token = `${process.platform}-${process.arch}`;
+    for (const relative of [`button--primary/320w-${token}.png`, `old--story/320w-${token}.png`]) {
+      await mkdir(path.join(root, '__screenshots__', path.dirname(relative)), { recursive: true });
+      await writeFile(path.join(root, '__screenshots__', relative), 'identical-bytes');
+    }
+    await mkdir(path.join(root, '.diopsis'), { recursive: true });
+    await writeFile(
+      path.join(root, '.diopsis', 'summary.json'),
+      JSON.stringify({
+        diopsis: 1,
+        captures: [
+          {
+            storyId: 'button--primary',
+            status: 'new',
+            snapshotPath: `button--primary/320w-${token}.png`,
+            artifacts: {},
+          },
+        ],
+      }),
+    );
+    const check = find(await runChecks({ root }), /no longer exist/);
+    assert.match(check?.detail ?? '', /looks renamed: old--story → button--primary/);
+  });
+});

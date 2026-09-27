@@ -897,3 +897,24 @@ same change; it reports, it never gates. `removed` joins the status vocabulary w
 neutral, outlined treatment unstable uses; it is not a failure.
 
 **Scope:** repo.
+
+## D-037 — 2026-09-27 — A weight budget, and pruning what nothing captures
+
+**Decision:** The config can set `budget: { weight, captures }`. `doctor` reports the baselines'
+weight for this platform and in total, fails past a budget and warns within 10% of it; `run`
+prints a budget line only when it is over or close. `diopsis prune` lists every baseline no
+capture of the current matrix would write — for any platform present, across widths and modes —
+and deletes and stages them with `--yes`, refusing anything that resolves outside the snapshot
+directory. When an orphan is byte-identical to a baseline the last run recorded as new, doctor
+and prune say it looks renamed.
+
+**Why:** baseline weight is the cost that only grows — every accepted change adds a full set to
+history — and it was visible (doctor reported it) but never enforced, so it drifted until
+someone noticed the clone time. Orphans were reported with nothing to act on them. A renamed
+story is the commonest source of both: a new baseline plus an orphan of the same bytes.
+
+**Consequences:** the weight budget is judged against the total across platforms, with this
+platform's share shown beside it. Prune is a dry run unless told otherwise, and deleting is
+staged rather than committed, so the removal is reviewed like any other baseline change.
+
+**Scope:** repo.

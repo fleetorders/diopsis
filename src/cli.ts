@@ -7,6 +7,7 @@ import { acceptCommand } from './commands/accept.ts';
 import { diffCommand } from './commands/diff.ts';
 import { doctorCommand } from './commands/doctor.ts';
 import { initCommand } from './commands/init.ts';
+import { pruneCommand } from './commands/prune.ts';
 import { reportCommand } from './commands/report.ts';
 import { runCommand } from './commands/run.ts';
 
@@ -18,6 +19,7 @@ Usage
   diopsis update               regenerate baselines
   diopsis accept [story-id...] adopt the last run's output as the baseline
   diopsis diff [base]          review the baseline changes a branch makes
+  diopsis prune                delete baselines no capture would write (dry run by default)
   diopsis report               open the last report
   diopsis doctor               audit the setup for what silently breaks a baseline set
   diopsis help                 show this message
@@ -27,6 +29,8 @@ Options belong to their command; a flag another command takes is refused here.
                 --keep          keep the generated Playwright project
   accept        --no-stage      accept without staging the result in git
   diff          --open          open the report after writing it
+                --platform <t>  only baselines of one platform token, e.g. linux-x64
+  prune         --yes           delete the listed baselines instead of a dry run
                 --platform <t>  only baselines of one platform token, e.g. linux-x64
   init          --force         overwrite an existing config
                 --lfs           set the baselines up for Git LFS
@@ -47,6 +51,7 @@ const COMMAND_FLAGS: Record<string, ReadonlySet<string>> = {
   update: new Set(['grep', 'keep', 'help']),
   accept: new Set(['no-stage', 'help']),
   diff: new Set(['open', 'platform', 'help']),
+  prune: new Set(['yes', 'platform', 'help']),
   init: new Set(['force', 'lfs', 'help']),
   doctor: new Set(['json', 'help']),
   report: new Set(['help']),
@@ -76,7 +81,7 @@ export async function main(argv: string[]): Promise<number> {
   }
 
   const rest = first && !first.startsWith('-') ? argv.slice(1) : argv;
-  let values: { grep?: string; keep?: boolean; force?: boolean; lfs?: boolean; json?: boolean; open?: boolean; platform?: string; 'no-stage'?: boolean; help?: boolean };
+  let values: { grep?: string; keep?: boolean; force?: boolean; lfs?: boolean; json?: boolean; open?: boolean; platform?: string; yes?: boolean; 'no-stage'?: boolean; help?: boolean };
   let positionals: string[];
   let usedFlags: string[];
   try {
@@ -90,6 +95,7 @@ export async function main(argv: string[]): Promise<number> {
         json: { type: 'boolean', default: false },
         open: { type: 'boolean', default: false },
         platform: { type: 'string' },
+        yes: { type: 'boolean', default: false },
         'no-stage': { type: 'boolean', default: false },
         help: { type: 'boolean', short: 'h', default: false },
       },
@@ -159,6 +165,16 @@ export async function main(argv: string[]): Promise<number> {
       });
     case 'init':
       return initCommand({ root, force: values.force, lfs: values.lfs });
+    case 'prune':
+      if (positionals.length > 0) {
+        process.stderr.write(`diopsis prune takes no story ids.\n\n${USAGE}`);
+        return 1;
+      }
+      return pruneCommand({
+        root,
+        yes: values.yes,
+        ...(values.platform ? { platform: values.platform } : {}),
+      });
     case 'doctor':
       return doctorCommand({ root, json: values.json });
     case 'report':

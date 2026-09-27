@@ -175,3 +175,50 @@ describe('headerBlock modes', () => {
     assert.doesNotMatch(out, /modes/);
   });
 });
+
+describe('headerBlock budget line', () => {
+  const plain = resolveConfig({ viewports: { default: [320] } });
+  const matrix = resolveMatrix(stories(['a--one']), plain);
+  const MB = 1024 * 1024;
+
+  function blockWith(budget?: {
+    weight?: { used: number; cap: number };
+    captures?: { used: number; cap: number };
+  }): string {
+    return headerBlock({
+      captures: matrix.captures,
+      capture: plain.capture,
+      configSource: 'diopsis.config.mjs',
+      storybookDir: 'storybook-static',
+      snapshotDir: '__screenshots__',
+      skipped: matrix.skipped,
+      unwatched: matrix.unwatched,
+      loosened: [],
+      ...(budget ? { budget } : {}),
+    });
+  }
+
+  it('says over, naming both numbers, when the weight budget is exceeded', () => {
+    const out = blockWith({ weight: { used: 31.2 * MB, cap: 25 * MB } });
+    assert.match(out, /  budget    31\.2 MB of 25 MB — over\n/);
+  });
+
+  it('says near when the set sits within 10% of the weight budget', () => {
+    const out = blockWith({ weight: { used: 23.5 * MB, cap: 25 * MB } });
+    assert.match(out, /  budget    23\.5 MB of 25 MB — near\n/);
+  });
+
+  it('stays quiet with no budget, and while one is comfortably met', () => {
+    assert.doesNotMatch(blockWith(), /budget/);
+    assert.doesNotMatch(blockWith({ weight: { used: 10 * MB, cap: 25 * MB } }), /budget/);
+  });
+
+  it('reports a capture budget beside the weight one', () => {
+    const out = blockWith({
+      weight: { used: 30 * MB, cap: 25 * MB },
+      captures: { used: 8, cap: 7 },
+    });
+    assert.match(out, /  budget    30 MB of 25 MB — over\n/);
+    assert.match(out, /  budget    8 of 7 captures — over\n/);
+  });
+});
