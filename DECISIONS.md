@@ -526,8 +526,6 @@ unchanged.
 
 ---
 
-**Scope:** repo.
-
 ## D-020 — 2026-08-09 — The report compares by width, and colour means one thing at a time
 
 **Decision:** Four rules now govern the review surface. Comparison modes constrain a render's
