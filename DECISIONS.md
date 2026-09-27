@@ -682,6 +682,28 @@ changed capture without a count, not to a wrong status.
 
 **Scope:** repo.
 
+## D-026 — 2026-09-27 — Doctor reads the CI files it makes promises about
+
+**Decision:** `diopsis doctor` scans the project's CI definitions — GitHub workflow files and
+the fixed-name files of the other common hosts — for Playwright container images, and fails
+when one names a different image than the config's `image`, naming the file and both values.
+It also warns when the installed `@playwright/test` version differs from the version in the
+pinned image's tag. Ignore checks use `git check-ignore` inside a repository, so anchored and
+globbed patterns are judged the way git judges them.
+
+**Why:** the CI recipe `init` prints has always said doctor fails when CI's image and the
+config drift apart, but doctor never read a CI file, so the promise was unkept. Image drift
+presents as every baseline differing at once, the most expensive failure the tool can have.
+The exact-line ignore check missed `/__screenshots__` and passed while git ignored the
+baselines.
+
+**Consequences:** a repository whose other jobs run a different Playwright image for unrelated
+tests will see doctor fail on that file; the message names it, and aligning the images is the
+remedy the rest of the design assumes anyway. Doctor output is also available as JSON with
+`--json`.
+
+**Scope:** repo.
+
 ## D-027 — 2026-09-27 — The report opens with a contact sheet
 
 **Decision:** Above the story list the report shows an overview: one thumbnail per capture that

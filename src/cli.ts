@@ -26,6 +26,7 @@ Options belong to their command; a flag another command takes is refused here.
   accept        --no-stage      accept without staging the result in git
   init          --force         overwrite an existing config
                 --lfs           set the baselines up for Git LFS
+  doctor        --json          print the checks as JSON instead of prose
   any command   --help          show this message
   diopsis --version | -v        print the version
 
@@ -42,7 +43,7 @@ const COMMAND_FLAGS: Record<string, ReadonlySet<string>> = {
   update: new Set(['grep', 'keep', 'help']),
   accept: new Set(['no-stage', 'help']),
   init: new Set(['force', 'lfs', 'help']),
-  doctor: new Set(['help']),
+  doctor: new Set(['json', 'help']),
   report: new Set(['help']),
   help: new Set(['help']),
 };
@@ -70,7 +71,7 @@ export async function main(argv: string[]): Promise<number> {
   }
 
   const rest = first && !first.startsWith('-') ? argv.slice(1) : argv;
-  let values: { grep?: string; keep?: boolean; force?: boolean; lfs?: boolean; 'no-stage'?: boolean; help?: boolean };
+  let values: { grep?: string; keep?: boolean; force?: boolean; lfs?: boolean; json?: boolean; 'no-stage'?: boolean; help?: boolean };
   let positionals: string[];
   let usedFlags: string[];
   try {
@@ -81,6 +82,7 @@ export async function main(argv: string[]): Promise<number> {
         keep: { type: 'boolean', default: false },
         force: { type: 'boolean', default: false },
         lfs: { type: 'boolean', default: false },
+        json: { type: 'boolean', default: false },
         'no-stage': { type: 'boolean', default: false },
         help: { type: 'boolean', short: 'h', default: false },
       },
@@ -140,7 +142,7 @@ export async function main(argv: string[]): Promise<number> {
     case 'init':
       return initCommand({ root, force: values.force, lfs: values.lfs });
     case 'doctor':
-      return doctorCommand({ root });
+      return doctorCommand({ root, json: values.json });
     case 'report':
       return reportCommand({ root });
     default:

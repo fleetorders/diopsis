@@ -229,10 +229,12 @@ export default class DiopsisReporter implements Reporter {
 
     for (const capture of ordered) {
       if (capture.status === 'unchanged') continue;
+      // A pinned locale, not the machine's: the same run must print the same figures on
+      // every machine it is pasted from.
       const detail =
         capture.diffPixels === undefined
           ? capture.status
-          : `${capture.diffPixels.toLocaleString()} px differ`;
+          : `${capture.diffPixels.toLocaleString('en-US')} px differ`;
       lines.push(`  ${capture.status === 'changed' ? '~' : '+'} ${capture.storyId} @${capture.width}  ${detail}`);
       if (capture.status === 'render-failed' || capture.status === 'failed') {
         for (const line of (capture.error ?? '').split('\n').slice(0, 2)) {

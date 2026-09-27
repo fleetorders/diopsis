@@ -81,5 +81,22 @@ describe('main', () => {
     assert.match(out, /--version \| -v/);
     assert.match(out, /accept \[story-id\.\.\.\]/);
     assert.match(out, /--shard=1\/2/);
+    assert.match(out, /doctor +--json/);
+  });
+
+  it('prints doctor’s audit as JSON for --json, with nothing else on stderr', async () => {
+    const { code, out, err } = await runMain(['doctor', '--json']);
+    assert.equal(err, '');
+    // The test runner writes its own bookkeeping to stdout while the command awaits I/O;
+    // the command's document is anchored on its first line, and ends at the only `}` that
+    // sits at column zero.
+    const start = out.indexOf('{\n  "diopsis": 1');
+    const end = out.indexOf('\n}', start) + 2;
+    const json = out.slice(start, end);
+    const payload = JSON.parse(json) as { diopsis?: number; ok?: boolean; checks?: unknown[] };
+    assert.equal(payload.diopsis, 1);
+    assert.ok(Array.isArray(payload.checks));
+    // The exit code carries the verdict, so a scripted doctor needs no text parsing.
+    assert.equal(payload.ok, code === 0);
   });
 });

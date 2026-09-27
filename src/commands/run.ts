@@ -2,11 +2,11 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 
 import { loadConfig } from '../config.ts';
-import { platformToken, resolveMatrix } from '../matrix.ts';
+import { platformToken, resolveMatrix, type Capture, type ResolvedMatrix } from '../matrix.ts';
 import { distRoot, generateProject, projectDir } from '../runner/generate.ts';
 import { runPlaywright } from '../runner/execute.ts';
 import { serveStatic } from '../server.ts';
-import { readStoryIndex } from '../story-index.ts';
+import { readStoryIndex, type StoryEntry } from '../story-index.ts';
 
 export interface RunOptions {
   root: string;
@@ -18,6 +18,56 @@ export interface RunOptions {
   keep?: boolean;
   /** Playwright pass-through arguments. */
   passthrough?: string[];
+}
+
+/**
+ * The run's first line. The story count is of the stories actually captured — skipped,
+ * unwatched and filtered-out stories capture nothing, and a header that counts the whole
+ * index promises work the run will not do.
+ */
+export function headerLine(captures: Capture[], grep: string | undefined): string {
+  const captured = new Set(captures.map((capture) => capture.storyId)).size;
+  const matched = grep ? ` (matched "${grep}")` : '';
+  return `Diopsis · ${captured} stories → ${captures.length} captures${matched} · ${platformToken()}`;
+}
+
+/**
+ * Why a run captured nothing, as the user's next action rather than one opaque line. Every
+ * count is of the stories the run actually considered — under --grep, of the matching
+ * ones — so each message stays true for the run that printed it.
+ */
+export function explainEmptyRun(input: {
+  stories: StoryEntry[];
+  matrix: ResolvedMatrix;
+  /** The configured directory as written, for the message that names it. */
+  storybookDir: string;
+  grep?: string;
+}): string[] {
+  const { stories, matrix, storybookDir, grep } = input;
+
+  if (stories.length === 0) {
+    return [`The story index in ${storybookDir} lists no stories. Rebuild the Storybook.`];
+  }
+
+  const matching = grep ? stories.filter((story) => story.id.includes(grep)) : stories;
+  if (matching.length === 0) {
+    return [`No story id contains "${grep}" (${stories.length} stories in the index).`];
+  }
+
+  const skipped = new Set(matrix.skipped);
+  if (matching.every((story) => skipped.has(story.id))) {
+    return matching.length === 1
+      ? ['All 1 story is tagged diopsis:skip.']
+      : [`All ${matching.length} stories are tagged diopsis:skip.`];
+  }
+
+  // What is left had no widths to capture at; this is the message the run already printed.
+  const unwatched = new Set(matrix.unwatched);
+  const count = matching.filter((story) => unwatched.has(story.id)).length;
+  return [
+    'Nothing to capture.',
+    `  unwatched ${count} stories (no widths: viewports.default is empty)`,
+  ];
 }
 
 export async function runCommand(options: RunOptions): Promise<number> {
@@ -42,12 +92,13 @@ export async function runCommand(options: RunOptions): Promise<number> {
   for (const warning of matrix.warnings) process.stderr.write(`warning: ${warning}\n`);
 
   if (captures.length === 0) {
-    process.stderr.write('Nothing to capture.\n');
-    if (matrix.unwatched.length > 0) {
-      // An empty run over unwatched stories would otherwise be inexplicable from outside.
-      process.stderr.write(
-        `  unwatched ${matrix.unwatched.length} stories (no widths: viewports.default is empty)\n`,
-      );
+    for (const line of explainEmptyRun({
+      stories,
+      matrix,
+      storybookDir: config.storybookDir,
+      ...(options.grep ? { grep: options.grep } : {}),
+    })) {
+      process.stderr.write(`${line}\n`);
     }
     return 1;
   }
@@ -55,7 +106,7 @@ export async function runCommand(options: RunOptions): Promise<number> {
   // Captures, not stories: a viewport matrix multiplies, and every cost that matters —
   // runtime, repository weight, review effort — scales with captures (DECISIONS.md §3).
   process.stdout.write(
-    `Diopsis · ${stories.length} stories → ${captures.length} captures · ${platformToken()}\n` +
+    `${headerLine(captures, options.grep)}\n` +
       `  config    ${filepath ? path.relative(options.root, filepath) : 'defaults (no config file)'}\n` +
       `  storybook ${config.storybookDir}\n` +
       `  baselines ${config.snapshotDir}\n` +

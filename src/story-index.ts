@@ -68,7 +68,9 @@ export function parseStoryIndex(raw: unknown): StoryEntry[] {
     });
   }
 
-  stories.sort((a, b) => a.id.localeCompare(b.id));
+  // Code-unit order rather than locale collation: run order, and the baseline paths derived
+  // from it, must not shift between machines that carry different ICU data.
+  stories.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   return stories;
 }
 
