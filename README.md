@@ -51,8 +51,9 @@ change, then each one with the changed region outlined, largest change first:
 
 Needs Node 18.11+, a built static Storybook, and `@playwright/test` as a peer dependency; runs on
 macOS, Windows and Linux, but baselines CI will agree with are generated in Linux via Docker.
-Chromium only — no cross-browser matrix, no interaction testing, no accessibility audit, and no
-hosted service of any kind.
+Chromium only — no cross-browser matrix and no interaction testing. An optional accessibility
+audit reports axe-core findings beside the pixels when you install `axe-core`; everything runs
+locally, with no hosted service of any kind.
 
 ## Your first run
 
@@ -349,6 +350,7 @@ captured.
 | `mask` | `['[data-diopsis-ignore]']` | Selectors painted over before comparison |
 | `capture` | `page` | `component` photographs the rendered component instead of the whole canvas |
 | `modes` | none | Named sets of Storybook globals; each story is also captured in each set |
+| `accessibility` | `off` | `report` lists axe-core findings beside the pixels; `fail` fails a run on new findings |
 | `budget` | none | `{ weight: '25 MB', captures: 800 }` — doctor fails past either, and warns at 90% |
 | `compare.threshold` | `0.2` | Per-pixel colour tolerance, 0–1 |
 | `compare.maxDiffPixelRatio` | `0.001` | Share of differing pixels tolerated |

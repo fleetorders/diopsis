@@ -32,6 +32,12 @@ export interface Capture {
   mode?: string;
   /** The interaction state this capture holds; absent for the plain capture. */
   state?: InteractionState;
+  /**
+   * This capture is the accessibility audit's slot for its story and mode: the first
+   * width, never an interaction state. The audit runs here and only here — once per
+   * story and mode — when the config switches it on (DECISIONS.md D-042).
+   */
+  a11y?: true;
   /** Comparison overrides the story's tags set; only the keys a tag actually carried. */
   compare?: Partial<CompareOptions>;
   /** Baseline location, relative to `snapshotDir`. */
@@ -210,6 +216,36 @@ const STATE_ACTIONS: Record<string, InteractionState['action']> = {
   active: 'active',
 };
 
+/**
+ * The accessibility directive: `diopsis:a11y=off` opts a story out of the audit. It names
+ * no width and never takes part in width resolution.
+ */
+function a11yDirective(token: string): boolean {
+  return token.startsWith('a11y=');
+}
+
+/**
+ * Whether a story's tags exclude it from the accessibility audit. A tag shaped like the
+ * directive but naming another value warns through the same channel as every other
+ * unusable tag and is ignored — a typo costs a warning, never the run.
+ */
+export function a11yForStory(story: StoryEntry): { excluded: boolean; warnings: string[] } {
+  for (const directive of story.tags) {
+    if (!directive.startsWith(TAG_PREFIX)) continue;
+    const token = directive.slice(TAG_PREFIX.length);
+    if (!a11yDirective(token)) continue;
+    if (token === 'a11y=off') return { excluded: true, warnings: [] };
+    return {
+      excluded: false,
+      warnings: [
+        `${story.id}: tag "${directive}" is not an a11y setting — the one setting is ` +
+          'diopsis:a11y=off — ignored.',
+      ],
+    };
+  }
+  return { excluded: false, warnings: [] };
+}
+
 /** One state directive, split into the action it asks for and the selector it aims at. */
 function stateDirective(
   token: string,
@@ -364,10 +400,16 @@ export function widthsForStory(
       continue;
     }
     // A tolerance directive names a comparison knob, not a width; skipping it here is what
-    // keeps a story carrying only tolerance tags on the default widths. The scope, mode and
-    // state directives are the same kind: they name what the camera frames, under which
-    // globals, and holding which interaction.
-    if (toleranceDirective(token) || SCOPE_TAGS[token] || modesDirective(token) || stateDirective(token)) continue;
+    // keeps a story carrying only tolerance tags on the default widths. The scope, mode,
+    // state and a11y directives are the same kind: they name what the camera frames, under
+    // which globals, holding which interaction, and whether the audit looks at the story.
+    if (
+      toleranceDirective(token) ||
+      SCOPE_TAGS[token] ||
+      modesDirective(token) ||
+      stateDirective(token) ||
+      a11yDirective(token)
+    ) continue;
     if (/^\d+$/.test(token)) {
       widths.add(Number.parseInt(token, 10));
       continue;
@@ -417,12 +459,14 @@ export function resolveMatrix(
     const scope = scopeForStory(story, config.capture);
     const modeSet = modesForStory(story, config.modes);
     const stateSet = statesForStory(story);
+    const a11y = a11yForStory(story);
     warnings.push(
       ...resolved.warnings,
       ...tolerance.warnings,
       ...scope.warnings,
       ...modeSet.warnings,
       ...stateSet.warnings,
+      ...a11y.warnings,
     );
     if (resolved.skip) {
       skipped.push(story.id);
@@ -443,7 +487,11 @@ export function resolveMatrix(
       );
     }
     owners.set(segment, story.id);
-    for (const width of resolved.widths) {
+    for (const [index, width] of resolved.widths.entries()) {
+      // The audit's slot is the first width — widths arrive sorted, so the smallest — and
+      // one slot per mode beside the base one. State captures are never audited: the audit
+      // reads the story as rendered, not with an element held hovered or pressed.
+      const audit = !a11y.excluded && index === 0 ? { a11y: true as const } : {};
       const base = {
         storyId: story.id,
         storyName: story.name,
@@ -459,7 +507,7 @@ export function resolveMatrix(
       // can live at. A state multiplies the capture set like a width and a mode do, so the
       // plain capture always remains beside the ones holding an element hovered, focused
       // or pressed.
-      captures.push({ ...base, snapshotPath: snapshotPathFor(story.id, width, platform) });
+      captures.push({ ...base, ...audit, snapshotPath: snapshotPathFor(story.id, width, platform) });
       for (const state of stateSet.states) {
         captures.push({
           ...base,
@@ -470,6 +518,7 @@ export function resolveMatrix(
       for (const mode of modeSet.modes) {
         captures.push({
           ...base,
+          ...audit,
           mode,
           snapshotPath: snapshotPathFor(story.id, width, platform, mode),
         });

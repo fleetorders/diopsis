@@ -744,3 +744,59 @@ describe('parseSnapshotPath', () => {
     assert.equal(parseSnapshotPath('a--one/notes-320w-linux-x64.png'), undefined); // not a width
   });
 });
+
+describe('the accessibility audit slot', () => {
+  const config = (over: Partial<DiopsisConfig> = {}): Parameters<typeof resolveMatrix>[1] => ({
+    viewports,
+    viewportHeight: 900,
+    capture: 'page',
+    ...over,
+  });
+
+  it('marks the first width of each story and mode, and no state capture', () => {
+    const matrix = resolveMatrix(
+      [
+        story('a--one', ['diopsis:hover=button', 'diopsis:focus=button']),
+        story('b--two'),
+      ],
+      config({ modes: { dark: { theme: 'dark' } }, viewports: { default: [320, 480, 1280] } }),
+      'linux-x64',
+    );
+    // One slot per story and mode: the base capture at the smallest width, plus one per
+    // mode at its smallest width. Everything else — wider widths, every state capture —
+    // carries nothing.
+    const slots = matrix.captures.filter((capture) => capture.a11y).map((capture) => capture.snapshotPath);
+    assert.deepEqual(slots, [
+      'a--one/320w-linux-x64.png',
+      'a--one/320w-dark-linux-x64.png',
+      'b--two/320w-linux-x64.png',
+      'b--two/320w-dark-linux-x64.png',
+    ]);
+  });
+
+  it('excludes a story tagged diopsis:a11y=off', () => {
+    const matrix = resolveMatrix(
+      [story('a--quiet', ['diopsis:a11y=off']), story('b--two')],
+      config(),
+      'linux-x64',
+    );
+    // The one with the tag carries no slot; the other keeps its own.
+    assert.deepEqual(
+      matrix.captures.filter((capture) => capture.a11y).map((capture) => capture.storyId),
+      ['b--two'],
+    );
+  });
+
+  it('treats the a11y tag as a directive that names no width', () => {
+    const result = widthsForStory(story('a--one', ['diopsis:a11y=off']), viewports);
+    assert.deepEqual(result.widths, [320, 1280]);
+    assert.deepEqual(result.warnings, []);
+  });
+
+  it('warns about an a11y tag naming any other value, and audits anyway', () => {
+    const matrix = resolveMatrix([story('a--one', ['diopsis:a11y=quiet'])], config(), 'linux-x64');
+    assert.equal(matrix.warnings.length, 1);
+    assert.match(matrix.warnings[0] ?? '', /diopsis:a11y=quiet.*ignored/);
+    assert.equal(matrix.captures[0]?.a11y, true);
+  });
+});

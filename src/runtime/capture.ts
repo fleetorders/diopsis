@@ -1,4 +1,5 @@
 import type { Locator, Page } from '@playwright/test';
+import type { RawA11yViolation } from '../accessibility.ts';
 import type { StabilizeOptions } from '../config.ts';
 import type { InteractionState } from '../matrix.ts';
 
@@ -544,6 +545,51 @@ export async function applyState(page: Page, state: InteractionState): Promise<v
 export async function releaseState(page: Page): Promise<void> {
   await page.mouse.up().catch(() => undefined);
   await page.mouse.move(0, 0).catch(() => undefined);
+}
+
+/** Nodes kept per rule: enough to find every failing element, few enough to stay compact. */
+const MAX_A11Y_NODES = 10;
+
+/** axe names a node by a selector, or a chain of them through shadow roots and frames. */
+function targetString(target: unknown): string {
+  const parts = Array.isArray(target) ? target : [target];
+  return parts.map((part) => (Array.isArray(part) ? part.join(' ') : String(part))).join(' >> ');
+}
+
+/** What the page-side audit hands back, before it is trimmed to the review's shape. */
+interface RawAxeResult {
+  violations: Array<{
+    id: string;
+    impact: string | null;
+    help: string;
+    helpUrl: string;
+    nodes: Array<{ target: unknown }>;
+  }>;
+}
+
+/**
+ * Audit the story's render root and return the violations a review needs: the rule, its
+ * impact, its help text, and where it failed. The library is the tested project's own
+ * axe-core (DECISIONS.md D-041), injected as source because the page is served from a
+ * static build with no way to import it; injected here rather than at navigation time
+ * because the audit runs after the screenshot, so nothing it does can touch the pixels
+ * the comparison just judged (DECISIONS.md D-042).
+ */
+export async function auditAccessibility(page: Page, axeSource: string): Promise<RawA11yViolation[]> {
+  await page.addScriptTag({ content: axeSource });
+  const results = await page.evaluate(() => {
+    const axe = (window as unknown as { axe?: { run: (context: string) => Promise<unknown> } }).axe;
+    if (!axe) throw new Error('axe-core was not injected');
+    return axe.run('#storybook-root, #root');
+  });
+  const raw = results as RawAxeResult;
+  return (raw.violations ?? []).map((violation) => ({
+    id: violation.id,
+    ...(violation.impact ? { impact: violation.impact } : {}),
+    help: violation.help,
+    helpUrl: violation.helpUrl,
+    targets: violation.nodes.slice(0, MAX_A11Y_NODES).map((node) => targetString(node.target)),
+  }));
 }
 
 /**

@@ -2,6 +2,14 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
+import {
+  ACCEPTED_A11Y_FILENAME,
+  acceptedFor,
+  markViolations,
+  readAcceptedA11y,
+  type AcceptedAccessibility,
+  type RawA11yViolation,
+} from './accessibility.ts';
 import type {
   FullConfig,
   FullResult,
@@ -111,6 +119,22 @@ function baselineOf(result: TestResult): 'present' | 'missing' | undefined {
   return description === 'present' || description === 'missing' ? description : undefined;
 }
 
+/**
+ * The audit's findings, recorded the same way — an annotation carrying JSON, present only
+ * on the capture the plan marked as the audit's slot. An unreadable payload is a result
+ * from a run this reporter did not generate, not a verdict: it reads as unaudited.
+ */
+function a11yViolationsOf(result: TestResult): RawA11yViolation[] | undefined {
+  const description = result.annotations.find((a) => a.type === 'diopsis-a11y')?.description;
+  if (!description) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(description);
+    return Array.isArray(parsed) ? (parsed as RawA11yViolation[]) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** A capture the run never reached still has to appear in the summary, as not-run. */
 function notRunCapture(planned: PlannedCapture): CaptureResult {
   return {
@@ -156,6 +180,12 @@ export default class DiopsisReporter implements Reporter {
   private readonly regionWork: Promise<void>[] = [];
   private plan: RunPlan | undefined;
   private planByTitle: Map<string, PlannedCapture> | undefined;
+  /**
+   * Accepted accessibility findings, read once beside the baselines they belong to. New is
+   * decided against this same file the spec read, so a run's verdict and its summary agree
+   * even when the file changed between the two reads — it cannot, mid-run.
+   */
+  private acceptedA11y: AcceptedAccessibility = {};
 
   constructor(options: DiopsisReporterOptions) {
     this.options = options;
@@ -186,6 +216,9 @@ export default class DiopsisReporter implements Reporter {
     this.plan = JSON.parse(await readFile(this.options.planPath, 'utf8')) as RunPlan;
     // Built once here: re-indexing per test was the reporter's own quadratic on large suites.
     this.planByTitle = indexPlanByTitle(this.plan.captures);
+    this.acceptedA11y = await readAcceptedA11y(
+      path.join(this.options.snapshotDirAbs, ACCEPTED_A11Y_FILENAME),
+    );
   }
 
   onTestEnd(test: TestCase, result: TestResult): void {
@@ -208,6 +241,10 @@ export default class DiopsisReporter implements Reporter {
     });
 
     const artifacts = this.artifactsFor(planned.snapshotPath, result);
+    const audited = a11yViolationsOf(result);
+    const marked = audited
+      ? markViolations(audited, acceptedFor(this.acceptedA11y, planned.storyId, planned.mode))
+      : undefined;
     const capture: CaptureResult = {
       storyId: planned.storyId,
       storyTitle: planned.storyTitle,
@@ -223,6 +260,11 @@ export default class DiopsisReporter implements Reporter {
       ...(verdict.status === 'unchanged' || !errorText
         ? {}
         : { error: errorText.split('\n').slice(0, 4).join('\n') }),
+      // Kept even when the audit found nothing: an audited-and-clean story and one the run
+      // never audited are different facts, and accept needs them told apart.
+      ...(marked
+        ? { accessibility: { violations: marked.violations, new: marked.newCount } }
+        : {}),
       artifacts,
     };
 
@@ -342,6 +384,14 @@ export default class DiopsisReporter implements Reporter {
       ...(totals.failed ? [`${totals.failed} failed`] : []),
     ];
 
+    // New findings are the actionable share of the audit's output, so the line reports
+    // them alone; a run whose findings are all accepted stays quiet.
+    const a11yStories = new Set(
+      ordered
+        .filter((capture) => (capture.accessibility?.new ?? 0) > 0)
+        .map((capture) => capture.storyId),
+    );
+
     // The run header already ends in a blank line; opening with another printed two.
     const lines = [
       ...(totals.notRun > 0
@@ -351,34 +401,59 @@ export default class DiopsisReporter implements Reporter {
       ...(totals.unstable > 0
         ? [`  ${totals.unstable} unstable — differed on one load, matched on the next`]
         : []),
+      ...(a11yStories.size > 0
+        ? [
+            `  a11y      ${totals.a11yNew} new ${totals.a11yNew === 1 ? 'finding' : 'findings'} ` +
+              `in ${a11yStories.size} ${a11yStories.size === 1 ? 'story' : 'stories'}`,
+          ]
+        : []),
       '',
     ];
 
     for (const capture of ordered) {
-      if (capture.status === 'unchanged' && !capture.unstable) continue;
-      // A pinned locale, not the machine's: the same run must print the same figures on
-      // every machine it is pasted from.
-      const detail = capture.unstable
-        ? capture.unstableDiffPixels === undefined
-          ? (capture.unstableStatus ?? 'unstable')
-          : `${capture.unstableDiffPixels.toLocaleString('en-US')} px differ`
-        : capture.diffPixels === undefined
-          ? capture.status
-          : `${capture.diffPixels.toLocaleString('en-US')} px differ`;
-      const mark = capture.unstable ? '?' : capture.status === 'changed' ? '~' : '+';
-      lines.push(
-        `  ${mark} ${capture.storyId} @${capture.width}` +
-          `${capture.mode ? ` [${capture.mode}]` : ''}` +
-          `${capture.state ? ` {${capture.state}}` : ''}  ${detail}`,
-      );
-      if (capture.status === 'render-failed' || capture.status === 'failed') {
-        for (const line of (capture.error ?? '').split('\n').slice(0, 2)) {
-          if (line.trim()) lines.push(`      ${line.trim()}`);
+      const newFindings = capture.accessibility?.new ?? 0;
+      // A capture that neither needs review nor carries new findings prints nothing; an
+      // audited capture in 'report' mode still prints its findings even when its pixels
+      // matched, because the findings are the review.
+      if (capture.status === 'unchanged' && !capture.unstable && newFindings === 0) continue;
+      if (capture.status !== 'unchanged' || capture.unstable) {
+        // A pinned locale, not the machine's: the same run must print the same figures on
+        // every machine it is pasted from.
+        const detail = capture.unstable
+          ? capture.unstableDiffPixels === undefined
+            ? (capture.unstableStatus ?? 'unstable')
+            : `${capture.unstableDiffPixels.toLocaleString('en-US')} px differ`
+          : capture.diffPixels === undefined
+            ? capture.status
+            : `${capture.diffPixels.toLocaleString('en-US')} px differ`;
+        const mark = capture.unstable ? '?' : capture.status === 'changed' ? '~' : '+';
+        lines.push(
+          `  ${mark} ${capture.storyId} @${capture.width}` +
+            `${capture.mode ? ` [${capture.mode}]` : ''}` +
+            `${capture.state ? ` {${capture.state}}` : ''}  ${detail}`,
+        );
+        if (capture.status === 'render-failed' || capture.status === 'failed') {
+          for (const line of (capture.error ?? '').split('\n').slice(0, 2)) {
+            if (line.trim()) lines.push(`      ${line.trim()}`);
+          }
+        }
+      }
+      // One line per rule with new findings, named the way the accepted-findings file
+      // names the story, so the line a reader acts on and the key accept writes agree.
+      if (newFindings > 0) {
+        for (const violation of capture.accessibility?.violations ?? []) {
+          const fresh = violation.targets.filter((target) => target.new).length;
+          if (fresh > 0) {
+            lines.push(
+              `  ! ${capture.storyId}${capture.mode ? `[@${capture.mode}]` : ''}  ` +
+                `${violation.id} (${fresh})`,
+            );
+          }
         }
       }
     }
 
-    if (counts.length > 1 || totals.unstable > 0) lines.push('');
+    if (counts.length > 1 || totals.unstable > 0 || a11yStories.size > 0) lines.push('');
     lines.push(`  report   ${show(reportPath)}`, `  summary  ${show(summaryPath)}`);
 
     if (summary.changedStories.length > 0 && summary.mode === 'run') {

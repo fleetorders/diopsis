@@ -1,4 +1,5 @@
 import type { CompareOptions } from '../config.ts';
+import type { MarkedA11yViolation } from '../accessibility.ts';
 import type { Region } from '../regions.ts';
 import type { PlannedCapture } from '../runner/generate.ts';
 
@@ -64,6 +65,12 @@ export interface CaptureResult {
   unstableStatus?: CaptureStatus;
   /** Differing pixels the load that differed reported, when it reported a count. */
   unstableDiffPixels?: number;
+  /**
+   * The accessibility audit's findings for this capture's story and mode, present only on
+   * the capture the run audited — including when it found nothing, so `accept` can tell an
+   * audited-and-clean story from one the run never audited.
+   */
+  accessibility?: { violations: MarkedA11yViolation[]; new: number };
   artifacts: CaptureArtifacts;
 }
 
@@ -86,6 +93,13 @@ export interface RunTotals {
    * Present only in summaries such a run wrote; they are not a comparison verdict.
    */
   carried?: number;
+  /**
+   * New accessibility findings across the run — findings whose rule and target the
+   * accepted-findings file does not list for their story. Present only in a run that
+   * audited; in `'report'` mode it changes nothing but the report, in `'fail'` mode each
+   * one failed its capture like a change.
+   */
+  a11yNew?: number;
 }
 
 /** A capture a change-aware run planned but did not shoot; its baseline stands as it was. */
@@ -180,6 +194,11 @@ export function classify(input: ClassifyInput): {
 
   if (MISSING_PATTERN.test(input.errorText)) return { status: 'new' };
 
+  // A new accessibility finding failed the capture after a comparison that passed; the
+  // pixels did not change, but the story needs a review exactly like one that did, so it
+  // lands in `changed` — the status whose response is accept.
+  if (input.errorText.includes('New accessibility findings')) return { status: 'changed' };
+
   const pixels = PIXELS_PATTERN.exec(input.errorText);
   if (pixels) {
     return {
@@ -208,6 +227,8 @@ export function totalsFor(captures: CaptureResult[]): RunTotals {
     failed: 0,
     notRun: 0,
   };
+  let a11yNew = 0;
+  let audited = false;
   for (const capture of captures) {
     // Unstable captures are unchanged — the count sits beside it, not instead of it.
     if (capture.unstable) totals.unstable += 1;
@@ -218,7 +239,14 @@ export function totalsFor(captures: CaptureResult[]): RunTotals {
     else if (capture.status === 'render-failed') totals.renderFailed += 1;
     else if (capture.error === NOT_RUN) totals.notRun += 1;
     else totals.failed += 1;
+    if (capture.accessibility) {
+      audited = true;
+      a11yNew += capture.accessibility.new;
+    }
   }
+  // Present only when the run audited: a zero on a run that never looked is not a clean
+  // bill of health, it is the audit being off.
+  if (audited) totals.a11yNew = a11yNew;
   return totals;
 }
 

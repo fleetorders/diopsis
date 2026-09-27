@@ -370,3 +370,56 @@ describe('generateProject with modes', () => {
     assert.match(spec, /storyUrlFor\(plan\.baseUrl, capture\.storyId, capture\.globals\)/);
   });
 });
+
+describe('generateProject with the accessibility audit', () => {
+  it('carries the mode, the library and the accepted-findings file in the plan', async () => {
+    const root = await scratch();
+    const config = resolveConfig({ accessibility: 'report' });
+    const { captures } = resolveMatrix(stories, config, 'linux-x64');
+    const project = await generateProject({
+      root,
+      config,
+      captures,
+      baseUrl: 'http://x',
+      axePath: '/tested/node_modules/axe-core/axe.js',
+    });
+
+    const plan = JSON.parse(await readFile(project.planPath, 'utf8')) as {
+      accessibility: string;
+      axePath?: string;
+      a11yAcceptedPath?: string;
+    };
+    assert.equal(plan.accessibility, 'report');
+    assert.equal(plan.axePath, '/tested/node_modules/axe-core/axe.js');
+    assert.equal(plan.a11yAcceptedPath, path.join(root, '__screenshots__', 'accessibility.json'));
+
+    // The spec audits the marked capture, records the findings, and never decides anything
+    // itself: the plan says whether a new finding fails the run.
+    const spec = await readFile(path.join(project.dir, 'diopsis.spec.js'), 'utf8');
+    assert.match(spec, /if \(capture\.a11y && plan\.accessibility !== 'off' && axeSource\)/);
+    assert.match(spec, /type: 'diopsis-a11y'/);
+    assert.match(spec, /if \(plan\.accessibility === 'fail'\)/);
+  });
+
+  it('plans nothing for an off run, and never fails an update', async () => {
+    const root = await scratch();
+    const { captures } = resolveMatrix(stories, resolveConfig(), 'linux-x64');
+
+    const off = await generateProject({ root, config: resolveConfig(), captures, baseUrl: 'http://x' });
+    const offPlan = JSON.parse(await readFile(off.planPath, 'utf8')) as { accessibility: string };
+    assert.equal(offPlan.accessibility, 'off');
+    assert.equal('axePath' in offPlan, false);
+
+    // A regeneration writes baselines and passes by construction; failing it on findings
+    // would be a 'fail' run nothing can be accepted from.
+    const update = await generateProject({
+      root,
+      config: resolveConfig({ accessibility: 'fail' }),
+      captures,
+      baseUrl: 'http://x',
+      mode: 'update',
+    });
+    const updatePlan = JSON.parse(await readFile(update.planPath, 'utf8')) as { accessibility: string };
+    assert.equal(updatePlan.accessibility, 'report');
+  });
+});
