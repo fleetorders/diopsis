@@ -51,7 +51,7 @@ describe('headerBlock', () => {
   it('counts the stories whose tags loosened tolerance beyond the config', () => {
     const out = blockFor([...stories(['a--loose'], ['diopsis:threshold=0.6']), ...stories(['b--plain'])]);
     assert.match(out, /Diopsis · 2 stories → 2 captures · /);
-    assert.match(out, /  loosened  1 stories \(diopsis:threshold \/ max-diff-\* tags\)\n/);
+    assert.match(out, /  loosened  1 story \(diopsis:threshold \/ max-diff-\* tags\)\n/);
   });
 
   it('prints no loosened line while nothing compares more loosely than the config', () => {
