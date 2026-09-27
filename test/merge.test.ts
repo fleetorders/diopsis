@@ -165,8 +165,9 @@ describe('mergeCommand', () => {
     await runMerge(root);
     const summary = await mergedSummary(root);
     const artifacts = summary.captures.find((entry) => entry.status === 'changed')?.artifacts;
-    assert.equal(artifacts?.actual, path.join('..', 'shard-1-of-2', 'test-results', 'a-actual.png'));
-    assert.equal(artifacts?.expected, path.join('..', 'shard-1-of-2', 'test-results', 'a-expected.png'));
+    // Recorded with forward slashes on every platform, like every path in a summary.
+    assert.equal(artifacts?.actual, '../shard-1-of-2/test-results/a-actual.png');
+    assert.equal(artifacts?.expected, '../shard-1-of-2/test-results/a-expected.png');
     assert.equal(artifacts?.diff, undefined);
     // The rewritten path resolves, from the merged directory, onto the shard's real file.
     for (const relative of [artifacts?.actual, artifacts?.expected]) {
