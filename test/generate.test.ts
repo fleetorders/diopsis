@@ -146,6 +146,31 @@ describe('generateProject per-story tolerance', () => {
   });
 });
 
+describe('generateProject component scope', () => {
+  it('clips component captures and records the fallback when there is nothing to clip', async () => {
+    const root = await scratch();
+    const config = resolveConfig({ capture: 'component', viewports: { default: [320] } });
+    const scoped: StoryEntry[] = [
+      { id: 'a--chip', name: 'Chip', title: 'A', tags: ['diopsis:component'] },
+      { id: 'b--page', name: 'Page', title: 'B', tags: ['diopsis:page'] },
+    ];
+    const { captures } = resolveMatrix(scoped, config, 'linux-x64');
+    const project = await generateProject({ root, config, captures, baseUrl: 'http://x' });
+
+    const plan = JSON.parse(await readFile(project.planPath, 'utf8')) as {
+      captures: Array<{ scope: string }>;
+    };
+    assert.deepEqual(plan.captures.map((capture) => capture.scope), ['component', 'page']);
+
+    const spec = await readFile(path.join(project.dir, 'diopsis.spec.js'), 'utf8');
+    assert.match(spec, /capture\.scope === 'component'/);
+    assert.match(spec, /componentClip\(page\)/);
+    assert.match(spec, /fullPage: clip \? true : plan\.fullPage/);
+    assert.match(spec, /type: 'diopsis-scope'/);
+    assert.match(spec, /'fell back to page'/);
+  });
+});
+
 describe('planCaptures baseline paths', () => {
   it('carries the absolute baseline path the spec checks before comparing', () => {
     const { captures } = resolveMatrix(stories, resolveConfig(), 'linux-x64');

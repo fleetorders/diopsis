@@ -17,7 +17,7 @@ export type {
 export { parseStoryIndex, readStoryIndex } from './story-index.ts';
 export type { StoryEntry } from './story-index.ts';
 
-export { platformToken, resolveMatrix, snapshotPathFor, widthsForStory } from './matrix.ts';
+export { platformToken, resolveMatrix, scopeForStory, snapshotPathFor, widthsForStory } from './matrix.ts';
 export type { Capture, ResolvedMatrix } from './matrix.ts';
 
 export { serveStatic, storyUrlFor } from './server.ts';

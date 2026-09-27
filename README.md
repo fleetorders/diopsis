@@ -177,6 +177,13 @@ export const Untestable = { tags: ['diopsis:skip'] };    // never captured
 A tag naming neither a width nor a configured set warns and falls back to the default widths. A
 typo should not quietly stop watching a story.
 
+### Component or page
+
+By default a capture is the whole canvas at the configured width. With `capture: 'component'`
+it is the rendered component instead — the box around everything the story drew, padded by
+8 px — so the empty canvas around a button is neither stored nor compared. A story can choose
+for itself with `diopsis:component` or `diopsis:page`. Switching regenerates those baselines.
+
 ### Per-story tolerance
 
 The occasional story that cannot be made deterministic — a gradient that dithers, a chart that
@@ -275,12 +282,14 @@ captured.
 | `image` | Playwright's Jammy image | The one image name baseline generation and CI must share |
 | `stabilize.freezeClock` | `2026-01-15T12:00:00Z` | Fixed wall-clock time, or `false` |
 | `stabilize.waitForNetworkIdle` | `true` | Wait until no request is in flight and no short timer that could start one is pending |
+| `stabilize.waitForPlay` | `true` | Capture after the story's play function finishes; a play function that fails is a render failure |
 | `stabilize.disableAnimations` | `true` | Zero out animations and transitions |
 | `stabilize.waitForFonts` | `true` | Wait for `document.fonts.ready` |
 | `stabilize.waitForImages` | `true` | Wait for every image to decode |
 | `stabilize.waitForLoadingStates` | `true` | Wait for `aria-busy` and progressbars to clear |
 | `stabilize.settleTimeout` | `15000` | Ceiling on the whole stabilization sequence, ms |
 | `mask` | `['[data-diopsis-ignore]']` | Selectors painted over before comparison |
+| `capture` | `page` | `component` photographs the rendered component instead of the whole canvas |
 | `compare.threshold` | `0.2` | Per-pixel colour tolerance, 0–1 |
 | `compare.maxDiffPixelRatio` | `0.001` | Share of differing pixels tolerated |
 | `compare.maxDiffPixels` | unset | Number of differing pixels tolerated; with the ratio, the stricter applies |

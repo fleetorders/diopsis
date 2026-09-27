@@ -746,6 +746,27 @@ point; `doctor` is where that is seen.
 
 **Scope:** repo.
 
+## D-029 — 2026-09-27 — Component-scoped capture, opt-in
+
+**Decision:** `capture: 'component'` (or a story's `diopsis:component` tag) photographs the
+union of the boxes of everything under the render root — children and their descendants, so an
+overflowing popover is included — padded by 8 px, instead of the whole canvas.
+`diopsis:page` restores the canvas for one story; conflicting tags warn and the page wins. When
+nothing under the root has a box, the capture falls back to the page and says so in an
+annotation. The default stays `page`.
+
+**Why:** most component stories draw a small thing in a large canvas, and every empty pixel is
+stored in history, compared on every run and scrolled past in review. Measuring the drawn box
+at capture time needs no configuration per story. It stays opt-in because switching changes
+every baseline's dimensions, which must be a deliberate regeneration rather than a surprise
+after an upgrade.
+
+**Consequences:** the saving depends on how stories lay themselves out; a story that wraps
+itself in a full-width, full-height container gains little, because its component is the
+container. Descendants are walked up to 5000 elements to bound the cost on very large stories.
+
+**Scope:** repo.
+
 ## D-030 — 2026-09-27 — The report says where a capture changed
 
 **Decision:** For every changed capture the reporter decodes the comparator's diff image,
@@ -764,5 +785,28 @@ which is the question a reviewer is actually asking.
 **Consequences:** region outlines use the status colour, and the one being stepped to flashes
 in the accent, keeping D-020's rule that colour means one thing at a time. Only pure-red diff
 pixels count; anti-aliasing differences, which the comparator marks yellow, are not regions.
+
+**Scope:** repo.
+
+## D-031 — 2026-09-27 — Capture after the play function, and fail when it fails
+
+**Decision:** Before capturing, the runtime waits for Storybook's render of the story to reach
+its final phase — `finished` in current Storybook, `completed` before it — so a story's play
+function has run to the end. A play function that throws, or leaves unhandled errors, makes the
+capture `render-failed` with the story's own error message. The signal is read from Storybook's
+event channel, which a probe installed before the page loads subscribes to the moment it exists;
+an error status explained by a failed addon report, such as an accessibility check, is not a
+broken story. Storybooks without these signals skip the wait at no cost.
+`stabilize.waitForPlay: false` turns it off.
+
+**Why:** the preview runs play functions on its own, so every capture of a story with one was
+racing it. On a real Storybook build a story whose play function opens a panel after a short
+delay was captured closed, and a story whose play function threw was captured and passed as
+unchanged — a baseline that recorded the story broken, reported as fine.
+
+**Consequences:** a story whose play function never finishes now spends the settle budget
+before it is captured. Render failures now carry the story's own error text, and error text
+in `summary.json` and the terminal no longer includes stack frames, which named local paths and
+Diopsis internals.
 
 **Scope:** repo.

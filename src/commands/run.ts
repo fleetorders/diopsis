@@ -48,17 +48,36 @@ export function headerBlock(input: {
   grep?: string;
   /** Config source as shown to the user — a relative path, or 'defaults (no config file)'. */
   configSource: string;
+  /** The configured capture scope — the stories departing from it are counted beside it. */
+  capture: 'page' | 'component';
   storybookDir: string;
   snapshotDir: string;
   skipped: string[];
   unwatched: string[];
   loosened: string[];
 }): string {
+  // Like the loosened line, the scope line exists to make an exception visible: it appears
+  // only when something departs from the whole-page default, and counts the stories that
+  // run against the configured scope.
+  const offScope = new Set(
+    input.captures.filter((capture) => capture.scope !== input.capture).map((capture) => capture.storyId),
+  ).size;
+  const scopeLine =
+    input.capture === 'page' && offScope === 0
+      ? ''
+      : `  scope     ${input.capture}` +
+        (offScope > 0
+          ? ` (${offScope} ${offScope === 1 ? 'story' : 'stories'} ` +
+            `${input.capture === 'page' ? 'component' : 'page'})`
+          : '') +
+        '\n';
+
   return (
     `${headerLine(input.captures, input.grep)}\n` +
     `  config    ${input.configSource}\n` +
     `  storybook ${input.storybookDir}\n` +
     `  baselines ${input.snapshotDir}\n` +
+    scopeLine +
     (input.skipped.length ? `  skipped   ${input.skipped.length} stories (diopsis:skip)\n` : '') +
     (input.unwatched.length
       ? `  unwatched ${input.unwatched.length} stories (no widths: viewports.default is empty)\n`
@@ -148,6 +167,7 @@ export async function runCommand(options: RunOptions): Promise<number> {
     headerBlock({
       captures,
       ...(options.grep ? { grep: options.grep } : {}),
+      capture: config.capture,
       configSource: filepath ? path.relative(options.root, filepath) : 'defaults (no config file)',
       storybookDir: config.storybookDir,
       snapshotDir: config.snapshotDir,

@@ -29,7 +29,7 @@ try {
   process.exit(1);
 }
 
-const { openStory } = await import('../src/runtime/capture.ts');
+const { componentClip, openStory, StoryRenderError } = await import('../src/runtime/capture.ts');
 const { serveStatic } = await import('../src/server.ts');
 const { defaultConfig } = await import('../src/config.ts');
 
@@ -58,6 +58,68 @@ await writeFile(path.join(work, 'fast-ticker.html'), page(`
 await writeFile(path.join(work, 'cleared.html'), page(`
   const t = setTimeout(() => {}, 400); clearTimeout(t);
   document.getElementById('out').textContent = 'cleared';`));
+
+// A play function in flight, from the preview's point of view: nothing is pending on the
+// network, and only the render phase says the story is still being acted on. The flip is
+// scheduled one timer deep, inside another timer's callback, so the network wait's probe
+// cannot count it; the check then fails if the phase alone stops being waited for.
+await writeFile(path.join(work, 'play-completes.html'), page(`
+  window.__STORYBOOK_PREVIEW__ = { currentRender: { phase: 'playing' } };
+  setTimeout(() => setTimeout(() => {
+    window.__STORYBOOK_PREVIEW__.currentRender.phase = 'completed';
+    document.getElementById('out').textContent = 'played';
+  }, 400), 0);`));
+// Current Storybook ends every render in 'finished' and reports a thrown play function only as
+// a storyFinished event with an error status — unless a failed addon report explains it.
+const finishing = (payload) => page(`
+  window.__STORYBOOK_PREVIEW__ = { currentRender: { phase: 'playing' } };
+  const handlers = {};
+  window.__STORYBOOK_ADDONS_CHANNEL__ = { on: (event, fn) => { handlers[event] = fn; } };
+  setTimeout(() => {
+    (handlers.storyFinished || (() => {}))(${payload});
+    window.__STORYBOOK_PREVIEW__.currentRender.phase = 'finished';
+    document.getElementById('out').textContent = 'finished';
+  }, 150);`);
+await writeFile(path.join(work, 'finished-error.html'),
+  finishing(`{ status: 'error', reporters: [] }`));
+await writeFile(path.join(work, 'finished-report.html'),
+  finishing(`{ status: 'error', reporters: [{ type: 'a11y', status: 'failed' }] }`));
+
+// A play function that throws: the phase ends in 'errored', and the error display says why.
+await writeFile(path.join(work, 'play-errored.html'), page(`
+  window.__STORYBOOK_PREVIEW__ = { currentRender: { phase: 'playing' } };
+  setTimeout(() => {
+    window.__STORYBOOK_PREVIEW__.currentRender.phase = 'errored';
+    document.getElementById('storybook-root').innerHTML =
+      '<pre id="error-message">play blew up</pre><pre id="error-stack">at the story</pre>';
+  }, 400);`));
+// A play function that never ends: the settle budget, not the story, closes the wait.
+await writeFile(path.join(work, 'play-stuck.html'), page(`
+  window.__STORYBOOK_PREVIEW__ = { currentRender: { phase: 'playing' } };
+  document.getElementById('out').textContent = 'stuck';`));
+
+// componentClip pages: body margin zeroed so the coordinates asserted below are exact.
+const clipPage = (body) => `<!doctype html><meta charset=utf-8>
+<style>body{margin:0}</style>
+<div id="storybook-root">${body}</div>`;
+// A small component, offset well inside a page much larger than it.
+await writeFile(
+  path.join(work, 'component-small.html'),
+  clipPage(
+    '<button style="position:absolute;left:300px;top:200px;width:120px;height:40px;box-sizing:border-box">small</button>',
+  ),
+);
+// A child whose absolutely positioned descendant overflows it, on a page tall enough to
+// scroll — the clip must be in document coordinates and include the descendant.
+await writeFile(
+  path.join(work, 'component-overflow.html'),
+  `<!doctype html><meta charset=utf-8>
+<style>body{margin:0}</style>
+<div style="position:absolute;top:0;left:0;width:0;height:2000px"></div>
+<div id="storybook-root"><div style="position:absolute;left:40px;top:30px;width:100px;height:50px"><span style="position:absolute;left:150px;top:70px;width:60px;height:20px">far</span></div></div>`,
+);
+// A render root with nothing in it.
+await writeFile(path.join(work, 'component-empty.html'), clipPage(''));
 
 const results = [];
 const check = (name, pass, detail) => results.push({ name, pass, detail });
@@ -106,6 +168,50 @@ try {
   const cleared = await cost('cleared.html');
   check('a cleared timer is not waited for', cleared < 300, `+${cleared} ms`);
 
+  const played = await open('play-completes.html');
+  check('a capture waits for the story to finish playing', played.text === 'played', played.text);
+
+  let failure;
+  try {
+    await open('play-errored.html');
+  } catch (error) {
+    failure = error;
+  }
+  check(
+    'a failing play function is a render failure',
+    failure instanceof StoryRenderError &&
+      failure.message.includes('play function') &&
+      failure.detail === 'play blew up\nat the story',
+    failure ? `${failure.name}: ${failure.message} (${failure.detail})` : 'resolved',
+  );
+
+  let finishedFailure;
+  try {
+    await open('finished-error.html');
+  } catch (error) {
+    finishedFailure = error;
+  }
+  check('a storyFinished error status is a render failure',
+    finishedFailure instanceof StoryRenderError, finishedFailure ? finishedFailure.message : 'resolved');
+
+  const reportOnly = await open('finished-report.html').catch((error) => ({ text: String(error) }));
+  check('a failed addon report alone is not a broken story', reportOnly.text === 'finished',
+    reportOnly.text);
+
+  // The play wait must cost a preview-less page nothing, measured like the waits above: the
+  // same page twice, once with the wait switched off.
+  const noPlay = { ...defaultConfig.stabilize, waitForPlay: false };
+  const previewless =
+    (await open('static.html')).elapsed - (await open('static.html', noPlay)).elapsed;
+  check('a page without a preview object pays nothing for the play wait', previewless < 300, `+${previewless} ms`);
+
+  const stuck = await open('play-stuck.html', { ...defaultConfig.stabilize, settleTimeout: 1500 });
+  check(
+    'a story still playing gives up at the settle budget',
+    stuck.text === 'stuck' && stuck.elapsed >= 1200 && stuck.elapsed < 4000,
+    `${stuck.text} after ${stuck.elapsed} ms`,
+  );
+
   // A reused page must not carry one story's state into the next.
   await writeFile(path.join(work, 'writes.html'), page(`
     localStorage.setItem('k', 'leaked'); sessionStorage.setItem('k', 'leaked');
@@ -124,6 +230,45 @@ try {
   const seen = await shared.locator('#out').textContent();
   check('a reused page starts each story with empty storage', seen === ',,,', seen);
   await context.close();
+
+  // componentClip: the geometry a component-scoped capture photographs.
+  {
+    const context = await browser.newContext();
+    const p = await context.newPage();
+    await openStory(p, `${server.url}/component-small.html`, defaultConfig.stabilize);
+    const clip = await componentClip(p);
+    check(
+      'a small offset component clips to its padded box',
+      clip != null &&
+        clip.x === 292 && clip.y === 192 && clip.width === 136 && clip.height === 56,
+      JSON.stringify(clip),
+    );
+    await context.close();
+  }
+  {
+    const context = await browser.newContext();
+    const p = await context.newPage();
+    await p.goto(`${server.url}/component-overflow.html`);
+    await p.evaluate(() => window.scrollTo(0, 40));
+    const clip = await componentClip(p);
+    // (40,30)-(250,120) padded by 8: the overflow included, the scroll offset added back.
+    check(
+      'a clip includes a descendant overflowing its parent, in document coordinates',
+      clip != null &&
+        clip.x === 32 && clip.y === 22 && clip.width === 226 && clip.height === 106,
+      JSON.stringify(clip),
+    );
+    await context.close();
+  }
+  {
+    const context = await browser.newContext();
+    const p = await context.newPage();
+    // Not through openStory: an empty root is exactly what its waits would reject.
+    await p.goto(`${server.url}/component-empty.html`);
+    const clip = await componentClip(p);
+    check('an empty render root has no clip to take', clip === undefined, JSON.stringify(clip));
+    await context.close();
+  }
 } finally {
   await browser.close();
   await server.close();

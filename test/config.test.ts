@@ -44,6 +44,7 @@ describe('resolveConfig', () => {
     assert.equal(stabilize.waitForFonts, true);
     assert.equal(stabilize.waitForImages, true);
     assert.equal(stabilize.waitForLoadingStates, true);
+    assert.equal(stabilize.waitForPlay, true);
     assert.equal(typeof stabilize.freezeClock, 'string');
   });
 
@@ -69,6 +70,11 @@ describe('resolveConfig', () => {
 
   it('recognises only its own ignore attribute', () => {
     assert.deepEqual(defaultConfig.mask, ['[data-diopsis-ignore]']);
+  });
+
+  it('captures the whole page unless the config says component', () => {
+    assert.equal(resolveConfig().capture, 'page');
+    assert.equal(resolveConfig({ capture: 'component' }).capture, 'component');
   });
 });
 
@@ -141,6 +147,7 @@ describe('validateConfig', () => {
   function configWith(over: {
     viewports?: unknown;
     viewportHeight?: unknown;
+    capture?: unknown;
     timeout?: unknown;
     workers?: unknown;
     fullPage?: unknown;
@@ -231,6 +238,14 @@ describe('validateConfig', () => {
     );
   });
 
+  it('accepts "page" and "component" as the capture scope, and nothing else', () => {
+    assert.deepEqual(validateConfig(configWith({ capture: 'page' })), []);
+    assert.deepEqual(validateConfig(configWith({ capture: 'component' })), []);
+    const problems = validateConfig(configWith({ capture: 'story' }));
+    assert.equal(problems.length, 1);
+    assert.match(problems[0] ?? '', /capture must be "page" or "component" \(got "story"\)/);
+  });
+
   it('checks the remaining shape rules', () => {
     const problems = validateConfig(
       configWith({
@@ -252,6 +267,13 @@ describe('validateConfig', () => {
       validateConfig(configWith({ stabilize: { freezeClock: '2026-01-15T12:00:00Z' } })),
       [],
     );
+  });
+
+  it('accepts waitForPlay as a boolean and nothing else', () => {
+    assert.deepEqual(validateConfig(configWith({ stabilize: { waitForPlay: false } })), []);
+    const problems = validateConfig(configWith({ stabilize: { waitForPlay: 'yes' } }));
+    assert.equal(problems.length, 1);
+    assert.match(problems[0] ?? '', /stabilize\.waitForPlay must be true or false \(got "yes"\)/);
   });
 });
 

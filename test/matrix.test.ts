@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
+import type { DiopsisConfig } from '../src/config.ts';
 import {
   effectiveCompare,
   loosenedStoryIds,
   platformToken,
   resolveMatrix,
+  scopeForStory,
   snapshotPathFor,
   toleranceForStory,
   widthsForStory,
@@ -80,6 +82,12 @@ describe('widthsForStory', () => {
   it('ignores tags that are not directives', () => {
     assert.deepEqual(widthsForStory(story('a--one', ['dev', 'test']), viewports).widths, [320, 1280]);
   });
+
+  it('treats the scope tags as directives that name no width', () => {
+    const result = widthsForStory(story('a--one', ['diopsis:component']), viewports);
+    assert.deepEqual(result.widths, [320, 1280]);
+    assert.deepEqual(result.warnings, []);
+  });
 });
 
 describe('toleranceForStory', () => {
@@ -142,7 +150,7 @@ describe('resolveMatrix', () => {
     story('b--wide', ['diopsis:1280']),
     story('c--gone', ['diopsis:skip']),
   ];
-  const matrix = resolveMatrix(stories, { viewports, viewportHeight: 900 }, 'linux-x64');
+  const matrix = resolveMatrix(stories, { viewports, viewportHeight: 900, capture: 'page' }, 'linux-x64');
 
   it('counts captures, not stories', () => {
     assert.equal(stories.length, 3);
@@ -173,7 +181,7 @@ describe('resolveMatrix with tolerance tags', () => {
       story('a--one', ['diopsis:threshold=0.4']),
       story('b--two', ['diopsis:mobile', 'diopsis:max-diff-pixels=120']),
     ],
-    { viewports, viewportHeight: 900 },
+    { viewports, viewportHeight: 900, capture: 'page' },
     'linux-x64',
   );
 
@@ -185,7 +193,7 @@ describe('resolveMatrix with tolerance tags', () => {
   it('leaves a malformed tag a warning rather than a broken run', () => {
     const warned = resolveMatrix(
       [story('c--three', ['diopsis:threshold=9'])],
-      { viewports, viewportHeight: 900 },
+      { viewports, viewportHeight: 900, capture: 'page' },
       'linux-x64',
     );
     assert.equal(warned.captures[0]?.compare, undefined);
@@ -195,7 +203,11 @@ describe('resolveMatrix with tolerance tags', () => {
 
 describe('loosenedStoryIds', () => {
   const compare = { threshold: 0.2, maxDiffPixelRatio: 0.001 };
-  const oneWidth = { viewports: { default: [320] }, viewportHeight: 900 };
+  const oneWidth: Pick<DiopsisConfig, 'viewports' | 'viewportHeight' | 'capture'> = {
+    viewports: { default: [320] },
+    viewportHeight: 900,
+    capture: 'page',
+  };
 
   it('names the stories whose tags widen any tolerance beyond the config', () => {
     const matrix = resolveMatrix(
@@ -234,7 +246,7 @@ describe('loosenedStoryIds', () => {
   it('lists each story once, however many widths it captures', () => {
     const matrix = resolveMatrix(
       [story('a--loose', ['diopsis:threshold=0.6'])],
-      { viewports: { default: [320, 1280] }, viewportHeight: 900 },
+      { viewports: { default: [320, 1280] }, viewportHeight: 900, capture: 'page' },
       'linux-x64',
     );
     assert.equal(matrix.captures.length, 2);
@@ -242,11 +254,70 @@ describe('loosenedStoryIds', () => {
   });
 });
 
+describe('scopeForStory', () => {
+  it('follows the configured scope when the story carries no scope tag', () => {
+    assert.equal(scopeForStory(story('a--one'), 'page').scope, 'page');
+    assert.equal(scopeForStory(story('a--one'), 'component').scope, 'component');
+  });
+
+  it('lets a tag override the configured scope in either direction', () => {
+    assert.equal(scopeForStory(story('a--one', ['diopsis:component']), 'page').scope, 'component');
+    assert.equal(scopeForStory(story('a--one', ['diopsis:page']), 'component').scope, 'page');
+  });
+
+  it('resolves a story carrying both tags to the page, with a warning', () => {
+    const result = scopeForStory(story('a--one', ['diopsis:component', 'diopsis:page']), 'component');
+    assert.equal(result.scope, 'page');
+    assert.equal(result.warnings.length, 1);
+    assert.match(
+      result.warnings[0] ?? '',
+      /a--one: tags "diopsis:page" and "diopsis:component" both set — "page" wins\./,
+    );
+  });
+
+  it('stays quiet when a tag agrees with the config or names no scope', () => {
+    assert.deepEqual(scopeForStory(story('a--one', ['diopsis:component']), 'component').warnings, []);
+    assert.deepEqual(scopeForStory(story('a--one', ['diopsis:1280']), 'page').warnings, []);
+    assert.deepEqual(scopeForStory(story('a--one', ['diopsis:threshold=0.4']), 'page').warnings, []);
+  });
+});
+
+describe('resolveMatrix with scope tags', () => {
+  const matrix = resolveMatrix(
+    [
+      story('a--plain'),
+      story('b--chip', ['diopsis:component']),
+      story('c--pinned', ['diopsis:page']),
+      story('d--both', ['diopsis:page', 'diopsis:component']),
+    ],
+    { viewports: { default: [320] }, viewportHeight: 900, capture: 'page' },
+    'linux-x64',
+  );
+
+  it('stamps every capture with the scope it will run at', () => {
+    assert.deepEqual(matrix.captures.map((c) => c.scope), ['page', 'component', 'page', 'page']);
+  });
+
+  it('defaults to the configured component scope', () => {
+    const componentRun = resolveMatrix(
+      [story('a--one'), story('b--pinned', ['diopsis:page'])],
+      { viewports: { default: [320] }, viewportHeight: 900, capture: 'component' },
+      'linux-x64',
+    );
+    assert.deepEqual(componentRun.captures.map((c) => c.scope), ['component', 'page']);
+  });
+
+  it('warns about the story carrying both scope tags, once', () => {
+    assert.equal(matrix.warnings.length, 1);
+    assert.match(matrix.warnings[0] ?? '', /d--both: tags/);
+  });
+});
+
 describe('resolveMatrix with an empty default set', () => {
   it('lists stories with no widths as unwatched instead of dropping them quietly', () => {
     const matrix = resolveMatrix(
       [story('a--one'), story('b--tagged', ['diopsis:mobile']), story('c--gone', ['diopsis:skip'])],
-      { viewports: { default: [], mobile: [320] }, viewportHeight: 900 },
+      { viewports: { default: [], mobile: [320] }, viewportHeight: 900, capture: 'page' },
       'linux-x64',
     );
     // A story tagged with a width is still watched; only the untagged ones lose everything.
@@ -267,7 +338,7 @@ describe('baseline path collisions', () => {
       () =>
         resolveMatrix(
           [story('a b--c'), story('a:b--c')],
-          { viewports, viewportHeight: 900 },
+          { viewports, viewportHeight: 900, capture: 'page' },
           'linux-x64',
         ),
       /"a b--c".*"a:b--c".*baseline/,
