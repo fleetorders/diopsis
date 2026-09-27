@@ -810,3 +810,25 @@ in `summary.json` and the terminal no longer includes stack frames, which named 
 Diopsis internals.
 
 **Scope:** repo.
+
+## D-032 — 2026-09-27 — A capture that differs once is retaken, and reported unstable
+
+**Decision:** In `run`, a capture that fails is taken again from a fresh page load, up to
+`stabilize.retries` times (default 1). One that then matches its baseline is `unchanged` with
+`unstable: true`, the first attempt's pixel count and status recorded, a line in the terminal
+summary and an Unstable filter in the report — and it does not fail the run. A capture whose
+first attempt had no baseline keeps that verdict, because the retry would compare against the
+baseline the first attempt just wrote. `update` never retries. Unstable carries no status colour
+and does not count as needing review.
+
+**Why:** within one page the comparator already waits for two identical screenshots, so the
+flake that survives is between loads — a font that wins a race, data that differs per load.
+Failing the run on it is how a suite gets muted; hiding it is how a real problem stays unseen.
+Retrying once and naming the result keeps the run trustworthy and the instability visible.
+
+**Consequences:** a genuinely changed capture is taken twice before it is reported, which costs
+one extra capture per real change and nothing for unchanged ones. A story that is random on
+every load is still reported changed about as often as both loads disagree with the baseline;
+the fix for that is in the story, and the Unstable filter is where it shows up first.
+
+**Scope:** repo.

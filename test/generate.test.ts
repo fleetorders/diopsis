@@ -217,6 +217,39 @@ describe('generateProject spec annotations', () => {
   });
 });
 
+describe('generateProject retries', () => {
+  const configOf = (retries: number) => resolveConfig({ stabilize: { retries } });
+
+  it('runs with the configured retries', async () => {
+    const root = await scratch();
+    const config = configOf(3);
+    const { captures } = resolveMatrix(stories, config, 'linux-x64');
+    const project = await generateProject({ root, config, captures, baseUrl: 'http://x' });
+    const configSource = await readFile(project.configPath, 'utf8');
+    assert.match(configSource, /retries: 3,/);
+  });
+
+  it('defaults to one retry in run mode', async () => {
+    const root = await scratch();
+    const config = resolveConfig();
+    const { captures } = resolveMatrix(stories, config, 'linux-x64');
+    const project = await generateProject({ root, config, captures, baseUrl: 'http://x' });
+    const configSource = await readFile(project.configPath, 'utf8');
+    assert.match(configSource, /retries: 1,/);
+  });
+
+  it('regenerates baselines with retries off, whatever the config says', async () => {
+    const root = await scratch();
+    const config = configOf(3);
+    const { captures } = resolveMatrix(stories, config, 'linux-x64');
+    const project = await generateProject({ root, config, captures, baseUrl: 'http://x', mode: 'update' });
+    const configSource = await readFile(project.configPath, 'utf8');
+    // A retry would compare against the baseline the first attempt just wrote and pass.
+    assert.match(configSource, /retries: 0,/);
+    assert.doesNotMatch(configSource, /retries: 3/);
+  });
+});
+
 describe('generateProject workers', () => {
   it('quotes a percentage workers setting, so the generated config stays valid JavaScript', async () => {
     const root = await scratch();
