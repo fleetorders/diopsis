@@ -448,6 +448,35 @@ describe('mergeCommand', () => {
     assert.equal(code, 2);
     assert.match(err, /names no merge base/);
   });
+
+  it('refuses an affected set without a base or changed-file count', async () => {
+    const root = await project([
+      {
+        shard: { index: 1, total: 1 },
+        captures: [capture({})],
+        summary: { affected: { mergeBase: 'abc' } as RunSummary['affected'] },
+      },
+    ]);
+    const { code, err } = await runMerge(root);
+    assert.equal(code, 2);
+    assert.match(err, /lacks a base or a changed-file count/);
+  });
+
+  it('refuses a capture without a status instead of crashing in the sort', async () => {
+    const bare = (snapshotPath: string) => {
+      const { status: _status, ...rest } = capture({ snapshotPath });
+      return rest as ReturnType<typeof capture>;
+    };
+    const root = await project([
+      {
+        shard: { index: 1, total: 1 },
+        captures: [bare('a--one/320w-linux-x64.png'), bare('a--one/320w-linux-x64-b.png')],
+      },
+    ]);
+    const { code, err } = await runMerge(root);
+    assert.equal(code, 2);
+    assert.match(err, /capture 1 lacks a story id, a status/);
+  });
 });
 
 describe('accepting a merged run', () => {

@@ -124,6 +124,7 @@ export async function mergeCommand(options: MergeOptions): Promise<number> {
         !capture ||
         typeof capture !== 'object' ||
         typeof capture.storyId !== 'string' ||
+        typeof capture.status !== 'string' ||
         typeof capture.snapshotPath !== 'string' ||
         !capture.artifacts ||
         typeof capture.artifacts !== 'object' ||
@@ -135,11 +136,22 @@ export async function mergeCommand(options: MergeOptions): Promise<number> {
     if (malformed !== -1) {
       return fail(
         `${say(dir)}/summary.json is not a run summary — capture ${malformed + 1} lacks a ` +
-          'story id, a baseline path or its artifacts.',
+          'story id, a status, a baseline path or its artifacts.',
       );
     }
-    if (summary.affected !== undefined && typeof summary.affected?.mergeBase !== 'string') {
+    const affected = summary.affected;
+    if (affected !== undefined && typeof affected?.mergeBase !== 'string') {
       return fail(`${say(dir)}/summary.json is not a run summary — its affected set names no merge base.`);
+    }
+    if (
+      affected !== undefined &&
+      (typeof affected.base !== 'string' ||
+        !Number.isInteger(affected.changedFiles) ||
+        affected.changedFiles < 0)
+    ) {
+      return fail(
+        `${say(dir)}/summary.json is not a run summary — its affected set lacks a base or a changed-file count.`,
+      );
     }
     // The directory a shard writes is part of its identity: the index the merge groups by
     // is read from it, and a summary that disagrees names a directory moved or renamed by
