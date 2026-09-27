@@ -237,3 +237,67 @@ describe('generateProject workers', () => {
     assert.match(configSource, /workers: 4,/);
   });
 });
+
+describe('planCaptures with modes', () => {
+  const modes = { dark: { theme: 'dark' }, rtl: { direction: 'rtl' } };
+
+  function plannedFor(tags: string[]) {
+    const config = resolveConfig({ viewports: { default: [320] }, modes });
+    const { captures } = resolveMatrix(
+      [{ id: 'a--one', name: 'One', title: 'A', tags }],
+      config,
+      'linux-x64',
+    );
+    return planCaptures(captures, '/repo/__screenshots__', undefined, modes);
+  }
+
+  it('keeps titles unique by naming the mode in brackets', () => {
+    const planned = plannedFor([]);
+    assert.deepEqual(planned.map((c) => c.title), [
+      'a--one @320',
+      'a--one @320 [dark]',
+      'a--one @320 [rtl]',
+    ]);
+    assert.equal(new Set(planned.map((c) => c.title)).size, planned.length);
+  });
+
+  it('resolves each mode into the globals the spec will pass, once, at planning time', () => {
+    const planned = plannedFor([]);
+    assert.deepEqual(planned.map((c) => c.globals), [undefined, { theme: 'dark' }, { direction: 'rtl' }]);
+  });
+
+  it('keeps the base capture free of globals', () => {
+    const planned = plannedFor(['diopsis:modes=dark']);
+    assert.equal(planned.length, 2);
+    assert.equal('globals' in (planned[0] ?? {}), false);
+    assert.deepEqual(planned[1]?.globals, { theme: 'dark' });
+  });
+});
+
+describe('generateProject with modes', () => {
+  it('writes the resolved globals into the plan and passes them from the spec', async () => {
+    const root = await scratch();
+    const modes = { dark: { theme: 'dark mode' } };
+    const config = resolveConfig({ viewports: { default: [320] }, modes });
+    const { captures } = resolveMatrix(
+      [{ id: 'a--one', name: 'One', title: 'A', tags: [] }],
+      config,
+      'linux-x64',
+    );
+    const project = await generateProject({ root, config, captures, baseUrl: 'http://x' });
+
+    const plan = JSON.parse(await readFile(project.planPath, 'utf8')) as {
+      captures: Array<{ title: string; globals?: Record<string, string>; mode?: string }>;
+    };
+    assert.deepEqual(plan.captures.map((capture) => capture.title), [
+      'a--one @320',
+      'a--one @320 [dark]',
+    ]);
+    assert.equal(plan.captures[1]?.mode, 'dark');
+    assert.deepEqual(plan.captures[1]?.globals, { theme: 'dark mode' });
+
+    // The spec hands the plan's globals to the URL builder; it never reads the config.
+    const spec = await readFile(path.join(project.dir, 'diopsis.spec.js'), 'utf8');
+    assert.match(spec, /storyUrlFor\(plan\.baseUrl, capture\.storyId, capture\.globals\)/);
+  });
+});

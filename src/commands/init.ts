@@ -179,11 +179,13 @@ export async function initCommand(options: InitOptions): Promise<number> {
       // widths rather than whichever preset happens to have two entries.
       const rows: number[][] = [[1280], [320, 1280], [320, 768, 1024, 1280]];
       if (!rows.some((widths) => sameWidths(widths, configured))) rows.push(configured);
+      const modeNames = config.modes ? Object.keys(config.modes) : [];
       for (const widths of rows) {
         const matrix = resolveMatrix(stories, {
           viewports: { default: widths },
           viewportHeight: config.viewportHeight,
           capture: 'page',
+          ...(config.modes ? { modes: config.modes } : {}),
         });
         const label = widths.join(', ').padEnd(25);
         const count = String(matrix.captures.length).padStart(8);
@@ -197,6 +199,14 @@ export async function initCommand(options: InitOptions): Promise<number> {
         `  ${stories.length} stories. Weight assumes ${formatBytes(ESTIMATED_BYTES_PER_CAPTURE)} per capture;`,
         '  `diopsis doctor` reports the real figure once baselines exist. Every intentional',
         '  change adds another full set to history, permanently.',
+        // The table's rows stay widths, as ever; with modes configured the counts above are
+        // the multiplied ones, so the note says what the multiplier is.
+        ...(modeNames.length
+          ? [
+              `  Counts include the configured modes (${modeNames.join(', ')}): every capture`,
+              '  runs once more per mode, with its own baselines.',
+            ]
+          : []),
         '',
       );
     } catch {

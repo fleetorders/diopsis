@@ -107,6 +107,7 @@ function notRunCapture(planned: PlannedCapture): CaptureResult {
     storyName: planned.storyName,
     width: planned.width,
     status: 'failed',
+    ...(planned.mode ? { mode: planned.mode } : {}),
     snapshotPath: planned.snapshotPath,
     ...(planned.compare ? { tolerance: planned.compare } : {}),
     error: NOT_RUN,
@@ -186,6 +187,7 @@ export default class DiopsisReporter implements Reporter {
       storyName: planned.storyName,
       width: planned.width,
       status: verdict.status,
+      ...(planned.mode ? { mode: planned.mode } : {}),
       snapshotPath: planned.snapshotPath,
       ...(planned.compare ? { tolerance: planned.compare } : {}),
       ...(verdict.diffPixels === undefined ? {} : { diffPixels: verdict.diffPixels }),
@@ -300,7 +302,10 @@ export default class DiopsisReporter implements Reporter {
         capture.diffPixels === undefined
           ? capture.status
           : `${capture.diffPixels.toLocaleString('en-US')} px differ`;
-      lines.push(`  ${capture.status === 'changed' ? '~' : '+'} ${capture.storyId} @${capture.width}  ${detail}`);
+      lines.push(
+        `  ${capture.status === 'changed' ? '~' : '+'} ${capture.storyId} @${capture.width}` +
+          `${capture.mode ? ` [${capture.mode}]` : ''}  ${detail}`,
+      );
       if (capture.status === 'render-failed' || capture.status === 'failed') {
         for (const line of (capture.error ?? '').split('\n').slice(0, 2)) {
           if (line.trim()) lines.push(`      ${line.trim()}`);

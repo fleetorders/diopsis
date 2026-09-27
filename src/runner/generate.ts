@@ -26,6 +26,11 @@ export interface PlannedCapture extends Capture {
   segments: string[];
   /** Absolute baseline path, checked before comparing so "new" is not a message guess. */
   baselinePath: string;
+  /**
+   * The globals this capture's mode resolves to, already looked up from the config so the
+   * spec reads plain data and never the config itself. Absent for the base capture.
+   */
+  globals?: Record<string, string>;
 }
 
 export interface GenerateOptions {
@@ -51,13 +56,18 @@ export function planCaptures(
   captures: Capture[],
   snapshotDirAbs: string,
   compare?: CompareOptions,
+  modes?: Record<string, Record<string, string>>,
 ): PlannedCapture[] {
   return captures.map((capture) => ({
     ...capture,
     // Resolved here, once, so the spec runs exactly the comparison the summary reports.
     ...(capture.compare && compare ? { compare: effectiveCompare(compare, capture.compare) } : {}),
+    // The mode's globals are resolved the same way — the spec reads the plan, not the config.
+    ...(capture.mode !== undefined && modes?.[capture.mode]
+      ? { globals: modes[capture.mode] }
+      : {}),
     baselinePath: path.join(snapshotDirAbs, capture.snapshotPath),
-    title: `${capture.storyId} @${capture.width}`,
+    title: `${capture.storyId} @${capture.width}${capture.mode ? ` [${capture.mode}]` : ''}`,
     segments: capture.snapshotPath.split('/'),
   }));
 }
@@ -84,7 +94,7 @@ export async function generateProject(options: GenerateOptions): Promise<Generat
 
   const plan: RunPlan = {
     baseUrl,
-    captures: planCaptures(options.captures, snapshotDir, config.compare),
+    captures: planCaptures(options.captures, snapshotDir, config.compare, config.modes),
     stabilize: config.stabilize,
     compare: config.compare,
     mask: config.mask,
@@ -194,7 +204,7 @@ for (const capture of plan.captures) {
     });
 
     await page.setViewportSize({ width: capture.width, height: capture.height });
-    await openStory(page, storyUrlFor(plan.baseUrl, capture.storyId), plan.stabilize);
+    await openStory(page, storyUrlFor(plan.baseUrl, capture.storyId, capture.globals), plan.stabilize);
 
     // A story's tolerance tags were resolved against the configured comparison when the plan
     // was written; a capture without them runs the configured comparison as it is.

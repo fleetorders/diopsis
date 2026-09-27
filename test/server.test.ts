@@ -126,3 +126,33 @@ describe('serveStatic error handling', () => {
     }
   });
 });
+
+describe('storyUrlFor with globals', () => {
+  it('appends the globals parameter in the format the preview reads', () => {
+    assert.equal(
+      storyUrlFor('http://127.0.0.1:1234', 'button--primary', { theme: 'dark' }),
+      'http://127.0.0.1:1234/iframe.html?viewMode=story&id=button--primary&globals=theme:dark',
+    );
+  });
+
+  it('joins pairs with ; and each key and value with :', () => {
+    assert.equal(
+      storyUrlFor('http://x', 'a--b', { direction: 'rtl', locale: 'ar' }),
+      'http://x/iframe.html?viewMode=story&id=a--b&globals=direction:rtl;locale:ar',
+    );
+  });
+
+  it('percent-encodes keys and values, never the separators', () => {
+    assert.equal(
+      storyUrlFor('http://x', 'a--b', { 'a key': 'a value&more' }),
+      'http://x/iframe.html?viewMode=story&id=a--b&globals=a%20key:a%20value%26more',
+    );
+  });
+
+  it('omits the parameter entirely when there are no globals', () => {
+    assert.equal(
+      storyUrlFor('http://x', 'a--b', {}),
+      'http://x/iframe.html?viewMode=story&id=a--b',
+    );
+  });
+});

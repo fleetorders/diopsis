@@ -48,6 +48,12 @@ export interface DiopsisConfig {
    * `diopsis:` tag; other names are selected per story by a `diopsis:<name>` tag.
    */
   viewports: Record<string, number[]>;
+  /**
+   * Named sets of Storybook globals — a dark theme, a right-to-left locale — each captured
+   * beside the base capture with its own baselines. A story restricts itself with
+   * `diopsis:modes=<a>,<b>`; `diopsis:modes=none` leaves the base capture only.
+   */
+  modes?: Record<string, Record<string, string>>;
   /** Viewport height. Captures are full-page, so this sets the fold, not the crop. */
   viewportHeight: number;
   /** Capture the whole scrollable page rather than the viewport. */
@@ -164,6 +170,41 @@ export function validateConfig(config: DiopsisConfig): string[] {
         problems.push(
           `viewports.${name} must be an array of positive integer widths (got ${show(widths)})`,
         );
+      }
+    }
+  }
+
+  // A mode name becomes part of a baseline filename and a URL parameter, so both have to be
+  // safe by construction rather than escaped on use.
+  if (config.modes !== undefined) {
+    if (!isPlainObject(config.modes)) {
+      problems.push(`modes must be an object of named globals sets (got ${show(config.modes)})`);
+    } else {
+      for (const [name, globals] of Object.entries(config.modes)) {
+        if (!/^[a-z0-9-]+$/.test(name)) {
+          problems.push(
+            `modes.${name} is not a valid mode name — lowercase letters, digits and dashes only`,
+          );
+          continue;
+        }
+        if (!isPlainObject(globals)) {
+          problems.push(`modes.${name} must be an object of globals (got ${show(globals)})`);
+          continue;
+        }
+        for (const [key, value] of Object.entries(globals)) {
+          if (!key || /[:;]/.test(key)) {
+            problems.push(
+              `modes.${name}: globals keys must be non-empty and free of ":" and ";" ` +
+                `(got key ${show(key)})`,
+            );
+          }
+          if (typeof value !== 'string' || !value || /[:;]/.test(value)) {
+            problems.push(
+              `modes.${name}.${key} must be a non-empty string without ":" or ";" ` +
+                `(got ${show(value)})`,
+            );
+          }
+        }
       }
     }
   }

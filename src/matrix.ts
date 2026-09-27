@@ -11,6 +11,11 @@ export interface Capture {
   height: number;
   /** What this capture frames: the whole page, or the rendered component alone. */
   scope: 'page' | 'component';
+  /**
+   * The configured mode this capture runs under — its set of Storybook globals. Absent
+   * means the base capture, which always exists and is not a mode.
+   */
+  mode?: string;
   /** Comparison overrides the story's tags set; only the keys a tag actually carried. */
   compare?: Partial<CompareOptions>;
   /** Baseline location, relative to `snapshotDir`. */
@@ -129,6 +134,59 @@ export function scopeForStory(
   return { scope: found ?? capture, warnings: [] };
 }
 
+/**
+ * The mode directives: `diopsis:modes=<a>,<b>` restricts a story to those configured modes
+ * (the base capture always runs), `diopsis:modes=none` leaves the base capture alone. They
+ * name no width and never take part in width resolution.
+ */
+function modesDirective(token: string): boolean {
+  return token.startsWith('modes=');
+}
+
+/**
+ * The modes a story is captured in beyond the base: the configured set, narrowed by the
+ * story's `diopsis:modes` tag. A tag naming an unconfigured mode warns through the same
+ * channel as every other tag and is ignored — a typo must cost a warning, never the run.
+ * The result keeps the configured order, so capture order is stable between runs.
+ */
+export function modesForStory(
+  story: StoryEntry,
+  configured: Record<string, Record<string, string>> | undefined,
+): { modes: string[]; warnings: string[] } {
+  const names = configured === undefined ? [] : Object.keys(configured);
+  if (configured === undefined || names.length === 0) {
+    const warnings = story.tags
+      .filter((tag) => tag.startsWith(TAG_PREFIX) && modesDirective(tag.slice(TAG_PREFIX.length)))
+      .map(
+        (tag) =>
+          `${story.id}: tag "${tag}" names modes but none are configured ` +
+          '(add them under `modes` in the config).',
+      );
+    return { modes: [], warnings };
+  }
+
+  const selected = new Set<string>();
+  const warnings: string[] = [];
+  let restricted = false;
+  for (const tag of story.tags) {
+    if (!tag.startsWith(TAG_PREFIX)) continue;
+    const token = tag.slice(TAG_PREFIX.length);
+    if (!modesDirective(token)) continue;
+    restricted = true;
+    if (token === 'modes=none') continue;
+    const listed = token.slice('modes='.length).split(',').map((name) => name.trim());
+    const unknown = listed.filter((name) => !name || !(name in configured));
+    if (unknown.length > 0) {
+      warnings.push(
+        `${story.id}: tag "${tag}" names ${unknown.length === 1 ? 'a mode' : 'modes'} ` +
+          `not configured: ${unknown.join(', ')} (known: ${names.join(', ')}).`,
+      );
+    }
+    for (const name of listed) if (name in configured) selected.add(name);
+  }
+  return { modes: restricted ? names.filter((name) => selected.has(name)) : names, warnings };
+}
+
 /** `darwin-arm64`, `linux-x64` — the token that keeps two platforms' baselines apart. */
 export function platformToken(
   platform: string = process.platform,
@@ -142,8 +200,18 @@ function safeSegment(id: string): string {
   return id.replace(/[^a-zA-Z0-9._-]/g, '_');
 }
 
-export function snapshotPathFor(storyId: string, width: number, platform = platformToken()): string {
-  return `${safeSegment(storyId)}/${width}w-${platform}.png`;
+export function snapshotPathFor(
+  storyId: string,
+  width: number,
+  platform = platformToken(),
+  mode?: string,
+): string {
+  const segment = safeSegment(storyId);
+  // The base path is untouched by the mode parameter: existing baselines stay valid the day
+  // modes are switched on, and a mode gets its own file beside them.
+  return mode === undefined
+    ? `${segment}/${width}w-${platform}.png`
+    : `${segment}/${width}w-${mode}-${platform}.png`;
 }
 
 /**
@@ -175,9 +243,9 @@ export function widthsForStory(
       continue;
     }
     // A tolerance directive names a comparison knob, not a width; skipping it here is what
-    // keeps a story carrying only tolerance tags on the default widths. The scope directives
-    // are the same kind: they name what the camera frames.
-    if (toleranceDirective(token) || SCOPE_TAGS[token]) continue;
+    // keeps a story carrying only tolerance tags on the default widths. The scope and mode
+    // directives are the same kind: they name what the camera frames, and under which globals.
+    if (toleranceDirective(token) || SCOPE_TAGS[token] || modesDirective(token)) continue;
     if (/^\d+$/.test(token)) {
       widths.add(Number.parseInt(token, 10));
       continue;
@@ -209,7 +277,7 @@ export function widthsForStory(
  */
 export function resolveMatrix(
   stories: StoryEntry[],
-  config: Pick<DiopsisConfig, 'viewports' | 'viewportHeight' | 'capture'>,
+  config: Pick<DiopsisConfig, 'viewports' | 'viewportHeight' | 'capture' | 'modes'>,
   platform: string = platformToken(),
 ): ResolvedMatrix {
   const captures: Capture[] = [];
@@ -225,7 +293,8 @@ export function resolveMatrix(
     const resolved = widthsForStory(story, config.viewports);
     const tolerance = toleranceForStory(story);
     const scope = scopeForStory(story, config.capture);
-    warnings.push(...resolved.warnings, ...tolerance.warnings, ...scope.warnings);
+    const modeSet = modesForStory(story, config.modes);
+    warnings.push(...resolved.warnings, ...tolerance.warnings, ...scope.warnings, ...modeSet.warnings);
     if (resolved.skip) {
       skipped.push(story.id);
       continue;
@@ -246,7 +315,7 @@ export function resolveMatrix(
     }
     owners.set(segment, story.id);
     for (const width of resolved.widths) {
-      captures.push({
+      const base = {
         storyId: story.id,
         storyName: story.name,
         storyTitle: story.title,
@@ -254,9 +323,18 @@ export function resolveMatrix(
         width,
         height: config.viewportHeight,
         scope: scope.scope,
-        snapshotPath: snapshotPathFor(story.id, width, platform),
         ...(tolerance.compare ? { compare: tolerance.compare } : {}),
-      });
+      };
+      // The base capture first, then one per mode: the order of the review list and the
+      // plan, and the shape of every path a baseline can live at.
+      captures.push({ ...base, snapshotPath: snapshotPathFor(story.id, width, platform) });
+      for (const mode of modeSet.modes) {
+        captures.push({
+          ...base,
+          mode,
+          snapshotPath: snapshotPathFor(story.id, width, platform, mode),
+        });
+      }
     }
   }
 

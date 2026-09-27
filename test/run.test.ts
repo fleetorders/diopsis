@@ -137,3 +137,41 @@ describe('explainEmptyRun', () => {
     );
   });
 });
+
+describe('headerBlock modes', () => {
+  const modes = { dark: { theme: 'dark' }, rtl: { direction: 'rtl' } };
+  const config = resolveConfig({ viewports: { default: [320] }, modes });
+
+  it('lists the configured modes where the cost of the matrix is read', () => {
+    const matrix = resolveMatrix(stories(['a--one']), config);
+    const out = headerBlock({
+      captures: matrix.captures,
+      capture: config.capture,
+      configSource: 'diopsis.config.mjs',
+      storybookDir: 'storybook-static',
+      snapshotDir: '__screenshots__',
+      skipped: matrix.skipped,
+      unwatched: matrix.unwatched,
+      loosened: [],
+      modes: Object.keys(modes),
+    });
+    assert.match(out, /Diopsis · 1 stories → 3 captures · /);
+    assert.match(out, /  modes     dark, rtl\n/);
+  });
+
+  it('prints no modes line when none are configured', () => {
+    const plain = resolveConfig({ viewports: { default: [320] } });
+    const matrix = resolveMatrix(stories(['a--one']), plain);
+    const out = headerBlock({
+      captures: matrix.captures,
+      capture: plain.capture,
+      configSource: 'diopsis.config.mjs',
+      storybookDir: 'storybook-static',
+      snapshotDir: '__screenshots__',
+      skipped: matrix.skipped,
+      unwatched: matrix.unwatched,
+      loosened: [],
+    });
+    assert.doesNotMatch(out, /modes/);
+  });
+});
