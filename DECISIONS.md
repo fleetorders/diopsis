@@ -1057,3 +1057,32 @@ shown as text and "new" as an outlined marker, so the report's colour keeps mean
 alone (D-020).
 
 **Scope:** repo.
+
+## D-043 — 2026-09-27 — Lossless baseline recompression, only when oxipng is there
+
+**Decision:** The config can set `compress: 'auto'` (default `'off'`, validated). With it,
+every baseline that `update` and `accept` write is recompressed by running the `oxipng`
+executable — `oxipng -o 4 --strip safe --quiet`, in batches of at most 100 files per
+invocation, spawned with no shell — but only after `oxipng --version` proves the tool is
+installed. Every recompressed file is then decoded by Diopsis's own PNG decoder and its RGBA
+bytes compared against the original; any file that differs — or fails to decode — is restored
+to its original bytes with a warning naming it. The tool's alpha optimisation is never
+requested, because it is the one oxipng mode that changes pixels. A missing tool prints one
+line and never fails the run; `doctor` warns when `compress` is `'auto'` and the tool is
+absent. `DIOPSIS_OXIPNG` names the executable for environments where it is not `oxipng` on
+the PATH.
+
+**Why:** baseline weight is the cost that only grows (D-037), and the browser's PNG encoder
+leaves every file larger than the same pixels need to be — savings that compound on every
+clone for zero pixel change. But none of that is worth a new required tool or a trusted
+claim of losslessness: the tool is detected, not configured; the check that makes "lossless"
+a guarantee is Diopsis's own decode-and-compare, not the optimiser's promise; and a failure
+anywhere in recompression falls back to the bytes the browser wrote rather than failing a run
+whose captures were already good.
+
+**Consequences:** no dependency is added — the executable is invoked, never bundled (D-015
+stands). `prune` is unchanged, and `doctor --json` keeps its shape. A run can only fall back:
+restore paths mean recompression leaves either smaller-but-identical pixels or the original
+bytes, never a corrupted baseline.
+
+**Scope:** repo.

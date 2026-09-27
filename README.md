@@ -361,6 +361,7 @@ captured.
 | `modes` | none | Named sets of Storybook globals; each story is also captured in each set |
 | `accessibility` | `off` | `report` lists axe-core findings beside the pixels; `fail` fails a run on new findings |
 | `budget` | none | `{ weight: '25 MB', captures: 800 }` — doctor fails past either, and warns at 90% |
+| `compress` | `off` | `auto` recompresses every baseline `update` and `accept` write, losslessly and verified pixel by pixel, when [oxipng](https://github.com/oxipng/oxipng) is installed |
 | `compare.threshold` | `0.2` | Per-pixel colour tolerance, 0–1 |
 | `compare.maxDiffPixelRatio` | `0.001` | Share of differing pixels tolerated |
 | `compare.maxDiffPixels` | unset | Number of differing pixels tolerated; with the ratio, the stricter applies |

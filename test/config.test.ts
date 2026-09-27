@@ -83,6 +83,11 @@ describe('resolveConfig', () => {
     assert.equal(resolveConfig().capture, 'page');
     assert.equal(resolveConfig({ capture: 'component' }).capture, 'component');
   });
+
+  it('defaults compression to off and passes auto through', () => {
+    assert.equal(resolveConfig().compress, 'off');
+    assert.equal(resolveConfig({ compress: 'auto' }).compress, 'auto');
+  });
 });
 
 describe('supportsTypeStripping', () => {
@@ -161,6 +166,7 @@ describe('validateConfig', () => {
     mask?: unknown;
     affected?: unknown;
     accessibility?: unknown;
+    compress?: unknown;
     budget?: unknown;
     stabilize?: Record<string, unknown>;
     compare?: Record<string, unknown>;
@@ -196,6 +202,14 @@ describe('validateConfig', () => {
   it('rejects zero and fractional widths', () => {
     const problems = validateConfig(configWith({ viewports: { default: [320, 0, 1.5] } }));
     assert.match(problems[0] ?? '', /got \[320,0,1\.5\]/);
+  });
+
+  it('accepts both compression settings, and names anything else', () => {
+    assert.deepEqual(validateConfig(configWith({ compress: 'auto' })), []);
+    assert.deepEqual(validateConfig(configWith({ compress: 'off' })), []);
+    const problems = validateConfig(configWith({ compress: 'always' }));
+    assert.equal(problems.length, 1);
+    assert.match(problems[0] ?? '', /compress must be "off" or "auto" \(got "always"\)/);
   });
 
   it('checks every numeric knob', () => {

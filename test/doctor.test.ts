@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { cp, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -38,6 +38,19 @@ afterEach(async () => {
 
 function find(checks: Check[], pattern: RegExp): Check | undefined {
   return checks.find((check) => pattern.test(check.title));
+}
+
+/**
+ * An executable that answers like an installed oxipng, so the check runs the same on a
+ * machine without the tool and on one that has it.
+ */
+async function fakeOxipng(): Promise<string> {
+  const dir = await mkdtemp(path.join(tmpdir(), 'diopsis-oxipng-'));
+  temporaries.push(dir);
+  const script = path.join(dir, 'oxipng');
+  await writeFile(script, '#!/bin/sh\nexit 0\n', 'utf8');
+  await chmod(script, 0o755);
+  return script;
 }
 
 /** Commands print their report on stdout; capture it so it can be asserted on. */
@@ -153,6 +166,32 @@ describe('runChecks', () => {
     );
     const check = find(await runChecks({ root }), /Unrecognised story tag/);
     assert.equal(check?.level, 'warn');
+  });
+
+  it('warns when compression is auto and oxipng is not installed', async () => {
+    const root = await project();
+    await writeFile(path.join(root, 'diopsis.config.mjs'), 'export default { compress: "auto" };');
+    // A name that resolves nowhere stands in for a PATH without the tool.
+    process.env.DIOPSIS_OXIPNG = 'oxipng-absent-for-this-test';
+    try {
+      const check = find(await runChecks({ root }), /oxipng is not installed/);
+      assert.equal(check?.level, 'warn');
+      assert.match(check?.detail ?? '', /written uncompressed/);
+    } finally {
+      delete process.env.DIOPSIS_OXIPNG;
+    }
+  });
+
+  it('stays quiet about compression when the tool answers, and when it is off', async () => {
+    const root = await project();
+    await writeFile(path.join(root, 'diopsis.config.mjs'), 'export default { compress: "auto" };');
+    process.env.DIOPSIS_OXIPNG = await fakeOxipng();
+    try {
+      const checks = await runChecks({ root });
+      assert.equal(find(checks, /oxipng/), undefined);
+    } finally {
+      delete process.env.DIOPSIS_OXIPNG;
+    }
   });
 });
 

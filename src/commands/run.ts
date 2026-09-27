@@ -5,6 +5,7 @@ import path from 'node:path';
 import { consideredFiles, readPreviewStats, resolveAffected } from '../affected.ts';
 import { baselineWeight } from '../baselines.ts';
 import { resolveAxePath } from '../accessibility.ts';
+import { recompressBaselines, writeRecompressReport } from '../compress.ts';
 import { formatBytes, loadConfig, parseSize } from '../config.ts';
 import { gitLines, isGitRepo, refExists } from '../git.ts';
 import {
@@ -606,7 +607,19 @@ export async function runCommand(options: RunOptions): Promise<number> {
     const args = [...(options.passthrough ?? [])];
     if (options.update) args.push('--update-snapshots=all');
 
-    return await runPlaywright({ root: options.root, configPath: project.configPath, args });
+    const exit = await runPlaywright({ root: options.root, configPath: project.configPath, args });
+
+    // Update is the one mode that writes baselines, so it is the one that recompresses
+    // them: every capture planned above wrote its baseline, and only those files are
+    // touched. A capture that failed to write is simply not there to recompress.
+    if (options.update && config.compress === 'auto') {
+      const written = planned
+        .map((capture) => path.join(path.resolve(options.root, config.snapshotDir), capture.snapshotPath))
+        .filter((file) => existsSync(file));
+      writeRecompressReport(await recompressBaselines({ files: written, root: options.root }));
+    }
+
+    return exit;
   } finally {
     await server.close();
     if (project && !options.keep) await project.cleanup();

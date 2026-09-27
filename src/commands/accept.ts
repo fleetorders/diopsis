@@ -9,6 +9,7 @@ import {
   formatAcceptedA11y,
   type AcceptedAccessibility,
 } from '../accessibility.ts';
+import { recompressBaselines, writeRecompressReport } from '../compress.ts';
 import { loadConfig } from '../config.ts';
 import { gitEnv, isGitRepo } from '../git.ts';
 import { needsReview, type CaptureResult, type RunSummary } from '../report/summary.ts';
@@ -215,6 +216,12 @@ export async function acceptCommand(options: AcceptOptions): Promise<number> {
   }
   if (written.length === 0 && !findingsWritten) {
     process.stdout.write('Nothing to accept — no reviewable capture produced an image.\n');
+  }
+
+  if (config.compress === 'auto' && written.length > 0) {
+    // Recompression happens before the staging below, so what git is handed is the
+    // smallest form of the same pixels rather than a second change to review.
+    writeRecompressReport(await recompressBaselines({ files: written, root: options.root }));
   }
 
   const stagedPaths = findingsWritten ? [...written, acceptedPath] : written;
