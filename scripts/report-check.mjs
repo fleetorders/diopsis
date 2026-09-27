@@ -263,10 +263,17 @@ check('a changed capture still offers the comparison modes',
 // Hidden captures keep their controls in the page, so counting pressed buttons looks at the
 // visible rows only.
 const pressed = (scope) => page.locator(scope + ' .capture:not([hidden]) .modes button[aria-pressed=true]').allTextContents();
+// A page-wide step is done when the pressed buttons say so — a count and a label, never a
+// clock — so each wait states the very condition the check after it asserts.
+const settledOn = (scope, mode, count) => page.waitForFunction(
+  (want) => {
+    const bs = document.querySelectorAll(want.scope + ' .capture:not([hidden]) .modes button[aria-pressed=true]');
+    return bs.length === want.count && [...bs].every((b) => b.textContent === want.mode);
+  }, { scope, mode, count });
 check('the page-wide mode control is offered', await page.locator('#viewall').isVisible());
-await page.locator('body').click({ position: { x: 5, y: 300 } });
+await page.evaluate(() => document.activeElement.blur());
 await page.keyboard.press('Shift+Digit2');
-await page.waitForTimeout(150);
+await settledOn('main', 'Side by side', 4);
 check('shift and a number set every capture',
   (await pressed('main')).every((m) => m === 'Side by side') && (await pressed('main')).length === 4);
 check('the page-wide control shows the choice',
@@ -274,27 +281,24 @@ check('the page-wide control shows the choice',
 check('a capture that cannot compare keeps its one image',
   (await newStory.locator('img').count()) === 1);
 await page.locator('#story-card--long').getByRole('button', { name: 'Onion-skin' }).click();
-await page.waitForTimeout(150);
+await settledOn('#story-card--long', 'Onion-skin', 1);
 check('a capture can still differ from the page-wide choice',
   (await pressed('#story-card--long')).join() === 'Onion-skin' &&
   (await pressed('#story-card--default')).join() === 'Side by side');
 await page.locator('#viewall').getByRole('button', { name: 'Swipe' }).click();
-await page.waitForTimeout(150);
+await settledOn('main', 'Swipe', 4);
 check('a page-wide choice overrides every capture again',
   (await pressed('main')).every((m) => m === 'Swipe'));
 // Captures shown again after the choice — a filter change now only hides rows, their drawn
 // state survives — still carry it.
 await page.locator('.chip[data-key=changed]').click();
-await page.waitForTimeout(150);
+await settledOn('main', 'Swipe', 4);
 check('a capture shown again keeps the page-wide mode',
   (await pressed('main')).length === 4 && (await pressed('main')).every((m) => m === 'Swipe'));
-await page.locator('#viewall').getByRole('button', { name: 'Overlay' }).click();
-await page.locator('.chip[data-key=review]').click();
-await page.waitForTimeout(150);
-await page.locator('body').click({ position: { x: 5, y: 300 } });
-await page.keyboard.press('j');
 
-// Triage, and its survival across a reload.
+// Triage, and its survival across a reload. The cursor is placed on one named capture
+// through its tile, so what follows holds whatever the steps above left showing or filtered.
+await page.locator('.tile[data-key="card--default@640"]').click();
 await page.keyboard.press('r');
 await page.waitForTimeout(100);
 check('r ticks a capture off', (await page.locator('#progress').textContent()).startsWith('1 of'));
