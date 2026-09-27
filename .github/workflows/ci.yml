@@ -6,8 +6,14 @@ on:
   pull_request:
 
 jobs:
+  # The suite runs TypeScript directly through Node's type stripping, so it needs Node 22.
+  # Windows is here because path handling is where a POSIX-only bug would hide.
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -17,3 +23,43 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm test
+
+  # The published package claims Node 18. The suite cannot run there, so the compiled CLI is
+  # built on 22 and then exercised on each older runtime it claims to support.
+  compat:
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [18, 20]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: node dist/cli.js --help
+      # The fixture needs no Storybook install; doctor reads its index and counts captures.
+      - name: doctor against the committed fixture
+        working-directory: test/fixtures
+        run: node ../../dist/cli.js doctor | grep -q '5 stories → 7 captures'
+
+  # The report and the capture waits are client-side behaviour that only a real browser shows.
+  # Locally these run from the pre-commit hook when their sources change; here they run always.
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run check:report
+      - run: npm run check:stabilize --if-present
