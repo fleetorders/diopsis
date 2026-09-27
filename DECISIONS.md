@@ -919,7 +919,6 @@ run, never a skip.
 
 **Consequences:** the saving depends on the import graph; a change to a file every story
 imports, such as a barrel file or shared tokens, reaches every story. `update` and `accept`
-refuse `--changed`, because baselines are always generated whole. Whether this ships in the
-free core or a paid package is not decided here.
+refuse `--changed`, because baselines are always generated whole.
 
 **Scope:** repo.
