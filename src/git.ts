@@ -63,20 +63,19 @@ export interface IgnoreRule {
  * nothing ignores the path, undefined when git could not answer.
  */
 export function gitIgnoreRule(cwd: string, target: string): IgnoreRule | false | undefined {
-  const run = spawnSync('git', ['check-ignore', '-v', '--', target], {
+  // NUL-separated fields: a source outside the repository can be an absolute Windows path,
+  // whose drive-letter colon would split the colon-separated form in the wrong place.
+  // (git accepts -z only with --stdin, so the one path goes in that way.)
+  const run = spawnSync('git', ['check-ignore', '-v', '-z', '--stdin'], {
     cwd,
     env: gitEnv,
     encoding: 'utf8',
+    input: `${target}\0`,
   });
   if (run.status === 1) return false;
   if (run.status !== 0 || run.error) return undefined;
-  const meta = (run.stdout.split('\n')[0] ?? '').split('\t')[0] ?? '';
-  const first = meta.indexOf(':');
-  const second = meta.indexOf(':', first + 1);
-  if (first === -1 || second === -1) return undefined;
-  const source = meta.slice(0, first);
-  const line = Number.parseInt(meta.slice(first + 1, second), 10);
-  const pattern = meta.slice(second + 1);
+  const [source = '', lineText = '', pattern = ''] = run.stdout.split('\0');
+  const line = Number.parseInt(lineText, 10);
   if (!source || !Number.isInteger(line) || line < 1 || !pattern) return undefined;
   if (path.isAbsolute(source)) return { source, line, pattern };
   const top = spawnSync('git', ['rev-parse', '--show-toplevel'], {
@@ -89,9 +88,11 @@ export function gitIgnoreRule(cwd: string, target: string): IgnoreRule | false |
   // Git resolves symlinks on its way to the top level, so the two ends of the comparison
   // have to sit in the same tree: a cwd reached through a symlink would otherwise
   // relativize against a physical path it cannot reach with any number of "..".
+  // The native form, because only it expands a Windows short name (RUNNER~1) the way git's
+  // top level is spelled.
   let base = cwd;
   try {
-    base = realpathSync(cwd);
+    base = realpathSync.native(cwd);
   } catch {
     // Git answered for this directory, so the fallback is unreachable in practice.
   }

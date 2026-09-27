@@ -466,7 +466,8 @@ describe('initCommand --force with an existing config', () => {
       "export default { compare: { threshold: 0.4, maxDiffPixels: 12 }, accessibility: 'fail', " +
         "stabilize: { retries: 3, freezeClock: '2025-05-05T00:00:00Z' }, mask: ['.clock'], " +
         "modes: { dark: { theme: 'dark' } }, budget: { captures: 500 }, timeout: 45000, " +
-        "compress: 'auto', capture: 'component', workers: 2 };",
+        "compress: 'auto', capture: 'component', workers: 2, " +
+        "storybookDir: 'it\\'s\\nbuilt' };",
     );
     const before = (await loadConfig(root)).config;
     assert.equal(await initCommand({ root, force: true }), 0);

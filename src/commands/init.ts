@@ -42,7 +42,16 @@ const TEMPLATE_FIELDS = new Set<string>([
 
 /** A config value as source, quoted like the template: every field a config holds is plain data. */
 function literal(value: unknown): string {
-  if (typeof value === 'string') return `'${value.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+  if (typeof value === 'string') {
+    const escaped = value
+      .replace(/\\/g, '\\\\')
+      .replace(/'/g, "\\'")
+      .replace(/\r/g, '\\r')
+      .replace(/\n/g, '\\n')
+      .replace(/\u2028/g, '\\u2028')
+      .replace(/\u2029/g, '\\u2029');
+    return `'${escaped}'`;
+  }
   if (Array.isArray(value)) return `[${value.map(literal).join(', ')}]`;
   if (value && typeof value === 'object') {
     const entries = Object.entries(value).filter(([, entry]) => entry !== undefined);

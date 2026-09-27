@@ -126,7 +126,11 @@ export async function mergeCommand(options: MergeOptions): Promise<number> {
         typeof capture.storyId !== 'string' ||
         typeof capture.snapshotPath !== 'string' ||
         !capture.artifacts ||
-        typeof capture.artifacts !== 'object',
+        typeof capture.artifacts !== 'object' ||
+        (['expected', 'actual', 'diff'] as const).some(
+          (kind) =>
+            capture.artifacts[kind] !== undefined && typeof capture.artifacts[kind] !== 'string',
+        ),
     );
     if (malformed !== -1) {
       return fail(
@@ -311,6 +315,7 @@ export async function mergeCommand(options: MergeOptions): Promise<number> {
     // A merged run is accepted from where it was merged; the plain output directory holds
     // either nothing or some other run.
     acceptFrom: `${config.outputDir.replace(/\/+$/, '')}/merged`,
+    shardDirs: shards.map((shard) => displayPath(mergedDir, shard.dir)),
     snapshotDir: first.summary.snapshotDir,
     totals: {
       ...totalsFor(captures),

@@ -133,6 +133,11 @@ export interface RunSummary {
    * offers to copy carries it, so a copied command cannot adopt another run's pixels.
    */
   acceptFrom?: string;
+  /**
+   * A merged run: the shard directories it was merged from, relative to its own directory.
+   * Its images stay in them, so `accept` contains each image by one of these.
+   */
+  shardDirs?: string[];
   totals: RunTotals;
   /** Story ids with at least one capture needing review. */
   changedStories: string[];
