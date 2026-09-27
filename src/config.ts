@@ -82,6 +82,12 @@ export interface DiopsisConfig {
    * or text like "800 KB" / "25 MB"; `captures` caps the size of the matrix.
    */
   budget?: { weight?: string | number; captures?: number };
+  /**
+   * Lossless recompression of every baseline `update` and `accept` write, by the oxipng
+   * executable when it is installed. `"off"` leaves each baseline exactly as the browser
+   * encoded it.
+   */
+  compress: "off" | "auto";
   /** `'all'` in v1; `'auto'` (change-aware capture) lands in v2 — DECISIONS.md §4. */
   affected: 'all' | 'auto';
   /** Per-capture timeout in ms. */
@@ -124,6 +130,7 @@ export const defaultConfig: DiopsisConfig = {
   },
   mask: ['[data-diopsis-ignore]'],
   compare: { threshold: 0.2, maxDiffPixelRatio: 0.001 },
+  compress: 'off',
   affected: 'all',
   timeout: 30_000,
   outputDir: '.diopsis',
@@ -270,6 +277,10 @@ export function validateConfig(config: DiopsisConfig): string[] {
         problems.push(`budget.captures must be a positive integer (got ${show(captures)})`);
       }
     }
+  }
+
+  if (config.compress !== 'off' && config.compress !== 'auto') {
+    problems.push(`compress must be "off" or "auto" (got ${show(config.compress)})`);
   }
 
   if (!Number.isInteger(config.viewportHeight) || config.viewportHeight <= 0) {

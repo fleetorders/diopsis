@@ -9,6 +9,7 @@ import {
   renameHints,
   walkBaselines,
 } from '../baselines.ts';
+import { oxipngInstalled } from '../compress.ts';
 import { findConfigFile, formatBytes, loadConfig, parseSize, supportsTypeStripping } from '../config.ts';
 import { gitIgnores, isGitRepo } from '../git.ts';
 import { loosenedStoryIds, platformToken, resolveMatrix } from '../matrix.ts';
@@ -431,6 +432,16 @@ export async function runChecks(options: DoctorOptions): Promise<Check[]> {
         });
       }
     }
+  }
+
+  // Compression asks for a tool the setup was never checked for, so this is where its
+  // absence should surface — before an update spends a run writing uncompressed baselines.
+  if (config.compress === 'auto' && !oxipngInstalled()) {
+    checks.push({
+      level: 'warn',
+      title: 'compress is auto, but oxipng is not installed',
+      detail: 'Baselines are written uncompressed (see https://github.com/oxipng/oxipng).',
+    });
   }
 
   // Git hygiene.

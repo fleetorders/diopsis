@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 
 import { acceptCommand } from '../src/commands/accept.ts';
+import { encodePng } from '../src/png-encode.ts';
 import type { CaptureResult, RunSummary } from '../src/report/summary.ts';
 
 const temporaries: string[] = [];
@@ -287,5 +288,44 @@ describe('acceptCommand refusing paths outside the run', () => {
     // the file the escape aimed at was never written.
     assert.equal(existsSync(path.join(root, '__screenshots__')), false);
     assert.equal(existsSync(path.join(root, 'outside-baseline.png')), false);
+  });
+
+  it('recompresses accepted baselines when compress is auto', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'diopsis-accept-'));
+    temporaries.push(dir);
+    await writeFile(path.join(dir, 'diopsis.config.mjs'), 'export default { compress: "auto" };');
+    await mkdir(path.join(dir, '.diopsis', 'test-results'), { recursive: true });
+    await writeFile(
+      path.join(dir, '.diopsis', 'summary.json'),
+      JSON.stringify(summaryOf([capture({})])),
+    );
+    const rgba = new Uint8Array(4 * 3 * 4);
+    for (let at = 0; at < rgba.length; at += 4) rgba[at + 3] = 255;
+    const runImage = encodePng(4, 3, rgba);
+    await writeFile(
+      path.join(dir, '.diopsis', 'test-results', 'a--one-320-actual.png'),
+      runImage,
+    );
+
+    // A stand-in executable that leaves files alone: it proves the accept hands the
+    // written baselines to the recompressor, without needing the tool to exist.
+    const script = path.join(dir, 'oxipng');
+    await writeFile(script, '#!/bin/sh\nexit 0\n', 'utf8');
+    await chmod(script, 0o755);
+    process.env.DIOPSIS_OXIPNG = script;
+
+    try {
+      const { out } = await runAccept(dir);
+      assert.match(out, /Accepted 1 capture into __screenshots__\./);
+      assert.match(out, /Recompressed 1 baseline with oxipng/);
+      // The stand-in optimises nothing, so the accepted baseline is the run's own bytes.
+      assert.ok(
+        (await readFile(path.join(dir, '__screenshots__', 'a--one', '320w-linux-x64.png'))).equals(
+          Buffer.from(runImage),
+        ),
+      );
+    } finally {
+      delete process.env.DIOPSIS_OXIPNG;
+    }
   });
 });
