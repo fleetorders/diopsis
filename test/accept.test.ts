@@ -39,6 +39,7 @@ function summaryOf(captures: CaptureResult[]): RunSummary {
       stories: 0,
       captures: captures.length,
       unchanged: 0,
+      unstable: 0,
       changed: 0,
       new: 0,
       renderFailed: 0,
@@ -114,6 +115,28 @@ describe('acceptCommand', () => {
     assert.equal(existsSync(path.join(root, '__screenshots__', 'd--failed')), false);
     assert.match(out, /skipped c--bad @320: render-failed/);
     assert.match(out, /skipped d--failed @320: failed/);
+  });
+
+  it('never adopts an unstable capture, which is a pass — even with an image reference', async () => {
+    const root = await project(
+      [
+        capture({
+          status: 'unchanged',
+          unstable: true,
+          unstableStatus: 'changed',
+          unstableDiffPixels: 12,
+          // A pass has no image of its own; the reference is here so the guard is proven
+          // to be the capture's status, not a missing artifact.
+          artifacts: { actual: 'test-results/a--one-320-actual.png' },
+        }),
+      ],
+      ['test-results/a--one-320-actual.png'],
+    );
+
+    const { code, out } = await runAccept(root);
+    assert.equal(code, 0);
+    assert.equal(existsSync(path.join(root, '__screenshots__')), false);
+    assert.match(out, /every capture already matched its baseline/);
   });
 
   it('accepts the union of several story ids', async () => {

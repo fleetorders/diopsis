@@ -21,6 +21,7 @@ import {
   totalsFor,
   type CaptureArtifacts,
   type CaptureResult,
+  type CaptureStatus,
   type RunSummary,
 } from './report/summary.ts';
 import type { PlannedCapture, RunPlan } from './runner/generate.ts';
@@ -35,6 +36,12 @@ export interface DiopsisReporterOptions {
   /** Absolute snapshot directory, for locating baselines. */
   snapshotDirAbs: string;
   mode: 'run' | 'update';
+  /**
+   * Retries the run was generated with. Region computation starts only on the attempt that
+   * can decide a capture — the one no retry can replace — so a superseded attempt's diff is
+   * never decoded.
+   */
+  retries: number;
   platform: string;
   arch: string;
   /** Fixed timestamp, so a report is reproducible when the run is. */
@@ -114,6 +121,20 @@ function notRunCapture(planned: PlannedCapture): CaptureResult {
 export default class DiopsisReporter implements Reporter {
   private readonly options: DiopsisReporterOptions;
   private readonly results = new Map<string, CaptureResult>();
+  /**
+   * First attempt per capture, keyed by title. A retry re-takes the capture from a fresh
+   * page — flake that survives stabilization lives between page loads — so what the first
+   * attempt saw is what the flake guard reports.
+   */
+  private readonly firstAttempts = new Map<
+    string,
+    { status: CaptureStatus; diffPixels?: number }
+  >();
+  /**
+   * Captures whose first attempt found no baseline. The retry would compare against the
+   * baseline that attempt wrote and pass, so the first classification is latched.
+   */
+  private readonly latchedNew = new Set<string>();
   /** Region passes in flight; onEnd awaits every one before writing the summary. */
   private readonly regionWork: Promise<void>[] = [];
   private plan: RunPlan | undefined;
@@ -185,11 +206,34 @@ export default class DiopsisReporter implements Reporter {
         : { error: errorText.split('\n').slice(0, 4).join('\n') }),
       artifacts,
     };
+
+    const first = this.firstAttempts.get(planned.title);
+    if (!first) {
+      this.firstAttempts.set(planned.title, {
+        status: verdict.status,
+        ...(verdict.diffPixels === undefined ? {} : { diffPixels: verdict.diffPixels }),
+      });
+      if (verdict.status === 'new') this.latchedNew.add(planned.title);
+    } else if (this.latchedNew.has(planned.title)) {
+      // The retry of a new capture compared against the baseline the first attempt wrote;
+      // whatever it says, the capture is new.
+      return;
+    } else if (verdict.status === 'unchanged') {
+      // Differed on one load of the story, matched on the next: not a change, and not a
+      // quietly green pass either — the run reports what the load that differed showed.
+      capture.unstable = true;
+      capture.unstableStatus = first.status;
+      if (first.diffPixels !== undefined) capture.unstableDiffPixels = first.diffPixels;
+    }
+    // A capture that fails every attempt keeps its final attempt's classification: the last
+    // load of the story is the one the run just looked at.
     this.results.set(planned.title, capture);
 
     // Where the capture changed is asked for after the run, so the work starts now, off
-    // this callback's critical path, and fills the result in as captures continue.
-    if (verdict.status === 'changed' && artifacts.diff) {
+    // this callback's critical path, and fills the result in as captures continue — but
+    // only on the attempt that decides the capture: while a retry can still replace this
+    // result, its diff is not the one the report will show.
+    if (verdict.status === 'changed' && artifacts.diff && (result.retry ?? 0) >= this.options.retries) {
       const actual = artifacts.actual
         ? path.resolve(this.options.outputDir, artifacts.actual)
         : undefined;
@@ -279,18 +323,25 @@ export default class DiopsisReporter implements Reporter {
         ? [`  run interrupted — ${totals.notRun} captures did not run`]
         : []),
       `  ${counts.join(' · ')}`,
+      ...(totals.unstable > 0
+        ? [`  ${totals.unstable} unstable — differed on one load, matched on the next`]
+        : []),
       '',
     ];
 
     for (const capture of ordered) {
-      if (capture.status === 'unchanged') continue;
+      if (capture.status === 'unchanged' && !capture.unstable) continue;
       // A pinned locale, not the machine's: the same run must print the same figures on
       // every machine it is pasted from.
-      const detail =
-        capture.diffPixels === undefined
+      const detail = capture.unstable
+        ? capture.unstableDiffPixels === undefined
+          ? (capture.unstableStatus ?? 'unstable')
+          : `${capture.unstableDiffPixels.toLocaleString('en-US')} px differ`
+        : capture.diffPixels === undefined
           ? capture.status
           : `${capture.diffPixels.toLocaleString('en-US')} px differ`;
-      lines.push(`  ${capture.status === 'changed' ? '~' : '+'} ${capture.storyId} @${capture.width}  ${detail}`);
+      const mark = capture.unstable ? '?' : capture.status === 'changed' ? '~' : '+';
+      lines.push(`  ${mark} ${capture.storyId} @${capture.width}  ${detail}`);
       if (capture.status === 'render-failed' || capture.status === 'failed') {
         for (const line of (capture.error ?? '').split('\n').slice(0, 2)) {
           if (line.trim()) lines.push(`      ${line.trim()}`);
@@ -298,7 +349,7 @@ export default class DiopsisReporter implements Reporter {
       }
     }
 
-    if (counts.length > 1) lines.push('');
+    if (counts.length > 1 || totals.unstable > 0) lines.push('');
     lines.push(`  report   ${show(reportPath)}`, `  summary  ${show(summaryPath)}`);
 
     if (summary.changedStories.length > 0 && summary.mode === 'run') {

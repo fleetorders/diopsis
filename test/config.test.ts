@@ -47,6 +47,12 @@ describe('resolveConfig', () => {
     assert.equal(typeof stabilize.freezeClock, 'string');
   });
 
+  it('defaults one retry, so a difference between loads is told apart from a change', () => {
+    assert.equal(resolveConfig().stabilize.retries, 1);
+    // Per-key merge: one override leaves the retry default standing.
+    assert.equal(resolveConfig({ stabilize: { freezeClock: false } }).stabilize.retries, 1);
+  });
+
   it('ships a non-zero pixel-ratio tolerance so one stray pixel cannot block a pipeline', () => {
     assert.ok(defaultConfig.compare.maxDiffPixelRatio > 0);
   });
@@ -190,6 +196,25 @@ describe('validateConfig', () => {
     assert.ok(problems.some((p) => /timeout must be a positive number \(got -1\)/.test(p)));
     assert.ok(
       problems.some((p) => /stabilize\.settleTimeout must be a positive number \(got 0\)/.test(p)),
+    );
+  });
+
+  it('bounds the retry count to non-negative integers', () => {
+    assert.deepEqual(validateConfig(configWith({ stabilize: { retries: 0 } })), []);
+    assert.deepEqual(validateConfig(configWith({ stabilize: { retries: 3 } })), []);
+    const problems = validateConfig(configWith({ stabilize: { retries: -1 } }));
+    assert.equal(problems.length, 1);
+    assert.match(
+      problems[0] ?? '',
+      /stabilize\.retries must be a non-negative integer \(got -1\)/,
+    );
+    assert.match(
+      validateConfig(configWith({ stabilize: { retries: 1.5 } }))[0] ?? '',
+      /got 1\.5/,
+    );
+    assert.match(
+      validateConfig(configWith({ stabilize: { retries: 'twice' } }))[0] ?? '',
+      /got "twice"/,
     );
   });
 

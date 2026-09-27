@@ -275,6 +275,7 @@ captured.
 | `image` | Playwright's Jammy image | The one image name baseline generation and CI must share |
 | `stabilize.freezeClock` | `2026-01-15T12:00:00Z` | Fixed wall-clock time, or `false` |
 | `stabilize.waitForNetworkIdle` | `true` | Wait until no request is in flight and no short timer that could start one is pending |
+| `stabilize.retries` | `1` | Take a differing capture again from a fresh load; one that then matches is reported unstable and does not fail the run |
 | `stabilize.disableAnimations` | `true` | Zero out animations and transitions |
 | `stabilize.waitForFonts` | `true` | Wait for `document.fonts.ready` |
 | `stabilize.waitForImages` | `true` | Wait for every image to decode |

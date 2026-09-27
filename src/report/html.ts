@@ -232,6 +232,12 @@ main { padding: 14px 18px 56px; }
   background: currentColor; }
 .s-changed { color: var(--changed); } .s-new { color: var(--new); }
 .s-failed, .s-render-failed { color: var(--failed); } .s-unchanged { color: var(--ok); }
+/* Unstable is not a status: the capture passed, so none of the palette colours speak for
+   it. A muted, outlined badge marks what the run saw without joining the status
+   vocabulary (D-020: a colour means one kind of thing). */
+.badge.unstable { color: var(--muted); border: 1px solid var(--line); border-radius: 5px;
+  padding: 1px 7px; }
+.badge.unstable::before { display: none; }
 
 .capture { border-top: 1px solid var(--line); padding: 12px; }
 .capture.current { box-shadow: inset 2px 0 0 var(--accent); }
@@ -363,6 +369,9 @@ document.getElementById('meta').textContent =
 
 const counts = {};
 for (const c of data.captures) counts[c.status] = (counts[c.status] || 0) + 1;
+// Unstable captures are unchanged — counted here, not in "counts", so no status gains a
+// member that is really a pass.
+const unstableCount = data.captures.filter(c => c.unstable).length;
 
 // Anything needing review leads; unchanged is available but never the default view.
 let active = order.find(s => REVIEW.has(s) && counts[s]) ? 'review' : 'all';
@@ -415,6 +424,8 @@ function chip(key, label, status) {
 }
 filters.appendChild(chip('review', 'Needs review'));
 for (const s of order) if (counts[s]) filters.appendChild(chip(s, LABEL[s], s));
+// Offered only when a run actually saw flake; no dot, because there is no unstable colour.
+if (unstableCount) filters.appendChild(chip('unstable', 'Unstable'));
 filters.appendChild(chip('all', 'All'));
 
 searchEl.oninput = () => { query = searchEl.value.trim().toLowerCase(); applyFilter(); };
@@ -424,7 +435,10 @@ function textOf(c) {
 }
 function inSearch(c) { return !query || textOf(c).includes(query); }
 function inFilter(c, key) {
-  return key === 'all' ? true : key === 'review' ? REVIEW.has(c.status) : c.status === key;
+  return key === 'all' ? true
+    : key === 'review' ? REVIEW.has(c.status)
+    : key === 'unstable' ? !!c.unstable
+    : c.status === key;
 }
 
 function copyButton(text, label) {
@@ -900,21 +914,37 @@ function buildAll() {
       bar.className = 'bar';
       const w = document.createElement('span');
       w.className = 'w';
-      // Playwright states its ratio rounded to two decimals, so a small change can arrive as
-      // "0.00%" — a number that says nothing moved. Where the actual image's pixel size is
-      // known the share is recomputed from the pixels; where it is not, a share that would
-      // print as zero is left out rather than shown as one.
-      let share = null;
-      if (c.diffPixels != null) {
-        const pixels = c.size ? c.size.width * c.size.height : 0;
-        if (pixels > 0) share = (c.diffPixels / pixels) * 100;
-        else if (c.diffRatio != null && c.diffRatio * 100 >= 0.005) share = c.diffRatio * 100;
+      if (c.unstable) {
+        // The capture passed, so it has no images, no count of its own and no meter — the
+        // sentence is the whole story of the row.
+        w.textContent = c.width + 'px · ' + (c.unstableDiffPixels != null
+          ? 'Differed on one load (' + c.unstableDiffPixels.toLocaleString() +
+            ' px) and matched on the next.'
+          : c.unstableStatus === 'render-failed'
+            ? 'Failed to render on one load, and matched on the next.'
+            : 'Failed on one load, and matched on the next.');
+        bar.appendChild(w);
+        const unstable = document.createElement('span');
+        unstable.className = 'badge unstable';
+        unstable.textContent = 'unstable';
+        bar.appendChild(unstable);
+      } else {
+        // Playwright states its ratio rounded to two decimals, so a small change can arrive as
+        // "0.00%" — a number that says nothing moved. Where the actual image's pixel size is
+        // known the share is recomputed from the pixels; where it is not, a share that would
+        // print as zero is left out rather than shown as one.
+        let share = null;
+        if (c.diffPixels != null) {
+          const pixels = c.size ? c.size.width * c.size.height : 0;
+          if (pixels > 0) share = (c.diffPixels / pixels) * 100;
+          else if (c.diffRatio != null && c.diffRatio * 100 >= 0.005) share = c.diffRatio * 100;
+        }
+        w.textContent = c.width + 'px' + (c.diffPixels == null
+          ? ''
+          : ', ' + c.diffPixels.toLocaleString() + ' px differ' +
+            (share == null ? '' : ' (' + Number(share.toPrecision(2)) + '%)'));
+        bar.appendChild(w);
       }
-      w.textContent = c.width + 'px' + (c.diffPixels == null
-        ? ''
-        : ', ' + c.diffPixels.toLocaleString() + ' px differ' +
-          (share == null ? '' : ' (' + Number(share.toPrecision(2)) + '%)'));
-      bar.appendChild(w);
 
       if (c.diffPixels != null && maxDiffPixels > 0) {
         const meter = document.createElement('div');

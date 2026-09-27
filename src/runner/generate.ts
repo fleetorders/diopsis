@@ -38,6 +38,8 @@ export interface GenerateOptions {
   reporterPath?: string;
   /** Options handed to the reporter. */
   reporterOptions?: Record<string, unknown>;
+  /** `update` regenerates baselines and never retries; `run` (the default) retries per config. */
+  mode?: 'run' | 'update';
 }
 
 export interface GeneratedProject {
@@ -74,6 +76,9 @@ export function projectDir(root: string): string {
 
 export async function generateProject(options: GenerateOptions): Promise<GeneratedProject> {
   const { root, config, baseUrl } = options;
+  // Regenerating baselines never retries: the second attempt would compare against the
+  // baseline the first attempt just wrote and pass.
+  const retries = options.mode === 'update' ? 0 : config.stabilize.retries;
   const dir = projectDir(root);
   await rm(dir, { recursive: true, force: true });
   await mkdir(dir, { recursive: true });
@@ -119,7 +124,7 @@ export default defineConfig({
   outputDir: ${JSON.stringify(path.join(outputDir, 'test-results'))},
   fullyParallel: true,
   forbidOnly: false,
-  retries: 0,
+  retries: ${retries},
   ${config.workers === undefined ? '' : `workers: ${JSON.stringify(config.workers)},\n  `}timeout: ${config.timeout},
   reporter: [${reporters.join(', ')}],
   snapshotPathTemplate: ${JSON.stringify(path.join(snapshotDir, '{arg}{ext}'))},

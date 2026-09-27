@@ -48,6 +48,16 @@ export interface CaptureResult {
   regionsDropped?: number;
   /** Why a capture failed, when it did. */
   error?: string;
+  /**
+   * Present when an earlier attempt of this capture differed and a later one matched: the
+   * capture is unchanged — flake between page loads, not a change — and the run says so
+   * rather than reporting either a change or a quietly green pass.
+   */
+  unstable?: true;
+  /** What the run classified the load that differed, i.e. the first attempt. */
+  unstableStatus?: CaptureStatus;
+  /** Differing pixels the load that differed reported, when it reported a count. */
+  unstableDiffPixels?: number;
   artifacts: CaptureArtifacts;
 }
 
@@ -55,6 +65,8 @@ export interface RunTotals {
   stories: number;
   captures: number;
   unchanged: number;
+  /** Unchanged captures that differed on an earlier attempt and matched on a retry. */
+  unstable: number;
   changed: number;
   new: number;
   renderFailed: number;
@@ -154,6 +166,7 @@ export function totalsFor(captures: CaptureResult[]): RunTotals {
     stories: new Set(captures.map((c) => c.storyId)).size,
     captures: captures.length,
     unchanged: 0,
+    unstable: 0,
     changed: 0,
     new: 0,
     renderFailed: 0,
@@ -161,6 +174,8 @@ export function totalsFor(captures: CaptureResult[]): RunTotals {
     notRun: 0,
   };
   for (const capture of captures) {
+    // Unstable captures are unchanged — the count sits beside it, not instead of it.
+    if (capture.unstable) totals.unstable += 1;
     if (capture.status === 'unchanged') totals.unchanged += 1;
     else if (capture.status === 'changed') totals.changed += 1;
     else if (capture.status === 'new') totals.new += 1;

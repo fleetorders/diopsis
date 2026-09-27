@@ -26,6 +26,8 @@ afterEach(async () => {
 
 async function setup(
   withStories: StoryEntry[] = stories,
+  /** The retries the simulated run was generated with; 0 is a no-retry run. */
+  retries = 0,
 ): Promise<{ reporter: DiopsisReporter; outputDir: string }> {
   const root = await mkdtemp(path.join(tmpdir(), 'diopsis-reporter-'));
   temporaries.push(root);
@@ -52,6 +54,7 @@ async function setup(
     snapshotDir: '__screenshots__',
     snapshotDirAbs: path.join(root, '__screenshots__'),
     mode: 'run',
+    retries,
     platform: 'linux',
     arch: 'x64',
     createdAt: '2026-01-01T00:00:00Z',
@@ -357,5 +360,187 @@ describe('DiopsisReporter changed regions', () => {
     // Ties on pixel count order top-down then left-to-right, so the first rows survive.
     assert.deepEqual(changed?.regions?.[0], { x: 5, y: 5, width: 1, height: 1, pixels: 1 });
     assert.deepEqual(changed?.regions?.[19], { x: 85, y: 65, width: 1, height: 1, pixels: 1 });
+  });
+});
+
+describe('DiopsisReporter flake guard', () => {
+  /** One attempt of a capture that differed by `pixels`, at Playwright attempt `retry`. */
+  const differed = (
+    pixels: number,
+    retry = 0,
+    attachments: TestResult['attachments'] = [],
+  ): TestResult =>
+    result({
+      status: 'failed',
+      retry,
+      errors: [{ message: `${pixels} pixels (ratio 0.06 of all image pixels) are different.` }],
+      annotations: [{ type: 'diopsis-baseline', description: 'present' }],
+      attachments,
+    });
+
+  it('keeps a new capture new when its retry passes against the baseline the first attempt wrote', async () => {
+    const { reporter, outputDir } = await setup(stories, 1);
+    const { out } = await withCapturedStdout(async () => {
+      reporter.onTestEnd(
+        testTitled('a--one @320'),
+        result({
+          status: 'failed',
+          errors: [
+            {
+              message:
+                "A snapshot doesn't exist at /repo/__screenshots__/a--one/320w-linux-x64.png, writing actual.",
+            },
+          ],
+          annotations: [{ type: 'diopsis-baseline', description: 'missing' }],
+        }),
+      );
+      // The first attempt wrote the baseline, so this retry compared against it and passed.
+      reporter.onTestEnd(
+        testTitled('a--one @320'),
+        result({
+          status: 'passed',
+          retry: 1,
+          annotations: [{ type: 'diopsis-baseline', description: 'present' }],
+        }),
+      );
+      await reporter.onEnd({ status: 'passed' } as FullResult);
+    });
+
+    const summary = await summaryAt(outputDir);
+    const capture = summary.captures.find((c) => c.storyId === 'a--one' && c.width === 320);
+    assert.equal(capture?.status, 'new');
+    assert.equal(capture?.unstable, undefined);
+    assert.equal(summary.totals.new, 1);
+    assert.equal(summary.totals.unstable, 0);
+    assert.match(out, /\+ a--one @320  new/);
+  });
+
+  it('reports a capture that differed once and matched when taken again as unstable, not changed', async () => {
+    const { reporter, outputDir } = await setup(stories, 1);
+    const { out } = await withCapturedStdout(async () => {
+      reporter.onTestEnd(testTitled('a--one @320'), differed(12));
+      reporter.onTestEnd(
+        testTitled('a--one @320'),
+        result({
+          status: 'passed',
+          retry: 1,
+          annotations: [{ type: 'diopsis-baseline', description: 'present' }],
+        }),
+      );
+      await reporter.onEnd({ status: 'passed' } as FullResult);
+    });
+
+    const summary = await summaryAt(outputDir);
+    const capture = summary.captures.find((c) => c.storyId === 'a--one' && c.width === 320);
+    assert.equal(capture?.status, 'unchanged');
+    assert.equal(capture?.unstable, true);
+    assert.equal(capture?.unstableStatus, 'changed');
+    assert.equal(capture?.unstableDiffPixels, 12);
+    assert.equal(capture?.diffPixels, undefined);
+    assert.equal(summary.totals.unchanged, 1);
+    assert.equal(summary.totals.unstable, 1);
+    assert.equal(summary.totals.changed, 0);
+    // Unstable is a pass: nothing to accept, so the run must not offer to.
+    assert.deepEqual(summary.changedStories, []);
+    assert.match(out, /1 unstable — differed on one load, matched on the next/);
+    assert.match(out, /\? a--one @320  12 px differ/);
+    assert.doesNotMatch(out, /Accept as the new baseline/);
+  });
+
+  it('keeps a capture that differs on every attempt changed, on the final attempt’s evidence', async () => {
+    const { reporter, outputDir } = await setup(stories, 1);
+    const firstDiff = path.join(outputDir, 'attempt-1-diff.png');
+    const finalDiff = path.join(outputDir, 'attempt-2-diff.png');
+    await writeFile(firstDiff, diffPng(20, 10, [[4, 3, 6, 2]]));
+    await writeFile(finalDiff, diffPng(20, 10, [[2, 2, 3, 3]]));
+    const { out } = await withCapturedStdout(async () => {
+      reporter.onTestEnd(
+        testTitled('a--one @320'),
+        differed(12, 0, [{ name: 'diff-image', contentType: 'image/png', path: firstDiff }]),
+      );
+      reporter.onTestEnd(
+        testTitled('a--one @320'),
+        differed(40, 1, [{ name: 'diff-image', contentType: 'image/png', path: finalDiff }]),
+      );
+      await reporter.onEnd({ status: 'failed' } as FullResult);
+    });
+
+    const summary = await summaryAt(outputDir);
+    const capture = summary.captures.find((c) => c.storyId === 'a--one' && c.width === 320);
+    assert.equal(capture?.status, 'changed');
+    assert.equal(capture?.diffPixels, 40);
+    assert.equal(capture?.unstable, undefined);
+    // The regions belong to the attempt that decided the capture, not the one it replaced.
+    assert.deepEqual(capture?.regions, [{ x: 2, y: 2, width: 3, height: 3, pixels: 9 }]);
+    assert.equal(summary.totals.changed, 1);
+    assert.equal(summary.totals.unstable, 0);
+    assert.match(out, /~ a--one @320  40 px differ/);
+  });
+
+  it('records what the load that differed was when it was not a comparison', async () => {
+    const { reporter, outputDir } = await setup(stories, 1);
+    const { out } = await withCapturedStdout(async () => {
+      reporter.onTestEnd(
+        testTitled('a--one @320'),
+        result({
+          status: 'failed',
+          errors: [{ message: 'StoryRenderError: the story never left its loading state' }],
+          annotations: [{ type: 'diopsis-baseline', description: 'present' }],
+        }),
+      );
+      reporter.onTestEnd(
+        testTitled('a--one @320'),
+        result({
+          status: 'passed',
+          retry: 1,
+          annotations: [{ type: 'diopsis-baseline', description: 'present' }],
+        }),
+      );
+      await reporter.onEnd({ status: 'passed' } as FullResult);
+    });
+
+    const summary = await summaryAt(outputDir);
+    const capture = summary.captures.find((c) => c.storyId === 'a--one' && c.width === 320);
+    assert.equal(capture?.status, 'unchanged');
+    assert.equal(capture?.unstable, true);
+    assert.equal(capture?.unstableStatus, 'render-failed');
+    assert.equal(capture?.unstableDiffPixels, undefined);
+    assert.equal(summary.totals.unstable, 1);
+    assert.match(out, /\? a--one @320  render-failed/);
+  });
+
+  it('leaves an unstable capture without regions, whatever its differing attempt produced', async () => {
+    const { reporter, outputDir } = await setup(stories, 1);
+    const diffPath = path.join(outputDir, 'attempt-1-diff.png');
+    const actualPath = path.join(outputDir, 'attempt-1-actual.png');
+    await writeFile(diffPath, diffPng(20, 10, [[4, 3, 6, 2]]));
+    await writeFile(actualPath, diffPng(20, 10));
+    await withCapturedStdout(async () => {
+      reporter.onTestEnd(
+        testTitled('a--one @320'),
+        differed(12, 0, [
+          { name: 'actual-image', contentType: 'image/png', path: actualPath },
+          { name: 'diff-image', contentType: 'image/png', path: diffPath },
+        ]),
+      );
+      reporter.onTestEnd(
+        testTitled('a--one @320'),
+        result({
+          status: 'passed',
+          retry: 1,
+          annotations: [{ type: 'diopsis-baseline', description: 'present' }],
+        }),
+      );
+      await reporter.onEnd({ status: 'passed' } as FullResult);
+    });
+
+    const summary = await summaryAt(outputDir);
+    const capture = summary.captures.find((c) => c.storyId === 'a--one' && c.width === 320);
+    assert.equal(capture?.status, 'unchanged');
+    assert.equal(capture?.unstable, true);
+    // The capture passed: no diff of its own to decode, and nothing of the superseded
+    // attempt's may leak into it.
+    assert.equal(capture?.regions, undefined);
+    assert.equal(capture?.size, undefined);
   });
 });

@@ -166,12 +166,16 @@ export async function runCommand(options: RunOptions): Promise<number> {
       captures,
       baseUrl: server.url,
       reporterPath: path.join(distRoot(), 'reporter.js'),
+      // The retries the reporter sees are the retries the generated project runs with, so
+      // it starts region work only on the attempt that can decide a capture.
+      ...(options.update ? { mode: 'update' as const } : {}),
       reporterOptions: {
         planPath: path.join(projectDir(options.root), 'plan.json'),
         outputDir: path.resolve(options.root, config.outputDir),
         snapshotDir: config.snapshotDir,
         snapshotDirAbs: path.resolve(options.root, config.snapshotDir),
         mode: options.update ? 'update' : 'run',
+        retries: options.update ? 0 : config.stabilize.retries,
         platform: process.platform,
         arch: process.arch,
         createdAt: new Date().toISOString(),

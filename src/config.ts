@@ -21,6 +21,13 @@ export interface StabilizeOptions {
   waitForLoadingStates: boolean;
   /** Ceiling, in ms, for the whole stabilization sequence. */
   settleTimeout: number;
+  /**
+   * Re-takes of a capture that differs. Playwright already waits for two identical
+   * consecutive screenshots inside one page, so flake that survives comes from differences
+   * between page loads — a retry takes the capture from a fresh page, and a difference that
+   * vanishes is reported as unstable rather than as a change.
+   */
+  retries: number;
 }
 
 export interface CompareOptions {
@@ -92,6 +99,7 @@ export const defaultConfig: DiopsisConfig = {
     waitForImages: true,
     waitForLoadingStates: true,
     settleTimeout: 15_000,
+    retries: 1,
   },
   mask: ['[data-diopsis-ignore]'],
   compare: { threshold: 0.2, maxDiffPixelRatio: 0.001 },
@@ -188,6 +196,10 @@ export function validateConfig(config: DiopsisConfig): string[] {
   const settleTimeout = config.stabilize.settleTimeout;
   if (typeof settleTimeout !== 'number' || !Number.isFinite(settleTimeout) || settleTimeout <= 0) {
     problems.push(`stabilize.settleTimeout must be a positive number (got ${show(settleTimeout)})`);
+  }
+  const retries = config.stabilize.retries;
+  if (!Number.isInteger(retries) || retries < 0) {
+    problems.push(`stabilize.retries must be a non-negative integer (got ${show(retries)})`);
   }
   if (
     config.workers !== undefined &&

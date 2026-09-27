@@ -101,6 +101,7 @@ const capture = (o) => ({
   ...(o.dropped != null ? { regionsDropped: o.dropped } : {}),
   ...(o.size ? { size: o.size } : {}),
   ...(o.err ? { error: o.err } : {}),
+  ...(o.unstable ? { unstable: true, unstableStatus: o.us, unstableDiffPixels: o.upx } : {}),
 });
 
 const captures = [
@@ -128,12 +129,18 @@ const captures = [
   capture({ t: 'Region', n: 'Blocks', id: 'region--blocks', w: 1600, s: 'changed', px: 4600, r: 0.0024,
     a: { expected: 'shots/e-base.png', actual: 'shots/e-act.png', diff: 'shots/d-diff.png' },
     regions: regionBlocks, dropped: 3, size: { width: 1600, height: 1200 } }),
+  // The flake guard: this capture differed on one load of its story and matched on the next,
+  // so it passed — no images, no review, no contact-sheet tile — but visible under its own
+  // filter, with a badge and a row that say what the run saw.
+  capture({ t: 'Widget', n: 'Flicker', id: 'widget--flicker', w: 380, s: 'unchanged',
+    unstable: true, us: 'changed', upx: 1234 }),
 ];
 
 const summary = {
   diopsis: 1, createdAt: '2026-01-01T00:00:00.000Z', platform: 'linux', arch: 'x64',
   mode: 'run', snapshotDir: '__screenshots__',
-  totals: { stories: 6, captures: captures.length, unchanged: 2, changed: 4, new: 1, renderFailed: 1, failed: 0 },
+  totals: { stories: 7, captures: captures.length, unchanged: 3, unstable: 1, changed: 4,
+    new: 1, renderFailed: 1, failed: 0 },
   changedStories: ['card--brand-new', 'card--default', 'card--long', 'card--sliver',
     'header--sticky', 'region--blocks'],
   captures,
@@ -358,6 +365,33 @@ await page.locator('.chip[data-key=unchanged]').click();
 await page.waitForTimeout(150);
 check('a filter with nothing to review hides the overview',
   (await page.locator('.overview[hidden]').count()) === 1);
+await page.locator('.chip[data-key=review]').click();
+await page.waitForTimeout(150);
+
+// The flake guard. An unstable capture passed, so it is not a change and not reviewable:
+// kept out of the review count and off the contact sheet, but offered under its own filter
+// with a badge and a row that say what the run saw.
+check('an unstable chip is offered when a run saw flake',
+  (await page.locator('.chip[data-key=unstable]').count()) === 1);
+check('the needs-review count leaves unstable captures out',
+  (await page.locator('.chip[data-key=review] .n').textContent()) === '6');
+check('the contact sheet keeps unstable captures out',
+  (await page.locator('.tile[data-key="widget--flicker@380"]').count()) === 0);
+await page.locator('.chip[data-key=unstable]').click();
+await page.waitForTimeout(150);
+check('the unstable filter shows the unstable capture alone',
+  (await page.locator('details.story:visible').count()) === 1);
+const unstableRow = await page.locator('#story-widget--flicker .capture .w').textContent();
+check('the unstable capture says what happened',
+  unstableRow.startsWith('380px · Differed on one load (') &&
+  unstableRow.includes('px) and matched on the next.'));
+check('the unstable badge is outlined and carries no status colour',
+  (await page.locator('#story-widget--flicker .badge.unstable').textContent()) === 'unstable' &&
+  (await page.locator('#story-widget--flicker .badge.unstable').getAttribute('class')) ===
+    'badge unstable');
+check('an unstable capture offers nothing to accept',
+  (await page.locator('#story-widget--flicker .accept').count()) === 0 &&
+  !(await page.locator('#story-widget--flicker').textContent()).includes('diopsis accept'));
 await page.locator('.chip[data-key=review]').click();
 await page.waitForTimeout(150);
 
