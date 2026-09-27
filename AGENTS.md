@@ -29,7 +29,9 @@ Layout:
   because the report's behaviour is client-side JavaScript that the unit suite can only assert
   was emitted. It runs on demand via `npm run check:report`, and `.githooks/pre-commit.local`
   runs it only when `src/report/` is staged — no other commit should pay for launching a
-  browser.
+  browser. `stabilize-check.mjs` does the same for the capture runtime's waits, opening small
+  preview-shaped pages through the real `openStory`; it runs via `npm run check:stabilize`, and
+  the hook runs it only when `src/runtime/` is staged.
 
 `npm run build` compiles to `dist/`; `npm test` typechecks and runs the suites. End-to-end
 validation runs against a real Storybook build that is reproduced locally and never
