@@ -50,6 +50,10 @@ await writeFile(path.join(work, 'static.html'), page(`
 await writeFile(path.join(work, 'ticker.html'), page(`
   let n = 0; const tick = () => { n += 1; setTimeout(tick, 100); }; setTimeout(tick, 100);
   document.getElementById('out').textContent = 'ticking';`));
+// The same at animation-frame pace: re-arming every 16 ms must not keep the wait busy either.
+await writeFile(path.join(work, 'fast-ticker.html'), page(`
+  const tick = () => setTimeout(tick, 16); setTimeout(tick, 16);
+  document.getElementById('out').textContent = 'ticking fast';`));
 // A cancelled timer is no longer pending.
 await writeFile(path.join(work, 'cleared.html'), page(`
   const t = setTimeout(() => {}, 400); clearTimeout(t);
@@ -95,6 +99,9 @@ try {
 
   const ticker = await cost('ticker.html');
   check('a self-rearming timer does not hold the wait open', ticker < 1000, `+${ticker} ms`);
+
+  const fast = await cost('fast-ticker.html');
+  check('a 16 ms self-rearming timer does not hold the wait open', fast < 1000, `+${fast} ms`);
 
   const cleared = await cost('cleared.html');
   check('a cleared timer is not waited for', cleared < 300, `+${cleared} ms`);
