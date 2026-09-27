@@ -526,6 +526,8 @@ unchanged.
 
 ---
 
+**Scope:** repo.
+
 ## D-020 — 2026-08-09 — The report compares by width, and colour means one thing at a time
 
 **Decision:** Four rules now govern the review surface. Comparison modes constrain a render's
@@ -720,3 +722,5 @@ and makes the list a place to go deep rather than the only way in.
 **Consequences:** the report file does not grow by more than markup, because tiles point at
 the same data as the detail views. A wide capture is small in a tile; the tile shows where the
 change is, and the detail view is where it is inspected.
+
+**Scope:** repo.
