@@ -11,7 +11,7 @@
 //
 // Bypass is deliberate and loud: REPORT_CHECK_SKIP=1.
 
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -909,26 +909,122 @@ check('a changed capture in a diff keeps its full comparison',
   (await page.locator('#story-card--default .modes button').count()) === 4);
 await page.close();
 
-// Past the embed budget the artifacts exist as files; the report must point at them instead
-// of claiming they are missing, and must count an image's cost before embedding it so one
-// image cannot overshoot the budget on its own.
+// Past the embed budget an image is referenced from the file beside the report rather than
+// dropped — the artifacts are written next to it in the same directory — so a run too large
+// to inline still reviews with its images. The budget itself stays, and an image's cost is
+// still counted before it goes in, so one image cannot overshoot on its own.
 const tiny = await renderReport(summary, work, 1024);
 check('a small budget embeds no image at all', !tiny.includes('data:image/png'));
 await writeFile(path.join(work, 'tiny.html'), tiny);
 page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+page.on('pageerror', (e) => crashes.push(String(e)));
+page.on('console', (m) => { if (m.type() === 'error') crashes.push(m.text()); });
 await page.goto('file://' + path.join(work, 'tiny.html'));
-await page.waitForTimeout(150);
-const truncation = await page.locator('#story-card--default .note').first().textContent();
-check('a truncated capture says where its images are',
-  truncation.includes('Images not embedded to keep this report openable'));
-check('the pointer names the artifact file', truncation.includes('shots/a-act.png'));
+await page.locator('#story-card--default').scrollIntoViewIfNeeded();
+await page.waitForFunction(() => {
+  const i = document.querySelector('#story-card--default .capture img');
+  return i && i.complete && i.naturalWidth > 0;
+});
+check('a capture past the budget renders its image from the file beside the report',
+  (await page.locator('#story-card--default .capture img').first().evaluate((i) =>
+    i.getAttribute('src'))) === 'shots/a-diff.png');
+check('a capture that renders from its files claims no missing images',
+  (await page.locator('#story-card--default .note').count()) === 0);
 check('truncation is not reported as missing artifacts',
   !(await page.locator('#story-card--default').textContent()).includes('No image artifacts'));
-// No image embedded means no pixel size to recompute the share from — and a ratio that
-// would print as 0.00% is left out rather than shown as a flat zero.
+// The pixel size is read from a referenced image too, so a share the comparator's
+// two-decimal ratio would print as 0.00% still computes from the actual's own pixels.
 const sliverTiny = await page.locator('#story-card--sliver .w').textContent();
-check('a share that would read zero is left out',
-  sliverTiny.includes('px differ') && !sliverTiny.includes('%'));
+check('a referenced image still computes a share from its own pixels',
+  sliverTiny.includes('px differ') && sliverTiny.includes('%') && !sliverTiny.includes('0.00%'));
+check('the footer counts the captures reading images from files',
+  (await page.locator('#out > div > .note').textContent())
+    .startsWith('5 capture(s) show images from the files beside this report'));
+await page.close();
+
+// Identical images are embedded once. card--long and card--sliver carry the very same
+// three artifact files, so the report holds one copy of each — ten distinct images across
+// the whole run: three for card--default, the three shared ones, one for the new capture,
+// three for the region story — and both captures render those shared bytes.
+const fullHtml = await readFile(path.join(work, 'report.html'), 'utf8');
+check('identical images are embedded once',
+  (fullHtml.match(/data:image\/png;base64,/g) || []).length === 10);
+page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+page.on('pageerror', (e) => crashes.push(String(e)));
+page.on('console', (m) => { if (m.type() === 'error') crashes.push(m.text()); });
+await page.goto(url);
+await page.locator('#story-card--sliver').scrollIntoViewIfNeeded();
+await page.waitForFunction(() => {
+  const long = document.querySelector('#story-card--long .capture img');
+  const sliver = document.querySelector('#story-card--sliver .capture img');
+  return long && sliver && long.complete && sliver.complete && long.naturalWidth > 0;
+});
+const shared = await page.evaluate(() => {
+  const long = document.querySelector('#story-card--long .capture img');
+  const sliver = document.querySelector('#story-card--sliver .capture img');
+  return {
+    src: long.getAttribute('src'),
+    same: long.getAttribute('src') === sliver.getAttribute('src'),
+    bothShown: long.naturalWidth > 0 && sliver.naturalWidth > 0,
+  };
+});
+check('a shared image renders in every capture that uses it',
+  shared.same && shared.bothShown && shared.src.startsWith('data:image/png'));
+await page.close();
+
+// The report opened without its files — moved out of the CI artifact it shipped in. A
+// referenced image that fails to load steps aside for the pointer to the files, once per
+// capture, and the rest of the page carries on. The browser's own complaint about files
+// that are not there is the scenario, not a fault, so this page watches script errors only.
+const lonely = path.join(work, 'lonely');
+await mkdir(lonely);
+await writeFile(path.join(lonely, 'report.html'), tiny);
+page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+page.on('pageerror', (e) => crashes.push(String(e)));
+await page.goto('file://' + path.join(lonely, 'report.html'));
+await page.locator('#story-card--default').scrollIntoViewIfNeeded();
+await page.waitForFunction(() =>
+  document.querySelector('#story-card--default .note') &&
+  !document.querySelector('.tile[data-key="card--default@640"] img'));
+check('a referenced image that cannot load says where the files are',
+  (await page.locator('#story-card--default .note').textContent())
+    .includes('Images not embedded to keep this report openable'));
+check('the pointer names the artifact file',
+  (await page.locator('#story-card--default .note').textContent()).includes('shots/a-act.png'));
+check('a missing file leaves no broken image behind',
+  (await page.locator('#story-card--default img').count()) === 0);
+check('the note appears once per capture',
+  (await page.locator('#story-card--default .note').count()) === 1);
+check('the tile falls back to its status as text',
+  (await page.locator('.tile[data-key="card--default@640"]').textContent()).includes('Changed'));
+check('the rest of the page carries on',
+  (await page.locator('#meta').textContent()).includes('captures across'));
+await page.close();
+
+// A capture whose artifacts never existed when the report was written has no file to
+// reference and no size to compute a share from: the row says what is true, and a share
+// that would print as a flat zero is left out rather than shown.
+const ghostCapture = capture({ t: 'Ghost', n: 'Vanished', id: 'ghost--vanished', w: 380,
+  s: 'changed', px: 8, r: 0.00004,
+  a: { expected: 'shots/gone-base.png', actual: 'shots/gone-act.png', diff: 'shots/gone-diff.png' } });
+const ghostSummary = {
+  ...summary,
+  captures: [captures[0], ghostCapture],
+  totals: { ...summary.totals, stories: 2, captures: 2, unchanged: 0, changed: 2, new: 0,
+    renderFailed: 0 },
+  changedStories: ['card--default', 'ghost--vanished'],
+};
+await writeFile(path.join(work, 'ghost.html'), await renderReport(ghostSummary, work));
+page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+page.on('pageerror', (e) => crashes.push(String(e)));
+page.on('console', (m) => { if (m.type() === 'error') crashes.push(m.text()); });
+await page.goto('file://' + path.join(work, 'ghost.html'));
+await page.waitForTimeout(250);
+check('a capture whose artifacts never existed says so',
+  (await page.locator('#story-ghost--vanished').textContent()).includes('No image artifacts'));
+const ghostBar = await page.locator('#story-ghost--vanished .w').textContent();
+check('a share with no size to compute from is left out',
+  ghostBar.includes('px differ') && !ghostBar.includes('%'));
 await page.close();
 
 await browser.close();
