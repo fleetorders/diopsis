@@ -180,6 +180,7 @@ async function entryFor(
     storyId: parsed.storyId,
     width: parsed.width,
     ...(parsed.mode ? { mode: parsed.mode } : {}),
+    ...(parsed.state ? { state: parsed.state } : {}),
     snapshotPath: change.path,
   };
 
@@ -315,7 +316,8 @@ export async function diffCommand(options: DiffOptions): Promise<number> {
     (a, b) =>
       a.storyId.localeCompare(b.storyId) ||
       a.width - b.width ||
-      (a.mode ?? '').localeCompare(b.mode ?? ''),
+      (a.mode ?? '').localeCompare(b.mode ?? '') ||
+      (a.state ?? '').localeCompare(b.state ?? ''),
   );
 
   const summary: RunSummary = {

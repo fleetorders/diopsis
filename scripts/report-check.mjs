@@ -97,6 +97,7 @@ const capture = (o) => ({
   storyTitle: o.t, storyName: o.n, storyId: o.id, width: o.w, status: o.s,
   snapshotPath: `${o.id}-${o.w}.png`, artifacts: o.a || {},
   ...(o.mode ? { mode: o.mode } : {}),
+  ...(o.state ? { state: o.state } : {}),
   ...(o.px != null ? { diffPixels: o.px, diffRatio: o.r } : {}),
   ...(o.regions ? { regions: o.regions } : {}),
   ...(o.dropped != null ? { regionsDropped: o.dropped } : {}),
@@ -761,6 +762,90 @@ await page.evaluate(() => {
 await page.locator('#acceptreviewed button').click();
 check('two ticks on one story copy one id, not two',
   (await page.evaluate(() => window.__copied)) === 'npx diopsis accept card--default');
+await page.close();
+
+// Interaction states: a capture taken with an element hovered, focused or pressed. The
+// state rides the bar and the tiles like a mode, and its chips compose with every other
+// filter beside the mode ones — a mode and a state can sit on the same capture, so this
+// run carries both chip groups at once.
+const stateCaptures = [
+  capture({ t: 'Card', n: 'Default', id: 'card--default', w: 640, s: 'changed', px: 12840, r: 0.0412,
+    a: { expected: 'shots/a-base.png', actual: 'shots/a-act.png', diff: 'shots/a-diff.png' } }),
+  capture({ t: 'Card', n: 'Default', id: 'card--default', w: 640, s: 'changed', px: 8000, r: 0.03,
+    mode: 'dark', state: 'hover',
+    a: { expected: 'shots/b-base.png', actual: 'shots/b-act.png', diff: 'shots/b-diff.png' } }),
+  capture({ t: 'Card', n: 'Long', id: 'card--long', w: 380, s: 'unchanged' }),
+  capture({ t: 'Card', n: 'Long', id: 'card--long', w: 380, s: 'new', state: 'focus',
+    a: { expected: 'shots/c-act.png', actual: 'shots/c-act.png' } }),
+  capture({ t: 'Header', n: 'Sticky', id: 'header--sticky', w: 1280, s: 'render-failed', mode: 'dark',
+    err: 'StoryRenderError: the story never left its loading state' }),
+];
+const statesSummary = {
+  ...summary,
+  captures: stateCaptures,
+  totals: { ...summary.totals, stories: 3, captures: 5, unchanged: 1, changed: 2, new: 1,
+    renderFailed: 1, failed: 0 },
+  changedStories: ['card--default', 'card--long', 'header--sticky'],
+};
+await writeFile(path.join(work, 'states.html'), await renderReport(statesSummary, work));
+page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+page.on('pageerror', (e) => crashes.push(String(e)));
+page.on('console', (m) => { if (m.type() === 'error') crashes.push(m.text()); });
+await page.goto('file://' + path.join(work, 'states.html'));
+await page.waitForTimeout(250);
+
+// The run opens on "Needs review", which hides the unchanged plain capture, so every chip
+// count below is of what a click would show from there.
+check('a run with states offers the state chips beside the mode chips',
+  (await page.locator('#modefilters .chip').allTextContents()).join('|') ===
+  'All modes4|Base2|dark2|All states4|Plain2|hover1|focus1');
+check('the bar shows the state in braces after the mode',
+  (await page.locator('#story-card--default .capture').nth(1).locator('.w').textContent())
+    .startsWith('640px [dark] {hover}'));
+check('a plain bar carries no state brace',
+  !(await page.locator('#story-card--default .capture').first().locator('.w').textContent())
+    .includes('{'));
+check('a tile names the mode and the state after the width',
+  (await page.locator('.tile[data-key="card--default@640[dark]{hover}"] .tile-dims').textContent())
+    .startsWith('640px [dark] {hover}'));
+
+await page.locator('.chip[data-key=all]').click();
+await page.waitForTimeout(150);
+await page.locator('.chip[data-key="state:plain"]').click();
+await page.waitForTimeout(150);
+check('Plain narrows the list to the captures no state asked for',
+  (await page.evaluate(() => flat.map((e) => keyOf(e.capture)).join())) ===
+  'card--default@640,card--long@380,header--sticky@1280[dark]');
+await page.locator('.chip[data-key=changed]').click();
+await page.waitForTimeout(150);
+check('the state filter composes with the status filter',
+  (await page.evaluate(() => flat.length)) === 1 &&
+  (await page.evaluate(() => !flat[0].capture.state)) === true);
+check('the state chip counts reflect the status filter',
+  (await page.locator('.chip[data-key="state:hover"] .n').textContent()) === '1');
+// The only dark change is a hover capture, so dark counts nothing under Plain — the mode
+// counts carry the state filter exactly as the state counts carry the status one.
+check('the mode chip counts reflect the state filter',
+  (await page.locator('.chip[data-key="mode:dark"] .n').textContent()) === '0');
+
+await page.locator('.chip[data-key=all]').click();
+await page.locator('.chip[data-key="state:all"]').click();
+await page.locator('.chip[data-key="mode:dark"]').click();
+await page.waitForTimeout(150);
+check('the mode filter composes with the state filter',
+  (await page.evaluate(() => flat.map((e) => keyOf(e.capture)).join())) ===
+  'card--default@640[dark]{hover},header--sticky@1280[dark]');
+
+// A state capture shares its story and width with the plain capture; ticking one off must
+// not tick off its twin, so the key names the state too.
+await page.locator('.chip[data-key="mode:all"]').click();
+await page.waitForTimeout(150);
+await page.locator('#story-card--default .capture').nth(0).locator('.mark').click();
+await page.waitForTimeout(100);
+check('ticking the plain capture leaves its state twin unticked',
+  (await page.locator('.tile[data-key="card--default@640"]').getAttribute('class')).includes('done') &&
+  !(await page.locator('.tile[data-key="card--default@640[dark]{hover}"]').getAttribute('class'))
+    .includes('done'));
 await page.close();
 
 // The control: a run without modes shows no mode chips at all.

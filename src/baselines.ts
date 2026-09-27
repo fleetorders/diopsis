@@ -77,7 +77,9 @@ export function expectedBaselines(
   const expected = new Set<string>();
   for (const platform of platforms) {
     for (const capture of captures) {
-      expected.add(snapshotPathFor(capture.storyId, capture.width, platform, capture.mode));
+      expected.add(
+        snapshotPathFor(capture.storyId, capture.width, platform, capture.mode, capture.state?.name),
+      );
     }
   }
   return expected;

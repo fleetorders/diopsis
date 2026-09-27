@@ -1,6 +1,20 @@
 import type { CompareOptions, DiopsisConfig } from './config.ts';
 import type { StoryEntry } from './story-index.ts';
 
+/**
+ * An interaction state a story is photographed in: one element hovered, focused or pressed,
+ * held by the browser itself for the shutter. Play functions cover scripted interactions
+ * (DECISIONS.md D-031); this is for the pointer and keyboard states a play function cannot
+ * still be holding when the screenshot is taken.
+ */
+export interface InteractionState {
+  /** The capture's name in paths, titles and the report: `hover`, then `hover-2`, … */
+  name: string;
+  action: 'hover' | 'focus' | 'active';
+  /** Everything after the first `=` in the tag, spaces and further `=` included. */
+  selector: string;
+}
+
 /** One screenshot: a story at a width. Captures are the unit that costs, not stories. */
 export interface Capture {
   storyId: string;
@@ -16,6 +30,8 @@ export interface Capture {
    * means the base capture, which always exists and is not a mode.
    */
   mode?: string;
+  /** The interaction state this capture holds; absent for the plain capture. */
+  state?: InteractionState;
   /** Comparison overrides the story's tags set; only the keys a tag actually carried. */
   compare?: Partial<CompareOptions>;
   /** Baseline location, relative to `snapshotDir`. */
@@ -187,6 +203,57 @@ export function modesForStory(
   return { modes: restricted ? names.filter((name) => selected.has(name)) : names, warnings };
 }
 
+/** The pointer and keyboard states a tag can ask for, keyed by the tag's own name. */
+const STATE_ACTIONS: Record<string, InteractionState['action']> = {
+  hover: 'hover',
+  focus: 'focus',
+  active: 'active',
+};
+
+/** One state directive, split into the action it asks for and the selector it aims at. */
+function stateDirective(
+  token: string,
+): { action: InteractionState['action']; selector: string } | undefined {
+  const eq = token.indexOf('=');
+  if (eq === -1) return undefined;
+  const action = STATE_ACTIONS[token.slice(0, eq)];
+  return action ? { action, selector: token.slice(eq + 1) } : undefined;
+}
+
+/**
+ * The interaction states one story is photographed in beyond its plain capture:
+ * `diopsis:hover=<selector>`, `diopsis:focus=<selector>` and `diopsis:active=<selector>`,
+ * one extra capture each per width and per mode. The selector is everything after the
+ * first `=` — spaces and further `=` included — and may name nothing, which warns through
+ * the same channel as every other unusable tag and adds no capture. Tags of the same kind
+ * number themselves in tag order: `hover`, then `hover-2`, then `hover-3`.
+ */
+export function statesForStory(story: StoryEntry): {
+  states: InteractionState[];
+  warnings: string[];
+} {
+  const states: InteractionState[] = [];
+  const warnings: string[] = [];
+  const seen: Partial<Record<InteractionState['action'], number>> = {};
+  for (const directive of story.tags) {
+    if (!directive.startsWith(TAG_PREFIX)) continue;
+    const parsed = stateDirective(directive.slice(TAG_PREFIX.length));
+    if (!parsed) continue;
+    if (parsed.selector.trim().length === 0) {
+      warnings.push(`${story.id}: tag "${directive}" names no selector — ignored.`);
+      continue;
+    }
+    const nth = (seen[parsed.action] ?? 0) + 1;
+    seen[parsed.action] = nth;
+    states.push({
+      name: nth === 1 ? parsed.action : `${parsed.action}-${nth}`,
+      action: parsed.action,
+      selector: parsed.selector,
+    });
+  }
+  return { states, warnings };
+}
+
 /** `darwin-arm64`, `linux-x64` — the token that keeps two platforms' baselines apart. */
 export function platformToken(
   platform: string = process.platform,
@@ -205,13 +272,15 @@ export function snapshotPathFor(
   width: number,
   platform = platformToken(),
   mode?: string,
+  state?: string,
 ): string {
   const segment = safeSegment(storyId);
-  // The base path is untouched by the mode parameter: existing baselines stay valid the day
-  // modes are switched on, and a mode gets its own file beside them.
-  return mode === undefined
+  // The base path is untouched by the mode and state parameters: existing baselines stay
+  // valid the day either is switched on, and each gets its own file beside them.
+  const middle = [mode, state].filter((part) => part !== undefined).join('-');
+  return middle === ''
     ? `${segment}/${width}w-${platform}.png`
-    : `${segment}/${width}w-${mode}-${platform}.png`;
+    : `${segment}/${width}w-${middle}-${platform}.png`;
 }
 
 export interface ParsedSnapshotPath {
@@ -220,6 +289,8 @@ export interface ParsedSnapshotPath {
   width: number;
   /** The mode the baseline was captured under; absent for the base capture. */
   mode?: string;
+  /** The state name the baseline was captured in; absent for the plain capture. */
+  state?: string;
   platform: string;
 }
 
@@ -242,14 +313,25 @@ export function parseSnapshotPath(relative: string): ParsedSnapshotPath | undefi
   if (!width) return undefined;
   // The platform token is the final two dash-separated words — a platform and an
   // architecture, neither of which contains a dash — and whatever lies between it and the
-  // width is the mode, whose name is free to hold dashes of its own.
+  // width is the mode, then the state, either or both absent. The state is read off the
+  // tail because its names are a fixed vocabulary (`hover`, `focus`, `active`, and
+  // `hover-2`…) while a mode's are free: a mode named to end in a state's name cannot be
+  // told from a mode plus a state, and the state reading wins — the same order the writer
+  // above lays them down in.
   const parts = stem.slice(width[0].length).split('-');
   if (parts.length < 2) return undefined;
+  const platform = parts.slice(-2).join('-');
+  const remainder = parts.slice(0, -2).join('-');
+  const state = /^(?:(.*)-)?(hover|focus|active)(?:-([2-9]\d*))?$/.exec(remainder);
+  // A state match eats the tail of the remainder; what it leaves, or the whole remainder
+  // when nothing matched, is the mode.
+  const mode = state ? state[1] : remainder === '' ? undefined : remainder;
   return {
     storyId: segment,
     width: Number.parseInt(width[1] ?? '', 10),
-    ...(parts.length > 2 ? { mode: parts.slice(0, -2).join('-') } : {}),
-    platform: parts.slice(-2).join('-'),
+    ...(mode !== undefined ? { mode } : {}),
+    ...(state ? { state: state[3] !== undefined ? `${state[2] ?? ''}-${state[3]}` : state[2] ?? '' } : {}),
+    platform,
   };
 }
 
@@ -282,9 +364,10 @@ export function widthsForStory(
       continue;
     }
     // A tolerance directive names a comparison knob, not a width; skipping it here is what
-    // keeps a story carrying only tolerance tags on the default widths. The scope and mode
-    // directives are the same kind: they name what the camera frames, and under which globals.
-    if (toleranceDirective(token) || SCOPE_TAGS[token] || modesDirective(token)) continue;
+    // keeps a story carrying only tolerance tags on the default widths. The scope, mode and
+    // state directives are the same kind: they name what the camera frames, under which
+    // globals, and holding which interaction.
+    if (toleranceDirective(token) || SCOPE_TAGS[token] || modesDirective(token) || stateDirective(token)) continue;
     if (/^\d+$/.test(token)) {
       widths.add(Number.parseInt(token, 10));
       continue;
@@ -333,7 +416,14 @@ export function resolveMatrix(
     const tolerance = toleranceForStory(story);
     const scope = scopeForStory(story, config.capture);
     const modeSet = modesForStory(story, config.modes);
-    warnings.push(...resolved.warnings, ...tolerance.warnings, ...scope.warnings, ...modeSet.warnings);
+    const stateSet = statesForStory(story);
+    warnings.push(
+      ...resolved.warnings,
+      ...tolerance.warnings,
+      ...scope.warnings,
+      ...modeSet.warnings,
+      ...stateSet.warnings,
+    );
     if (resolved.skip) {
       skipped.push(story.id);
       continue;
@@ -364,15 +454,33 @@ export function resolveMatrix(
         scope: scope.scope,
         ...(tolerance.compare ? { compare: tolerance.compare } : {}),
       };
-      // The base capture first, then one per mode: the order of the review list and the
-      // plan, and the shape of every path a baseline can live at.
+      // The base capture first, then its interaction states, then the same shape per mode:
+      // the order of the review list and the plan, and the shape of every path a baseline
+      // can live at. A state multiplies the capture set like a width and a mode do, so the
+      // plain capture always remains beside the ones holding an element hovered, focused
+      // or pressed.
       captures.push({ ...base, snapshotPath: snapshotPathFor(story.id, width, platform) });
+      for (const state of stateSet.states) {
+        captures.push({
+          ...base,
+          state,
+          snapshotPath: snapshotPathFor(story.id, width, platform, undefined, state.name),
+        });
+      }
       for (const mode of modeSet.modes) {
         captures.push({
           ...base,
           mode,
           snapshotPath: snapshotPathFor(story.id, width, platform, mode),
         });
+        for (const state of stateSet.states) {
+          captures.push({
+            ...base,
+            mode,
+            state,
+            snapshotPath: snapshotPathFor(story.id, width, platform, mode, state.name),
+          });
+        }
       }
     }
   }

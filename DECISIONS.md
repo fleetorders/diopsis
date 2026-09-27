@@ -918,3 +918,25 @@ platform's share shown beside it. Prune is a dry run unless told otherwise, and 
 staged rather than committed, so the removal is reviewed like any other baseline change.
 
 **Scope:** repo.
+
+## D-038 — 2026-09-27 — Interaction states: hover, focus and press, each with a baseline
+
+**Decision:** A story tagged `diopsis:hover=<selector>`, `diopsis:focus=<selector>` or
+`diopsis:active=<selector>` is also captured with the first matching element in its render root
+hovered, keyboard-focused or held pressed, each state at every width and mode, with its own
+baseline at `<story>/<width>w[-<mode>]-<state>-<platform>.png`. Several tags of one kind are
+numbered (`hover-2`). Focus is applied after a keyboard press so `:focus-visible` styling shows;
+a press is held through the screenshot and released afterwards, so the next capture on the
+reused page starts clean. A selector that matches nothing is a render failure. The report
+filters by state beside mode.
+
+**Why:** hover, focus rings and pressed styles are where component libraries regress most and
+are seen least, and a play function cannot hold a pointer state still for a screenshot — it runs
+to completion first (D-031). Tags keep the setting next to the story, where the index carries it
+(§8).
+
+**Consequences:** each state is a capture, so it costs like a width and is counted as one. A mode
+whose name ends in a state word would read as that state in a baseline path; mode and state
+names are chosen by the project, and the writer's order is the one the parser assumes.
+
+**Scope:** repo.

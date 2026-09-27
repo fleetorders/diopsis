@@ -35,7 +35,9 @@ export interface RunOptions {
 export function headerLine(captures: Capture[], grep: string | undefined): string {
   const captured = new Set(captures.map((capture) => capture.storyId)).size;
   const matched = grep ? ` (matched "${grep}")` : '';
-  return `Diopsis · ${captured} stories → ${captures.length} captures${matched} · ${platformToken()}`;
+  const stories = `${captured} ${captured === 1 ? 'story' : 'stories'}`;
+  const shots = `${captures.length} ${captures.length === 1 ? 'capture' : 'captures'}`;
+  return `Diopsis · ${stories} → ${shots}${matched} · ${platformToken()}`;
 }
 
 /**

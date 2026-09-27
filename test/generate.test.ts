@@ -38,6 +38,25 @@ describe('planCaptures', () => {
     const { captures } = resolveMatrix(stories, resolveConfig(), 'linux-x64');
     assert.deepEqual(planCaptures(captures, '/repo/__screenshots__')[0]?.segments, ['a--one', '320w-linux-x64.png']);
   });
+
+  it('names the state in braces after the mode, keeping titles unique', () => {
+    const tagged: StoryEntry[] = [
+      { id: 'a--one', name: 'One', title: 'A', tags: ['diopsis:hover=button', 'diopsis:modes=dark'] },
+    ];
+    const config = resolveConfig({
+      viewports: { default: [320] },
+      modes: { dark: { theme: 'dark' } },
+    });
+    const { captures } = resolveMatrix(tagged, config, 'linux-x64');
+    const planned = planCaptures(captures, '/repo/__screenshots__');
+    assert.deepEqual(
+      planned.map((capture) => capture.title),
+      ['a--one @320', 'a--one @320 {hover}', 'a--one @320 [dark]', 'a--one @320 [dark] {hover}'],
+    );
+    assert.equal(new Set(planned.map((capture) => capture.title)).size, planned.length);
+    // The plan carries the whole state, so the spec applies it without reading a config.
+    assert.deepEqual(planned[1]?.state, { name: 'hover', action: 'hover', selector: 'button' });
+  });
 });
 
 describe('projectDir', () => {
@@ -71,6 +90,22 @@ describe('generateProject', () => {
     assert.equal(plan.baseUrl, 'http://127.0.0.1:4321');
     assert.match(configSource, /chromium/);
     assert.match(configSource, /timezoneId: 'UTC'/);
+  });
+
+  it('applies a capture\'s interaction state and releases it after the assertion', async () => {
+    const root = await scratch();
+    const config = resolveConfig();
+    const tagged: StoryEntry[] = [
+      { id: 'a--one', name: 'One', title: 'A', tags: ['diopsis:active=button'] },
+    ];
+    const { captures } = resolveMatrix(tagged, config, 'linux-x64');
+    const project = await generateProject({ root, config, captures, baseUrl: 'http://x' });
+
+    const spec = await readFile(path.join(project.dir, 'diopsis.spec.js'), 'utf8');
+    // The state goes on before the comparison and comes off in a finally, whatever the
+    // comparison said — the page is reused, and the next capture must not inherit it.
+    assert.match(spec, /if \(capture\.state\) await applyState\(page, capture\.state\);/);
+    assert.match(spec, /} finally \{\s*\n\s*if \(capture\.state\) await releaseState\(page\);/);
   });
 
   it('points snapshots at an absolute path in the tested repo, not inside the temp project', async () => {

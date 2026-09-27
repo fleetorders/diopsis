@@ -155,7 +155,7 @@ describe('headerBlock modes', () => {
       loosened: [],
       modes: Object.keys(modes),
     });
-    assert.match(out, /Diopsis · 1 stories → 3 captures · /);
+    assert.match(out, /Diopsis · 1 story → 3 captures · /);
     assert.match(out, /  modes     dark, rtl\n/);
   });
 
