@@ -18,4 +18,11 @@ if git diff --cached --name-only | grep -qE '^(src/report/|scripts/report-check\
   npm run --silent check:report || exit 1
 fi
 
+# The same reasoning for the capture runtime: whether a wait lets a capture show a finished
+# story is only observable in a browser.
+if git diff --cached --name-only | grep -qE '^(src/runtime/|scripts/stabilize-check\.mjs)'; then
+  echo "› capture runtime changed — checking its waits in a browser"
+  npm run --silent check:stabilize || exit 1
+fi
+
 exit 0

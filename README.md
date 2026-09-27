@@ -244,7 +244,7 @@ Add `--grep <text>` to any of these to limit the run to stories whose id contain
 | `fullPage` | `true` | Capture the whole scrollable page rather than the viewport |
 | `image` | Playwright's Jammy image | The one image name baseline generation and CI must share |
 | `stabilize.freezeClock` | `2026-01-15T12:00:00Z` | Fixed wall-clock time, or `false` |
-| `stabilize.waitForNetworkIdle` | `true` | Wait for the network to settle |
+| `stabilize.waitForNetworkIdle` | `true` | Wait until no request is in flight and no short timer that could start one is pending |
 | `stabilize.disableAnimations` | `true` | Zero out animations and transitions |
 | `stabilize.waitForFonts` | `true` | Wait for `document.fonts.ready` |
 | `stabilize.waitForImages` | `true` | Wait for every image to decode |
