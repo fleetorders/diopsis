@@ -74,6 +74,21 @@ describe('parseStoryIndex', () => {
     );
   });
 
+  it('sorts by code units, not the machine’s collation', () => {
+    // ICU collation orders these two opposite to code units (lowercase first); run order
+    // and the baseline paths derived from it must not depend on the machine's ICU data.
+    const stories = parseStoryIndex({
+      entries: {
+        'a--one': { type: 'story', id: 'a--one', name: 'One', title: 'A' },
+        'A--one': { type: 'story', id: 'A--one', name: 'One', title: 'A' },
+      },
+    });
+    assert.deepEqual(
+      stories.map((s) => s.id),
+      ['A--one', 'a--one'],
+    );
+  });
+
   it('rejects an index it cannot recognise', () => {
     assert.throws(() => parseStoryIndex({ v: 5 }), /entries.*stories/);
     assert.throws(() => parseStoryIndex('nope'), /not an object/);
@@ -97,5 +112,29 @@ describe('readStoryIndex', () => {
 
   it('explains itself when the directory is not a Storybook build', async () => {
     await assert.rejects(() => readStoryIndex(fixtures), /No story index/);
+  });
+});
+
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { afterEach } from 'node:test';
+
+const invalidTemporaries: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(
+    invalidTemporaries.splice(0).map((dir) => rm(dir, { recursive: true, force: true })),
+  );
+});
+
+describe('readStoryIndex with a broken index', () => {
+  it('names the file when the index is not valid JSON', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'diopsis-index-'));
+    invalidTemporaries.push(dir);
+    await writeFile(path.join(dir, 'index.json'), '{ not json');
+    await assert.rejects(
+      () => readStoryIndex(dir),
+      /is not valid JSON \(.*\)\. Rebuild the Storybook\./,
+    );
   });
 });

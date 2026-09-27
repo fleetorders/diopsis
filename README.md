@@ -30,11 +30,11 @@ Diopsis · 7 stories → 13 captures · darwin-arm64
 
   8 unchanged · 5 changed
 
-  ~ card--default @320  2,684 px differ
-  ~ card--default @1280  3,150 px differ
-  ~ card--long @320  6,328 px differ
-  ~ card--long @1280  6,212 px differ
-  ~ card--wide-only @1280  3,204 px differ
+  ~ card--default @320  2,092 px differ
+  ~ card--default @1280  1,845 px differ
+  ~ card--long @320  5,914 px differ
+  ~ card--long @1280  5,377 px differ
+  ~ card--wide-only @1280  1,964 px differ
 
   report   .diopsis/report.html
   summary  .diopsis/summary.json
@@ -42,17 +42,18 @@ Diopsis · 7 stories → 13 captures · darwin-arm64
   Accept as the new baseline:  npx diopsis accept
 ```
 
-And when something did change, the report shows you exactly what — baseline beside current
-render, changed stories first:
+And when something did change, the report shows you exactly what — an overview of every
+change, then each one with the changed region outlined, largest change first:
 
 <div align="center">
-  <img src="https://raw.githubusercontent.com/fleetorders/diopsis/main/media/diopsis-report.png" width="920" alt="The Diopsis report: filter chips for changed and unchanged captures, above a story showing its committed baseline and current render side by side">
+  <img src="https://raw.githubusercontent.com/fleetorders/diopsis/main/media/diopsis-report.png" width="920" alt="The Diopsis report: filter chips and a page-wide comparison switch above an overview of five changed captures, then a changed card with the region that moved outlined over the diff">
 </div>
 
-Needs Node 18+, a built static Storybook, and `@playwright/test` as a peer dependency; runs on
+Needs Node 18.11+, a built static Storybook, and `@playwright/test` as a peer dependency; runs on
 macOS, Windows and Linux, but baselines CI will agree with are generated in Linux via Docker.
-Chromium only — no cross-browser matrix, no interaction testing, no accessibility audit, and no
-hosted service of any kind.
+Chromium only — no cross-browser matrix and no interaction testing. An optional accessibility
+audit reports axe-core findings beside the pixels when you install `axe-core`; everything runs
+locally, with no hosted service of any kind.
 
 ## Your first run
 
@@ -70,7 +71,7 @@ From here `npx diopsis run` verifies every story against what you committed.
 
 `@playwright/test` is a **peer** dependency deliberately: browsers are downloaded once, and
 there is never a second copy on a different version. Diopsis itself has zero runtime
-dependencies. Node 18 or newer; a TypeScript config file needs Node 22.18+, where Node can
+dependencies. Node 18.11 or newer; a TypeScript config file needs Node 22.18+, where Node can
 strip types on its own — below that, `diopsis init` writes `diopsis.config.mjs` instead,
 the same object without the annotations.
 
@@ -99,11 +100,13 @@ change afterwards.
 
 | | |
 |---|---|
-| **Captures that do not flake** | A frozen clock, settled fonts and images, animations disabled, locale and timezone pinned — [all on by default](#configuration) |
+| **Captures that do not flake** | A frozen clock, settled fonts, images, network and play functions, animations disabled, locale and timezone pinned — [all on by default](#configuration) — and a capture that differs only once is retaken and reported unstable, not changed |
 | **Baselines that cannot collide** | Platform and architecture in every snapshot path, so a local run can never overwrite what CI reads |
-| **A diff you can actually review** | A self-contained HTML report with [four ways to compare](#everyday-use) each pair, largest change first, filterable and keyboard-driven |
+| **A diff you can actually review** | A self-contained HTML report that opens on an overview of every change, outlines where each capture changed, and offers [four ways to compare](#everyday-use) each pair — keyboard-driven, with one command to accept what you reviewed |
+| **Every state you ship** | Widths, [modes](#modes) such as a dark theme or right-to-left, hover, focus and press states, and stories captured after their play functions, each with its own baselines |
+| **Reviewable baselines** | [`diopsis diff`](#everyday-use) renders a branch's baseline changes straight from git, for the pull request that accepts them |
 | **A machine-readable result** | `summary.json` with every capture and changed story id, for your existing CI bot |
-| **Visible cost** | [`diopsis doctor`](#reference) reports capture count, baseline weight and orphans before they become a problem |
+| **Visible cost** | [`diopsis doctor`](#reference) reports capture count and baseline weight against a budget, and `diopsis prune` removes what no capture writes any more |
 | **Nothing to sign up for** | Zero runtime dependencies, no uploads, no account, no dashboard |
 
 ## How it works, in plain words
@@ -177,6 +180,60 @@ export const Untestable = { tags: ['diopsis:skip'] };    // never captured
 A tag naming neither a width nor a configured set warns and falls back to the default widths. A
 typo should not quietly stop watching a story.
 
+### Component or page
+
+By default a capture is the whole canvas at the configured width. With `capture: 'component'`
+it is the rendered component instead — the box around everything the story drew, padded by
+8 px — so the empty canvas around a button is neither stored nor compared. A story can choose
+for itself with `diopsis:component` or `diopsis:page`. Switching regenerates those baselines.
+
+### Modes
+
+A theme, a text direction or a locale is a Storybook global. Name the combinations you ship and
+every story is captured in each of them as well as in its plain form, each with its own
+baselines:
+
+```ts
+modes: {
+  dark: { theme: 'dark' },
+  rtl: { direction: 'rtl', locale: 'ar' },
+},
+```
+
+Globals reach the story through its URL, so whatever your decorators do with them is what gets
+captured. `diopsis:modes=dark` limits a story to the modes it names and `diopsis:modes=none` to
+its plain form. A mode multiplies captures like a width does, and `init` and `doctor` count it.
+Plain captures keep the paths they always had, so adding a mode leaves existing baselines valid.
+
+### Hover, focus and press
+
+A pointer or keyboard state is captured by naming the element it applies to:
+
+```ts
+export const Primary = {
+  tags: ['diopsis:hover=button', 'diopsis:focus=button', 'diopsis:active=button'],
+};
+```
+
+Each state is its own capture and baseline, at every width and mode. Focus arrives the way a
+keyboard user's does, so `:focus-visible` styles show.
+
+### Per-story tolerance
+
+The occasional story that cannot be made deterministic — a gradient that dithers, a chart that
+anti-aliases differently by a pixel — gets its own tolerance through the same channel:
+
+```ts
+export const Gradient = { tags: ['diopsis:threshold=0.3'] };        // per-pixel colour tolerance
+export const Chart = { tags: ['diopsis:max-diff-pixels=400'] };     // this many pixels may differ
+export const Hero = { tags: ['diopsis:max-diff-ratio=0.005'] };     // this share may differ
+```
+
+A story's pixel count or ratio replaces both configured limits for that story, so it can loosen
+as well as tighten. Loosening is never silent: `run` counts the stories that compare more
+loosely than the config, `doctor` names them, and `summary.json` records the comparison each
+of those captures ran with.
+
 ### Excluding genuinely random pixels
 
 Mark the element with `data-diopsis-ignore` — a map tile, a video, a canvas. That is the only
@@ -195,23 +252,56 @@ the masked element's own bounding box moves.
 is one self-contained HTML file, so it also opens straight from a CI artifact with nothing
 beside it, and it follows whichever theme your system is set to. Every capture offers the same
 pair four ways: **diff-highlight overlay** — the default, because it answers "what changed?"
-with no interaction — plus side-by-side, swipe, and onion-skin. Click a capture to stop fitting
+with no interaction — plus side-by-side, swipe, and onion-skin. In the overlay each changed
+region is outlined, and `n` and `N` step through them. The toolbar switches every
+capture at once, and each capture can still be switched on its own. Click a capture to stop fitting
 it to the page and see it at actual size, which is the only way a one-pixel shift survives
 being looked at. Unchanged stories stay collapsed, the largest change leads, and each changed
 story carries the exact command to accept it.
 
 A few hundred captures are meant to be worked through rather than scrolled past, so the report
-filters by story, remembers which captures you have already ticked off, and gives every story
+opens with an overview — a thumbnail of every capture that needs review, click one to jump to
+it — and filters by story, remembers which captures you have already ticked off, and gives every story
 its own link to paste into the review. From the keyboard: `/` filters, `j` and `k` move between
-captures, `1`–`4` switch how the pair is compared, and `r` ticks one off.
+captures, `1`–`4` switch how the pair is compared, `Shift`+`1`–`4` switch every capture at
+once, `o` shows or hides the overview, and `r` ticks one off. Once something is ticked, one
+button copies a single `accept` command for exactly the stories you reviewed — and warns when
+one of them still has a changed capture you have not ticked, because accepting a story adopts
+all of it. Side by side, the two renders scroll and zoom together.
 
 **Accept** — `npx diopsis accept` adopts the whole run, or `npx diopsis accept card--default`
-adopts one story. Both copy the new images over the baselines and stage them for review.
+adopts one story; name several to adopt them together. Only changed and new captures are
+adopted — one that failed to render has nothing worth keeping — and nothing is copied unless
+every image the run left behind is present. The new images replace the baselines and are
+staged for review.
 
 **Regenerate** — `npx diopsis update` rewrites baselines wholesale, for when you already know
 everything changed.
 
-Add `--grep <text>` to any of these to limit the run to stories whose id contains `<text>`.
+**Capture only what a change affects** — build Storybook with `--stats-json` and run
+`npx diopsis run --changed`. Diopsis reads the module graph the build wrote, walks it from the
+files your branch changed (against `origin/main`, or a ref you name) to the stories that import
+them, and captures only those; every other story is carried from its baseline and listed as
+carried. Anything it cannot prove harmless — Storybook's config, a lockfile, a builder config, a
+file outside the graph, a missing stats file — runs everything, and says why. Baselines and
+run output are never counted as changes.
+`npx diopsis trace <file>` shows the chain from a file to the stories it reaches.
+
+**Split a large run across machines** — `npx diopsis run --shard 2/4` captures one quarter of
+the matrix, split by story so a story's review is never divided, into its own directory. Download
+every shard into one place and `npx diopsis merge` writes one report and gives the verdict a
+single run would; `npx diopsis accept --from .diopsis/merged` accepts from it.
+
+**Review a branch's baselines** — a pull request that accepts changes shows its reviewers two
+opaque PNGs per file. `npx diopsis diff` renders the same report straight from git instead:
+every baseline the branch changed, added or deleted against `origin/main` (or a ref you name),
+with the same comparison views and changed regions, and no browser run at all. It always exits
+0 — it is for looking, not gating.
+
+Add `--grep <text>` to `run` or `update` to limit them to stories whose id contains `<text>`.
+Anything after `--` goes to Playwright unchanged, e.g. `npx diopsis run -- --workers=2`.
+Playwright's own `--shard` is refused — it splits by test, not by story, and would divide a
+story's review across machines.
 
 ## Reference
 
@@ -220,9 +310,14 @@ Add `--grep <text>` to any of these to limit the run to stories whose id contain
 | `diopsis init` | Scaffold config, git settings and a CI recipe; print what the matrix costs |
 | `diopsis run` | Verify against committed baselines *(default command)* |
 | `diopsis update` | Regenerate baselines |
-| `diopsis accept [story-id]` | Adopt the last run's output, per story or wholesale |
+| `diopsis accept [story-id...]` | Adopt the last run's output, for the named stories or wholesale |
 | `diopsis report` | Open the last report |
 | `diopsis doctor` | Audit the setup |
+| `diopsis prune` | List baselines no capture would write any more; `--yes` deletes and stages them |
+| `diopsis merge [dir…]` | Merge sharded runs into one report and one verdict |
+| `diopsis trace <file…>` | Show which stories a file reaches, or why it forces a full run |
+| `diopsis diff [base]` | Report the baseline changes this branch makes against `base` (default `origin/main`) |
+| `diopsis --version` | Print the installed version |
 
 | Flag | Applies to | Effect |
 |---|---|---|
@@ -231,6 +326,18 @@ Add `--grep <text>` to any of these to limit the run to stories whose id contain
 | `--force` | `init` | Overwrite an existing config |
 | `--lfs` | `init` | Set the baselines up for Git LFS |
 | `--no-stage` | `accept` | Write the files without staging them in git |
+| `--changed [base]` | `run` | Capture only the stories the changes since `base` can affect |
+| `--shard <i>/<n>` | `run` | Capture one shard of the matrix, split by story |
+| `--from <dir>` | `accept` | Accept from a merged or downloaded run instead of the output directory |
+| `--open` | `diff` | Open the report when it is written |
+| `--platform <token>` | `diff` | Only baselines of one platform, e.g. `linux-x64` |
+| `--json` | `doctor` | Print the audit as one JSON document, for a CI step to read |
+| `-- <args>` | `run`, `update` | Pass the rest to Playwright, e.g. `--workers=2` |
+
+A flag given to a command it does not belong to is refused rather than ignored. The config is
+checked when it loads, and every problem is reported at once with the key and the value it
+had; `viewports` must name a `default` set, and an empty one means only tagged stories are
+captured.
 
 | Config key | Default | Meaning |
 |---|---|---|
@@ -241,15 +348,23 @@ Add `--grep <text>` to any of these to limit the run to stories whose id contain
 | `fullPage` | `true` | Capture the whole scrollable page rather than the viewport |
 | `image` | Playwright's Jammy image | The one image name baseline generation and CI must share |
 | `stabilize.freezeClock` | `2026-01-15T12:00:00Z` | Fixed wall-clock time, or `false` |
-| `stabilize.waitForNetworkIdle` | `true` | Wait for the network to settle |
+| `stabilize.waitForNetworkIdle` | `true` | Wait until no request is in flight and no short timer that could start one is pending |
+| `stabilize.waitForPlay` | `true` | Capture after the story's play function finishes; a play function that fails is a render failure |
+| `stabilize.retries` | `1` | Take a differing capture again from a fresh load; one that then matches is reported unstable and does not fail the run |
 | `stabilize.disableAnimations` | `true` | Zero out animations and transitions |
 | `stabilize.waitForFonts` | `true` | Wait for `document.fonts.ready` |
 | `stabilize.waitForImages` | `true` | Wait for every image to decode |
 | `stabilize.waitForLoadingStates` | `true` | Wait for `aria-busy` and progressbars to clear |
 | `stabilize.settleTimeout` | `15000` | Ceiling on the whole stabilization sequence, ms |
 | `mask` | `['[data-diopsis-ignore]']` | Selectors painted over before comparison |
+| `capture` | `page` | `component` photographs the rendered component instead of the whole canvas |
+| `modes` | none | Named sets of Storybook globals; each story is also captured in each set |
+| `accessibility` | `off` | `report` lists axe-core findings beside the pixels; `fail` fails a run on new findings |
+| `budget` | none | `{ weight: '25 MB', captures: 800 }` — doctor fails past either, and warns at 90% |
+| `compress` | `off` | `auto` recompresses every baseline `update` and `accept` write, losslessly and verified pixel by pixel, when [oxipng](https://github.com/oxipng/oxipng) is installed |
 | `compare.threshold` | `0.2` | Per-pixel colour tolerance, 0–1 |
 | `compare.maxDiffPixelRatio` | `0.001` | Share of differing pixels tolerated |
+| `compare.maxDiffPixels` | unset | Number of differing pixels tolerated; with the ratio, the stricter applies |
 | `timeout` | `30000` | Per-capture timeout, ms |
 | `workers` | Playwright's default | Parallel workers |
 | `outputDir` | `.diopsis` | Where the report and summary are written |
@@ -347,8 +462,10 @@ dashboard, or an agent wiring Diopsis into something else reads this, not the te
 | `captures` | object[] | **Every capture the run planned**, in plan order — not only the interesting ones |
 
 Per capture: `status` is one of `unchanged`, `changed`, `new`, `render-failed`, `failed`.
-`diffPixels` and `diffRatio` appear only when the comparator reported them, `error` only when
-something failed, and `artifacts` holds whichever of `expected`, `actual` and `diff` exist, as
+`diffPixels` and `diffRatio` appear only when the comparator reported them. A changed capture
+also carries `regions` — up to 20 boxes `{ x, y, width, height, pixels }` in image pixels,
+largest first, with `regionsDropped` counting any beyond that — and `size`, the dimensions of
+its render. `error` appears only when something failed, and `artifacts` holds whichever of `expected`, `actual` and `diff` exist, as
 paths **relative to `outputDir`** so a run stays portable when the directory is moved or
 downloaded from CI.
 

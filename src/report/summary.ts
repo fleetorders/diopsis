@@ -1,3 +1,6 @@
+import type { CompareOptions } from '../config.ts';
+import type { MarkedA11yViolation } from '../accessibility.ts';
+import type { Region } from '../regions.ts';
 import type { PlannedCapture } from '../runner/generate.ts';
 
 /**
@@ -5,12 +8,14 @@ import type { PlannedCapture } from '../runner/generate.ts';
  *
  * These are the states a reviewer filters by (DECISIONS.md §5); they are deliberately not
  * Playwright's pass/fail, because "a baseline did not exist yet" and "this looks different"
- * both present as a failing test and need entirely different responses.
+ * both present as a failing test and need entirely different responses. `removed` is the
+ * diff report's own: the branch deleted this baseline, so there is a "was" and no "is".
  */
 export type CaptureStatus =
   | 'unchanged'
   | 'changed'
   | 'new'
+  | 'removed'
   | 'render-failed'
   | 'failed';
 
@@ -27,14 +32,45 @@ export interface CaptureResult {
   storyName: string;
   width: number;
   status: CaptureStatus;
+  /** The configured mode this capture ran under; absent for the base capture. */
+  mode?: string;
+  /** The interaction state this capture was taken in; absent for the plain capture. */
+  state?: string;
   /** Baseline location, relative to the configured snapshot directory. */
   snapshotPath: string;
+  /** Tolerance overrides in effect for this capture; present only when its story set them. */
+  tolerance?: Partial<CompareOptions>;
   /** Differing pixel count, when the comparator reported one. */
   diffPixels?: number;
   /** Differing pixels as a share of the image. */
   diffRatio?: number;
+  /** Pixel size of the actual render, from its PNG header. */
+  size?: { width: number; height: number };
+  /**
+   * Where the capture changed: rectangles of differing pixels in the diff image, largest
+   * first. Present only when the diff image existed and could be decoded.
+   */
+  regions?: Region[];
+  /** Regions that existed but fell past the cap; present only when some were dropped. */
+  regionsDropped?: number;
   /** Why a capture failed, when it did. */
   error?: string;
+  /**
+   * Present when an earlier attempt of this capture differed and a later one matched: the
+   * capture is unchanged — flake between page loads, not a change — and the run says so
+   * rather than reporting either a change or a quietly green pass.
+   */
+  unstable?: true;
+  /** What the run classified the load that differed, i.e. the first attempt. */
+  unstableStatus?: CaptureStatus;
+  /** Differing pixels the load that differed reported, when it reported a count. */
+  unstableDiffPixels?: number;
+  /**
+   * The accessibility audit's findings for this capture's story and mode, present only on
+   * the capture the run audited — including when it found nothing, so `accept` can tell an
+   * audited-and-clean story from one the run never audited.
+   */
+  accessibility?: { violations: MarkedA11yViolation[]; new: number };
   artifacts: CaptureArtifacts;
 }
 
@@ -42,10 +78,38 @@ export interface RunTotals {
   stories: number;
   captures: number;
   unchanged: number;
+  /** Unchanged captures that differed on an earlier attempt and matched on a retry. */
+  unstable: number;
   changed: number;
   new: number;
+  /** Baselines the branch deleted — a diff-report verdict; a run never produces it. */
+  removed: number;
   renderFailed: number;
   failed: number;
+  /** Captures the run never reached — an interrupted run, not a comparison verdict. */
+  notRun: number;
+  /**
+   * Captures a change-aware run planned but did not shoot, carried from their baselines.
+   * Present only in summaries such a run wrote; they are not a comparison verdict.
+   */
+  carried?: number;
+  /**
+   * New accessibility findings across the run — findings whose rule and target the
+   * accepted-findings file does not list for their story. Present only in a run that
+   * audited; in `'report'` mode it changes nothing but the report, in `'fail'` mode each
+   * one failed its capture like a change.
+   */
+  a11yNew?: number;
+}
+
+/** A capture a change-aware run planned but did not shoot; its baseline stands as it was. */
+export interface CarriedCapture {
+  storyId: string;
+  width: number;
+  /** The configured mode the capture would have run under; absent for the base capture. */
+  mode?: string;
+  /** The interaction state the capture would have held; absent for the plain capture. */
+  state?: string;
 }
 
 export interface RunSummary {
@@ -54,8 +118,21 @@ export interface RunSummary {
   createdAt: string;
   platform: string;
   arch: string;
-  mode: 'run' | 'update';
+  mode: 'run' | 'update' | 'diff';
+  /** The shard a sharded run wrote this summary for; a plain or merged run has none. */
+  shard?: { index: number; total: number };
+  /** The ref a diff compared against, and the commit the two sides meet at; diff only. */
+  base?: string;
+  mergeBase?: string;
+  /** Present (true) only when the Playwright run ended interrupted. */
+  interrupted?: boolean;
   snapshotDir: string;
+  /**
+   * Directory `accept` should read this run from, when it does not sit in the output
+   * directory a plain `accept` reads — a merged run. Every accept command the report
+   * offers to copy carries it, so a copied command cannot adopt another run's pixels.
+   */
+  acceptFrom?: string;
   totals: RunTotals;
   /** Story ids with at least one capture needing review. */
   changedStories: string[];
@@ -64,11 +141,21 @@ export interface RunSummary {
    * capture (v2, DECISIONS.md §4) diffs against this to know what a previous run covered.
    */
   captures: CaptureResult[];
+  /**
+   * Change-aware runs: what the affected set was decided against, and — when the run shot
+   * the whole matrix anyway — the reason it had to.
+   */
+  affected?: { base: string; mergeBase: string; changedFiles: number; full?: string };
+  /** Change-aware runs: the planned captures not shot, carried from their baselines. */
+  carried?: CarriedCapture[];
 }
 
+// A deleted baseline needs a reviewer's eye as much as an added one; only the diff report
+// produces the status, so a run's counts are untouched by its presence here.
 const REVIEWABLE: ReadonlySet<CaptureStatus> = new Set<CaptureStatus>([
   'changed',
   'new',
+  'removed',
   'render-failed',
   'failed',
 ]);
@@ -76,6 +163,12 @@ const REVIEWABLE: ReadonlySet<CaptureStatus> = new Set<CaptureStatus>([
 export function needsReview(status: CaptureStatus): boolean {
   return REVIEWABLE.has(status);
 }
+
+/**
+ * Error text of a capture that never ran because the run was interrupted. Carried by the
+ * error rather than a new status so every consumer of `failed` keeps working unchanged.
+ */
+export const NOT_RUN = 'Not run: the run was interrupted.';
 
 /** `6798 pixels (ratio 0.03 of all image pixels) are different.` */
 const PIXELS_PATTERN = /([\d,]+) pixels \(ratio ([\d.]+) of all image pixels\) are different/;
@@ -87,6 +180,8 @@ export interface ClassifyInput {
   /** Concatenated error text from the Playwright result. */
   errorText: string;
   timedOut?: boolean;
+  /** Baseline existence recorded by the generated spec, when the spec got that far. */
+  baseline?: 'present' | 'missing';
 }
 
 /** Turn a Playwright result into the state a reviewer actually cares about. */
@@ -97,9 +192,22 @@ export function classify(input: ClassifyInput): {
 } {
   if (input.passed) return { status: 'unchanged' };
 
+  // A timeout produced no screenshot at all, whatever the baseline state says.
+  if (input.timedOut) return { status: 'failed' };
+
+  // A story that would not render produced no screenshot either; it is not "new".
+  if (input.errorText.includes('StoryRenderError')) return { status: 'render-failed' };
+
+  // Baseline existence is recorded by the spec itself, so classification does not ride on
+  // Playwright's wording — which differs between snapshot modes ("writing actual" or not).
+  if (input.baseline === 'missing') return { status: 'new' };
+
   if (MISSING_PATTERN.test(input.errorText)) return { status: 'new' };
 
-  if (input.errorText.includes('StoryRenderError')) return { status: 'render-failed' };
+  // A new accessibility finding failed the capture after a comparison that passed; the
+  // pixels did not change, but the story needs a review exactly like one that did, so it
+  // lands in `changed` — the status whose response is accept.
+  if (input.errorText.includes('New accessibility findings')) return { status: 'changed' };
 
   const pixels = PIXELS_PATTERN.exec(input.errorText);
   if (pixels) {
@@ -121,24 +229,45 @@ export function totalsFor(captures: CaptureResult[]): RunTotals {
     stories: new Set(captures.map((c) => c.storyId)).size,
     captures: captures.length,
     unchanged: 0,
+    unstable: 0,
     changed: 0,
     new: 0,
+    removed: 0,
     renderFailed: 0,
     failed: 0,
+    notRun: 0,
   };
+  let a11yNew = 0;
+  let audited = false;
   for (const capture of captures) {
+    // Unstable captures are unchanged — the count sits beside it, not instead of it.
+    if (capture.unstable) totals.unstable += 1;
     if (capture.status === 'unchanged') totals.unchanged += 1;
     else if (capture.status === 'changed') totals.changed += 1;
     else if (capture.status === 'new') totals.new += 1;
+    else if (capture.status === 'removed') totals.removed += 1;
     else if (capture.status === 'render-failed') totals.renderFailed += 1;
+    else if (capture.error === NOT_RUN) totals.notRun += 1;
     else totals.failed += 1;
+    if (capture.accessibility) {
+      audited = true;
+      a11yNew += capture.accessibility.new;
+    }
   }
+  // Present only when the run audited: a zero on a run that never looked is not a clean
+  // bill of health, it is the audit being off.
+  if (audited) totals.a11yNew = a11yNew;
   return totals;
 }
 
 export function changedStoriesOf(captures: CaptureResult[]): string[] {
   const ids = new Set<string>();
-  for (const capture of captures) if (needsReview(capture.status)) ids.add(capture.storyId);
+  for (const capture of captures) {
+    // A capture that did not run needs a re-run, not a review; an interrupted run must
+    // not advertise changes to accept from what it never compared.
+    if (capture.error === NOT_RUN) continue;
+    if (needsReview(capture.status)) ids.add(capture.storyId);
+  }
   return [...ids].sort();
 }
 

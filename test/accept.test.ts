@@ -1,0 +1,397 @@
+import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { afterEach, describe, it } from 'node:test';
+
+import { acceptCommand } from '../src/commands/accept.ts';
+import { encodePng } from '../src/png-encode.ts';
+import type { CaptureResult, RunSummary } from '../src/report/summary.ts';
+
+const temporaries: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(temporaries.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+});
+
+function capture(over: Partial<CaptureResult>): CaptureResult {
+  return {
+    storyId: 'a--one',
+    storyTitle: 'A',
+    storyName: 'One',
+    width: 320,
+    status: 'changed',
+    snapshotPath: 'a--one/320w-linux-x64.png',
+    artifacts: { actual: 'test-results/a--one-320-actual.png' },
+    ...over,
+  };
+}
+
+function summaryOf(captures: CaptureResult[]): RunSummary {
+  return {
+    diopsis: 1,
+    createdAt: '2026-01-01T00:00:00Z',
+    platform: 'linux',
+    arch: 'x64',
+    mode: 'run',
+    snapshotDir: '__screenshots__',
+    totals: {
+      stories: 0,
+      captures: captures.length,
+      unchanged: 0,
+      unstable: 0,
+      changed: 0,
+      new: 0,
+      removed: 0,
+      renderFailed: 0,
+      failed: 0,
+      notRun: 0,
+    },
+    changedStories: [],
+    captures,
+  };
+}
+
+async function project(
+  captures: CaptureResult[],
+  artifacts: string[],
+  runDir = '.diopsis',
+): Promise<string> {
+  const dir = await mkdtemp(path.join(tmpdir(), 'diopsis-accept-'));
+  temporaries.push(dir);
+  await mkdir(path.join(dir, runDir), { recursive: true });
+  await writeFile(path.join(dir, runDir, 'summary.json'), JSON.stringify(summaryOf(captures)));
+  for (const artifact of artifacts) {
+    const file = path.join(dir, runDir, artifact);
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, 'png');
+  }
+  return dir;
+}
+
+async function runAccept(
+  root: string,
+  storyIds?: string[],
+  from?: string,
+): Promise<{ code: number; out: string; err: string }> {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const writeOut = process.stdout.write;
+  const writeErr = process.stderr.write;
+  process.stdout.write = ((chunk: unknown) => {
+    stdout.push(String(chunk));
+    return true;
+  }) as typeof writeOut;
+  process.stderr.write = ((chunk: unknown) => {
+    stderr.push(String(chunk));
+    return true;
+  }) as typeof writeErr;
+  try {
+    const code = await acceptCommand({
+      root,
+      ...(storyIds ? { storyIds } : {}),
+      ...(from ? { from } : {}),
+      noStage: true,
+    });
+    return { code, out: stdout.join(''), err: stderr.join('') };
+  } finally {
+    process.stdout.write = writeOut;
+    process.stderr.write = writeErr;
+  }
+}
+
+describe('acceptCommand', () => {
+  it('adopts only changed and new captures, and never failed ones', async () => {
+    const root = await project(
+      [
+        capture({}),
+        capture({ storyId: 'b--new', status: 'new', snapshotPath: 'b--new/320w-linux-x64.png', artifacts: { actual: 'test-results/b--new-320.png' } }),
+        capture({ storyId: 'c--bad', status: 'render-failed', snapshotPath: 'c--bad/320w-linux-x64.png', artifacts: { actual: 'test-results/c--bad-320.png' } }),
+        capture({ storyId: 'd--failed', status: 'failed', snapshotPath: 'd--failed/320w-linux-x64.png', artifacts: { actual: 'test-results/d--failed-320.png' } }),
+      ],
+      [
+        'test-results/a--one-320-actual.png',
+        'test-results/b--new-320.png',
+        'test-results/c--bad-320.png',
+        'test-results/d--failed-320.png',
+      ],
+    );
+
+    const { code, out } = await runAccept(root);
+    assert.equal(code, 0);
+    assert.equal(existsSync(path.join(root, '__screenshots__', 'a--one', '320w-linux-x64.png')), true);
+    assert.equal(existsSync(path.join(root, '__screenshots__', 'b--new', '320w-linux-x64.png')), true);
+    // A story that failed to render produced nothing worth keeping as a baseline.
+    assert.equal(existsSync(path.join(root, '__screenshots__', 'c--bad')), false);
+    assert.equal(existsSync(path.join(root, '__screenshots__', 'd--failed')), false);
+    assert.match(out, /skipped c--bad @320: render-failed/);
+    assert.match(out, /skipped d--failed @320: failed/);
+  });
+
+  it('never adopts an unstable capture, which is a pass — even with an image reference', async () => {
+    const root = await project(
+      [
+        capture({
+          status: 'unchanged',
+          unstable: true,
+          unstableStatus: 'changed',
+          unstableDiffPixels: 12,
+          // A pass has no image of its own; the reference is here so the guard is proven
+          // to be the capture's status, not a missing artifact.
+          artifacts: { actual: 'test-results/a--one-320-actual.png' },
+        }),
+      ],
+      ['test-results/a--one-320-actual.png'],
+    );
+
+    const { code, out } = await runAccept(root);
+    assert.equal(code, 0);
+    assert.equal(existsSync(path.join(root, '__screenshots__')), false);
+    assert.match(out, /every capture already matched its baseline/);
+  });
+
+  it('accepts the union of several story ids', async () => {
+    const root = await project(
+      [
+        capture({}),
+        capture({ width: 1280, snapshotPath: 'a--one/1280w-linux-x64.png', artifacts: { actual: 'test-results/a--one-1280.png' } }),
+        capture({ storyId: 'b--two', snapshotPath: 'b--two/320w-linux-x64.png', artifacts: { actual: 'test-results/b--two-320.png' } }),
+      ],
+      ['test-results/a--one-320-actual.png', 'test-results/a--one-1280.png', 'test-results/b--two-320.png'],
+    );
+
+    const { code } = await runAccept(root, ['a--one', 'b--two']);
+    assert.equal(code, 0);
+    assert.equal(existsSync(path.join(root, '__screenshots__', 'a--one', '320w-linux-x64.png')), true);
+    assert.equal(existsSync(path.join(root, '__screenshots__', 'b--two', '320w-linux-x64.png')), true);
+  });
+
+  it('keeps story ids out of scope untouched', async () => {
+    const root = await project(
+      [
+        capture({}),
+        capture({ storyId: 'b--two', snapshotPath: 'b--two/320w-linux-x64.png', artifacts: { actual: 'test-results/b--two-320.png' } }),
+      ],
+      ['test-results/a--one-320-actual.png', 'test-results/b--two-320.png'],
+    );
+
+    await runAccept(root, ['a--one']);
+    assert.equal(existsSync(path.join(root, '__screenshots__', 'a--one', '320w-linux-x64.png')), true);
+    assert.equal(existsSync(path.join(root, '__screenshots__', 'b--two', '320w-linux-x64.png')), false);
+  });
+
+  it('reports an unknown id by name, still accepts the rest, and exits 1', async () => {
+    const root = await project(
+      [capture({})],
+      ['test-results/a--one-320-actual.png'],
+    );
+
+    const { code, err } = await runAccept(root, ['a--one', 'nope--id']);
+    assert.equal(code, 1);
+    assert.match(err, /nope--id/);
+    assert.equal(existsSync(path.join(root, '__screenshots__', 'a--one', '320w-linux-x64.png')), true);
+  });
+
+  it('copies nothing when a run image is missing, and says what the artifact needs', async () => {
+    const root = await project(
+      [
+        capture({}),
+        capture({ width: 1280, snapshotPath: 'a--one/1280w-linux-x64.png', artifacts: { actual: 'test-results/a--one-1280-missing.png' } }),
+      ],
+      ['test-results/a--one-320-actual.png'],
+    );
+
+    const { code, err } = await runAccept(root);
+    assert.equal(code, 1);
+    // The existing source was not copied either: a half-accepted baseline set is worse
+    // than a refused one.
+    assert.equal(existsSync(path.join(root, '__screenshots__', 'a--one')), false);
+    assert.match(err, /\.diopsis\/test-results\/a--one-1280-missing\.png/);
+    assert.match(err, /must include its test-results images/);
+  });
+
+  it('exits 0 when the wanted stories simply have nothing to accept', async () => {
+    const root = await project(
+      [capture({ status: 'unchanged' })],
+      [],
+    );
+
+    const { code, out } = await runAccept(root, ['a--one']);
+    assert.equal(code, 0);
+    assert.match(out, /Nothing to accept for a--one\./);
+  });
+});
+
+describe('acceptCommand with modes', () => {
+  it('accepts a mode capture to its own baseline path, not the base one', async () => {
+    const root = await project(
+      [
+        capture({ status: 'unchanged' }),
+        capture({
+          status: 'changed',
+          mode: 'dark',
+          snapshotPath: 'a--one/320w-dark-linux-x64.png',
+          artifacts: { actual: 'test-results/a--one-320-dark-actual.png' },
+        }),
+      ],
+      ['test-results/a--one-320-dark-actual.png'],
+    );
+
+    const { code } = await runAccept(root);
+    assert.equal(code, 0);
+    // Accept works per capture through the snapshot path, so a mode lands on its own file
+    // and the base baseline next to it is untouched.
+    assert.equal(existsSync(path.join(root, '__screenshots__', 'a--one', '320w-dark-linux-x64.png')), true);
+    assert.equal(existsSync(path.join(root, '__screenshots__', 'a--one', '320w-linux-x64.png')), false);
+  });
+
+  it('names the mode when it says why a capture was skipped', async () => {
+    const root = await project(
+      [
+        capture({
+          status: 'render-failed',
+          mode: 'rtl',
+          snapshotPath: 'a--one/320w-rtl-linux-x64.png',
+          artifacts: {},
+        }),
+      ],
+      [],
+    );
+
+    const { out } = await runAccept(root);
+    assert.match(out, /skipped a--one @320 \[rtl\]: render-failed/);
+  });
+});
+
+describe('acceptCommand refusing paths outside the run', () => {
+  it('copies nothing when a run image resolves outside the output directory', async () => {
+    // A downloaded summary is data, not trust: an artifacts.actual that climbs out of the
+    // run's directory must not turn the accept into a copy of whatever file it names.
+    const root = await project([capture({ artifacts: { actual: '../secret.png' } })], []);
+    await writeFile(path.join(root, 'secret.png'), 'not a run artifact');
+
+    const { code, err } = await runAccept(root);
+    assert.equal(code, 1);
+    assert.match(err, /a--one/);
+    assert.match(err, /run image "\.\.\/secret\.png" is not inside \.diopsis/);
+    assert.equal(existsSync(path.join(root, '__screenshots__')), false);
+  });
+
+  it('refuses the whole accept when one snapshot path escapes, naming it', async () => {
+    const root = await project(
+      [
+        capture({}),
+        capture({
+          storyId: 'e--scape',
+          snapshotPath: '../outside-baseline.png',
+          artifacts: { actual: 'test-results/e--scape-320.png' },
+        }),
+      ],
+      ['test-results/a--one-320-actual.png', 'test-results/e--scape-320.png'],
+    );
+
+    const { code, err } = await runAccept(root);
+    assert.equal(code, 1);
+    assert.match(err, /e--scape: baseline path "\.\.\/outside-baseline\.png" is not inside __screenshots__/);
+    // The refusal is total: the honest capture beside the escape is not copied either, and
+    // the file the escape aimed at was never written.
+    assert.equal(existsSync(path.join(root, '__screenshots__')), false);
+    assert.equal(existsSync(path.join(root, 'outside-baseline.png')), false);
+  });
+
+  it('recompresses accepted baselines when compress is auto', { skip: process.platform === 'win32' && 'the stand-in tool is a POSIX shell script' }, async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'diopsis-accept-'));
+    temporaries.push(dir);
+    await writeFile(path.join(dir, 'diopsis.config.mjs'), 'export default { compress: "auto" };');
+    await mkdir(path.join(dir, '.diopsis', 'test-results'), { recursive: true });
+    await writeFile(
+      path.join(dir, '.diopsis', 'summary.json'),
+      JSON.stringify(summaryOf([capture({})])),
+    );
+    const rgba = new Uint8Array(4 * 3 * 4);
+    for (let at = 0; at < rgba.length; at += 4) rgba[at + 3] = 255;
+    const runImage = encodePng(4, 3, rgba);
+    await writeFile(
+      path.join(dir, '.diopsis', 'test-results', 'a--one-320-actual.png'),
+      runImage,
+    );
+
+    // A stand-in executable that leaves files alone: it proves the accept hands the
+    // written baselines to the recompressor, without needing the tool to exist.
+    const script = path.join(dir, 'oxipng');
+    await writeFile(script, '#!/bin/sh\nexit 0\n', 'utf8');
+    await chmod(script, 0o755);
+    process.env.DIOPSIS_OXIPNG = script;
+
+    try {
+      const { out } = await runAccept(dir);
+      assert.match(out, /Accepted 1 capture into __screenshots__\./);
+      assert.match(out, /Recompressed 1 baseline with oxipng/);
+      // The stand-in optimises nothing, so the accepted baseline is the run's own bytes.
+      assert.ok(
+        (await readFile(path.join(dir, '__screenshots__', 'a--one', '320w-linux-x64.png'))).equals(
+          Buffer.from(runImage),
+        ),
+      );
+    } finally {
+      delete process.env.DIOPSIS_OXIPNG;
+    }
+  });
+});
+
+describe('acceptCommand --from', () => {
+  it('accepts a run from another directory than the output one', async () => {
+    const root = await project(
+      [capture({})],
+      ['test-results/a--one-320-actual.png'],
+      '.ci-run',
+    );
+
+    const { code } = await runAccept(root, undefined, '.ci-run');
+    assert.equal(code, 0);
+    assert.equal(existsSync(path.join(root, '__screenshots__', 'a--one', '320w-linux-x64.png')), true);
+  });
+
+  it('says which directory had no summary, when --from points somewhere empty', async () => {
+    const root = await project([capture({})], ['test-results/a--one-320-actual.png']);
+    const { code, err } = await runAccept(root, undefined, 'nowhere');
+    assert.equal(code, 1);
+    assert.match(err, /nowhere\/summary\.json is missing/);
+    assert.equal(existsSync(path.join(root, '__screenshots__')), false);
+  });
+});
+
+describe('acceptCommand --from and path containment', () => {
+  it('refuses a crafted summary in the --from directory whose run image climbs out of it', async () => {
+    // The directory a summary is read from is the one its paths are held to: a summary
+    // crafted inside --from must not reach past --from, exactly as one in the output
+    // directory cannot reach past that.
+    const root = await project([capture({ artifacts: { actual: '../secret.png' } })], [], '.ci-run');
+    await writeFile(path.join(root, 'secret.png'), 'not a run artifact');
+
+    const { code, err } = await runAccept(root, undefined, '.ci-run');
+    assert.equal(code, 1);
+    assert.match(err, /a--one/);
+    assert.match(err, /run image "\.\.\/secret\.png" is not inside \.ci-run/);
+    assert.equal(existsSync(path.join(root, '__screenshots__')), false);
+  });
+
+  it('keeps destinations inside the snapshot directory while reading from --from', async () => {
+    const root = await project(
+      [
+        capture({
+          snapshotPath: '../outside-baseline.png',
+          artifacts: { actual: 'test-results/a--one-320-actual.png' },
+        }),
+      ],
+      ['test-results/a--one-320-actual.png'],
+      '.ci-run',
+    );
+
+    const { code, err } = await runAccept(root, undefined, '.ci-run');
+    assert.equal(code, 1);
+    assert.match(err, /baseline path "\.\.\/outside-baseline\.png" is not inside __screenshots__/);
+    assert.equal(existsSync(path.join(root, 'outside-baseline.png')), false);
+  });
+});

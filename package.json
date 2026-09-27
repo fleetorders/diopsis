@@ -24,7 +24,7 @@
     "url": "https://github.com/fleetorders/diopsis/issues"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=18.11"
   },
   "bin": {
     "diopsis": "dist/cli.js"
@@ -48,15 +48,23 @@
     "check:report": "node scripts/report-check.mjs",
     "prepublishOnly": "./scripts/artifact-check.sh",
     "changeset": "changeset",
-    "version:packages": "changeset version"
+    "version:packages": "changeset version",
+    "check:stabilize": "node scripts/stabilize-check.mjs"
   },
   "peerDependencies": {
-    "@playwright/test": ">=1.50.0"
+    "@playwright/test": ">=1.50.0",
+    "axe-core": ">=4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "axe-core": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@changesets/cli": "^3.0.0",
     "@playwright/test": "1.62.1",
     "@types/node": "22.10.2",
+    "axe-core": "^4.13.0",
     "typescript": "7.0.2"
   }
 }

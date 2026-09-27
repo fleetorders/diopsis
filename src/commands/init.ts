@@ -2,7 +2,13 @@ import { existsSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { defaultConfig, findConfigFile, supportsTypeStripping } from '../config.ts';
+import {
+  defaultConfig,
+  findConfigFile,
+  loadConfig,
+  supportsTypeStripping,
+  type DiopsisConfig,
+} from '../config.ts';
 import { resolveMatrix } from '../matrix.ts';
 import { readStoryIndex } from '../story-index.ts';
 
@@ -28,27 +34,39 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+/** The values the config template writes; `--force` passes the replaced config's own. */
+type TemplateConfig = Pick<
+  DiopsisConfig,
+  'storybookDir' | 'snapshotDir' | 'outputDir' | 'viewports' | 'viewportHeight' | 'image'
+>;
+
 /**
  * The TypeScript form types itself through an `import type`, which Node's type stripping
  * erases along with the annotation. Nothing is imported at runtime, so the config still loads
  * when the package cannot be resolved from here — under `npx`, or before `npm install` has run.
  */
-function configSource(typescript: boolean): string {
+function configSource(typescript: boolean, config: TemplateConfig): string {
   const header = typescript
     ? "import type { UserConfig } from 'diopsis';\n\nexport default {"
     : "/** @type {import('diopsis').UserConfig} */\nexport default {";
   const footer = typescript ? '} satisfies UserConfig;' : '};';
+  const viewports = Object.entries(config.viewports)
+    .map(([name, widths]) => `${name}: [${widths.join(', ')}]`)
+    .join(', ');
 
   return `${header}
-  storybookDir: '${defaultConfig.storybookDir}',
-  snapshotDir: '${defaultConfig.snapshotDir}',
+  storybookDir: '${config.storybookDir}',
+  snapshotDir: '${config.snapshotDir}',
+  outputDir: '${config.outputDir}',
 
   // Every width multiplies the whole story set. Two widths cost half of what four do,
   // in runtime, repository weight and flake surface alike.
-  viewports: { default: [320, 1280] },
+  viewports: { ${viewports} },
+
+  viewportHeight: ${config.viewportHeight},
 
   // One image name, read by both baseline generation and the CI job.
-  image: '${defaultConfig.image}',
+  image: '${config.image}',
 
   stabilize: {
     freezeClock: '${defaultConfig.stabilize.freezeClock as string}',
@@ -87,6 +105,8 @@ export function ciRecipe(image: string, snapshotDir: string): string {
   return `# Verify visual regressions in the same image the baselines were generated in.
 # The image below must stay identical to \`image\` in diopsis.config — \`diopsis doctor\`
 # fails when they drift apart.
+# Long builds can split instead: \`npx diopsis run --shard <i>/<n>\` in parallel jobs, then
+# \`npx diopsis merge\` over the downloaded shard-* directories for one review.
 jobs:
   visual:
     image: ${image}
@@ -113,30 +133,56 @@ export async function initCommand(options: InitOptions): Promise<number> {
     return 1;
   }
 
+  // With --force, the config being replaced still decides everything downstream of it:
+  // its snapshotDir and outputDir are what .gitattributes and .gitignore must keep
+  // guarding, its widths and image are what the cost table and the CI recipe describe,
+  // and its own values are what the rewritten config carries — a re-run must not quietly
+  // repoint git settings, or the config itself, at the default layout. A config that
+  // cannot be loaded falls back to the defaults, said in one line rather than silently.
+  let config = defaultConfig;
+  const notes: string[] = [];
+  if (existing) {
+    try {
+      config = (await loadConfig(options.root)).config;
+    } catch {
+      notes.push(
+        `Could not load ${path.basename(existing)}; the git settings, cost table, CI ` +
+          'recipe and the rewritten config use the defaults.',
+      );
+    }
+  }
+
   const typescript = supportsTypeStripping();
-  const configName = typescript ? 'diopsis.config.ts' : 'diopsis.config.mjs';
-  await writeFile(path.join(options.root, configName), configSource(typescript), 'utf8');
+  // A replaced config is rewritten where it lives, in the form it already had: writing the
+  // default name beside it would leave two config files, whichever discovery finds first
+  // winning, and a TypeScript form written into a .mjs would not even parse.
+  const target =
+    existing ?? path.join(options.root, typescript ? 'diopsis.config.ts' : 'diopsis.config.mjs');
+  await writeFile(target, configSource(/\.(ts|mts)$/.test(target), config), 'utf8');
+  const configName = path.basename(target);
 
   const wroteAttributes = await appendLines(
     path.join(options.root, '.gitattributes'),
-    gitattributesLines(defaultConfig.snapshotDir, options.lfs ?? false),
+    gitattributesLines(config.snapshotDir, options.lfs ?? false),
     'Diopsis baselines: binary, and never auto-merged.',
   );
   const wroteIgnore = await appendLines(
     path.join(options.root, '.gitignore'),
-    [`${defaultConfig.outputDir}/`],
+    [`${config.outputDir}/`],
     'Diopsis run output (the report and its artifacts) is not committed.',
   );
 
   const lines: string[] = [
     '',
     `Wrote ${configName}`,
+    ...notes,
     ...(wroteAttributes ? ['Wrote .gitattributes entries for the baselines'] : []),
-    ...(wroteIgnore ? [`Wrote .gitignore entry for ${defaultConfig.outputDir}/`] : []),
+    ...(wroteIgnore ? [`Wrote .gitignore entry for ${config.outputDir}/`] : []),
     '',
   ];
 
-  if (!typescript) {
+  // Said only when the runtime dictated the form: a replaced config keeps the one it had.
+  if (!typescript && !existing) {
     lines.push(
       `Node ${process.versions.node} cannot read a TypeScript config, so the JavaScript form`,
       'was written instead. On Node 22.18 or newer, diopsis.config.ts works with no extra setup.',
@@ -145,22 +191,33 @@ export async function initCommand(options: InitOptions): Promise<number> {
   }
 
   // The cost of the matrix, before it is inherited rather than chosen.
-  const storybookDir = path.resolve(options.root, defaultConfig.storybookDir);
+  const storybookDir = path.resolve(options.root, config.storybookDir);
   if (existsSync(storybookDir)) {
     try {
       const stories = await readStoryIndex(storybookDir);
       lines.push('Cost of the matrix, for this Storybook:', '');
       lines.push('  widths                     captures    estimated weight');
-      for (const widths of [[1280], [320, 1280], [320, 768, 1024, 1280]]) {
+      const sameWidths = (a: number[], b: number[]) =>
+        a.length === b.length && a.every((width, i) => width === b[i]);
+      const configured = config.viewports.default ?? [];
+      // The configured widths are one of the standard rows when they can be; otherwise
+      // they get a row of their own, so "(configured)" always marks this project's real
+      // widths rather than whichever preset happens to have two entries.
+      const rows: number[][] = [[1280], [320, 1280], [320, 768, 1024, 1280]];
+      if (!rows.some((widths) => sameWidths(widths, configured))) rows.push(configured);
+      const modeNames = config.modes ? Object.keys(config.modes) : [];
+      for (const widths of rows) {
         const matrix = resolveMatrix(stories, {
           viewports: { default: widths },
-          viewportHeight: defaultConfig.viewportHeight,
+          viewportHeight: config.viewportHeight,
+          capture: 'page',
+          ...(config.modes ? { modes: config.modes } : {}),
         });
         const label = widths.join(', ').padEnd(25);
         const count = String(matrix.captures.length).padStart(8);
         const weight = formatBytes(matrix.captures.length * ESTIMATED_BYTES_PER_CAPTURE);
         lines.push(
-          `  ${label}${count}    ${weight}${widths.length === 2 ? '   (configured)' : ''}`,
+          `  ${label}${count}    ${weight}${sameWidths(widths, configured) ? '   (configured)' : ''}`,
         );
       }
       lines.push(
@@ -168,14 +225,22 @@ export async function initCommand(options: InitOptions): Promise<number> {
         `  ${stories.length} stories. Weight assumes ${formatBytes(ESTIMATED_BYTES_PER_CAPTURE)} per capture;`,
         '  `diopsis doctor` reports the real figure once baselines exist. Every intentional',
         '  change adds another full set to history, permanently.',
+        // The table's rows stay widths, as ever; with modes configured the counts above are
+        // the multiplied ones, so the note says what the multiplier is.
+        ...(modeNames.length
+          ? [
+              `  Counts include the configured modes (${modeNames.join(', ')}): every capture`,
+              '  runs once more per mode, with its own baselines.',
+            ]
+          : []),
         '',
       );
     } catch {
-      lines.push(`Could not read the story index in ${defaultConfig.storybookDir}.`, '');
+      lines.push(`Could not read the story index in ${config.storybookDir}.`, '');
     }
   } else {
     lines.push(
-      `No build at ${defaultConfig.storybookDir} yet, so the capture count could not be`,
+      `No build at ${config.storybookDir} yet, so the capture count could not be`,
       'estimated. Build the Storybook and run `diopsis doctor` to see it.',
       '',
     );
@@ -184,7 +249,7 @@ export async function initCommand(options: InitOptions): Promise<number> {
   lines.push(
     'CI recipe:',
     '',
-    ...ciRecipe(defaultConfig.image, defaultConfig.snapshotDir)
+    ...ciRecipe(config.image, config.snapshotDir)
       .trimEnd()
       .split('\n')
       .map((line) => `  ${line}`),

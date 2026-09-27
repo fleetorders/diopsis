@@ -6,23 +6,33 @@ freely — the *decisions* behind deferrals, and everything ruled out, live in
 
 ## Next
 
-- **Change-aware capture** (v2, committed — D-006): shoot only the stories a change could
-  have affected. On a typical pull request this turns a full matrix into a handful of
-  captures. v1 already returns the full capture set as data and records it in
-  `summary.json`, so this lands as a filter, not a redesign.
+- **Change-aware capture** (D-006): shoot only the stories a change can reach through the
+  build's module graph, carry the rest from their baselines, and run everything whenever a
+  change cannot be proven harmless — with a `trace` command that explains why a file does or
+  does not reach a story.
+- **Sharded runs with one review**: split a large matrix across CI machines by story, then merge
+  the shards back into a single report and verdict.
 
 ## Later
 
-- **Contact-sheet overview** — a grid of diff thumbnails above the detail list, click to jump.
-  One capture currently occupies roughly one screen, so a large matrix cannot be taken in at a
-  glance; this is the gap that closes it (deferred in D-020).
-- **Interaction states** — capturing a story after a `play` function or a hover/focus step,
-  keyed by story id, when a real need appears (deferred in §9 of the design).
-- **Cross-browser matrix** — WebKit/Firefox beside Chromium, only once the single-browser
-  path has proven solid in real projects.
+- **Accessibility findings beside the pixels** — checks run in the page just before capture,
+  reported per story in the same summary and report, with accepted findings recorded as files
+  like baselines, so only new ones fail.
+- **Lighter baselines** — lossless recompression when baselines are written, so the pixels are
+  identical and the repository grows more slowly.
+- **A check on the pull request** — the run's verdict and changed stories as a status check
+  with a link to the report, from the summary Diopsis already writes.
+- **A second browser engine as a smoke pass** — its own baselines and coarse tolerances, for
+  layout breakage rather than pixel parity, only once the single-browser path has proven itself
+  in many real projects.
 
 ## Not planned
 
 - A hosted service, dashboard, or any state outside the consuming repository — a design
   goal, not a gap (D-001).
 - An accept/reject review state machine; accepting a change is committing a file.
+- Pixel-exact comparison across browser engines, which cannot hold without owning the rendering
+  environment.
+- Machine-learned "ignore this" diffing, whose failure mode is a real regression scored as
+  noise.
+- Accepting baselines automatically; a baseline changes only when someone commits it.

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -6,17 +7,43 @@ import { needsReview, type CaptureResult, type RunSummary } from './summary.ts';
 /** Total embedded-image budget. Past this the report links to files instead of inlining. */
 const EMBED_BUDGET_BYTES = 40 * 1024 * 1024;
 
-async function dataUri(file: string): Promise<string | undefined> {
-  try {
-    const bytes = await readFile(file);
-    return `data:image/png;base64,${bytes.toString('base64')}`;
-  } catch {
-    return undefined;
-  }
+/** A PNG's header carries its size: width at byte 16, height at 20, both big endian. */
+function pngSizeOf(bytes: Buffer): { width: number; height: number } | undefined {
+  if (bytes.length < 24) return undefined;
+  return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
 }
 
 interface EmbeddedCapture extends CaptureResult {
+  /**
+   * Each value is a `#n` reference into the payload's `assets` — identical images are
+   * embedded once and shared — or a path to the file beside the report, for an image the
+   * budget could not hold.
+   */
   images: { expected?: string; actual?: string; diff?: string };
+}
+
+/**
+ * The order the report presents captures in: stories that need review first, then by the
+ * story's largest change, then by id, with each story's captures in the order the run took
+ * them. The client rebuilds this ordering from the same fields; embedding follows it so
+ * that when the budget runs out, the captures a reviewer reaches first are the
+ * self-contained ones.
+ */
+function reviewOrder(captures: CaptureResult[]): CaptureResult[] {
+  const byStory = new Map<string, CaptureResult[]>();
+  for (const capture of captures) {
+    const list = byStory.get(capture.storyId);
+    if (list) list.push(capture);
+    else byStory.set(capture.storyId, [capture]);
+  }
+  const reviewRank = (cs: CaptureResult[]) => (cs.some((c) => needsReview(c.status)) ? 0 : 1);
+  const worstChange = (cs: CaptureResult[]) => cs.reduce((m, c) => Math.max(m, c.diffPixels ?? 0), 0);
+  return [...byStory.entries()]
+    .sort((a, b) =>
+      reviewRank(a[1]) - reviewRank(b[1]) ||
+      worstChange(b[1]) - worstChange(a[1]) ||
+      a[0].localeCompare(b[0]))
+    .flatMap(([, cs]) => cs);
 }
 
 /**
@@ -24,23 +51,35 @@ interface EmbeddedCapture extends CaptureResult {
  *
  * Only captures that need review carry images: an unchanged capture has nothing to look at,
  * and embedding the whole matrix would make the report too heavy to open from a CI artifact —
- * which is the one place it has to work.
+ * which is the one place it has to work. Byte-identical images are embedded once and pointed
+ * at by reference, and an image the budget cannot hold is referenced from the file beside
+ * the report rather than dropped: the artifacts are written next to it in the same directory,
+ * so review keeps its images exactly when there are too many of them to inline.
  */
 async function embed(
   summary: RunSummary,
   outputDir: string,
-): Promise<{ captures: EmbeddedCapture[]; truncated: number }> {
+  budget: number,
+): Promise<{ captures: EmbeddedCapture[]; truncated: number; assets: string[] }> {
   let spent = 0;
-  let truncated = 0;
-  const captures: EmbeddedCapture[] = [];
+  let truncatedCaptures = 0;
+  /** Content key to asset reference: byte-identical images share one embedding. */
+  const byContent = new Map<string, string>();
+  const assets: string[] = [];
+  /** Decisions made in review order, read back out in the summary's own order below. */
+  const decided = new Map<
+    CaptureResult,
+    { images: EmbeddedCapture['images']; size?: { width: number; height: number } }
+  >();
 
-  for (const capture of summary.captures) {
-    if (!needsReview(capture.status)) {
-      captures.push({ ...capture, images: {} });
-      continue;
-    }
+  for (const capture of reviewOrder(summary.captures)) {
+    if (!needsReview(capture.status)) continue;
 
     const images: EmbeddedCapture['images'] = {};
+    // The summary carries the size once the reporter has read it; the header read below is
+    // the fallback for summaries that did not come from a run, so "size" has one meaning.
+    let size = capture.size;
+    let truncated = false;
     // A new capture's "expected" is the baseline the comparator just wrote from this very
     // render — the same bytes as the actual — and no diff exists, because nothing was
     // compared. Embedding the duplicate would double a first-run report, the one run that
@@ -51,19 +90,51 @@ async function embed(
     for (const kind of kinds) {
       const relative = capture.artifacts[kind];
       if (!relative) continue;
-      if (spent >= EMBED_BUDGET_BYTES) {
-        truncated += 1;
+      let bytes: Buffer;
+      try {
+        bytes = await readFile(path.resolve(outputDir, relative));
+      } catch {
         continue;
       }
-      const uri = await dataUri(path.resolve(outputDir, relative));
-      if (!uri) continue;
-      spent += uri.length;
-      images[kind] = uri;
+      // The file is read whatever happens to its bytes next — embedded or referenced — so
+      // the pixel size is known either way and nothing downstream depends on what the
+      // budget allowed.
+      if (kind === 'actual' && !size) size = pngSizeOf(bytes);
+      // Size first, then the digest: files of different sizes differ without a hash ever
+      // being computed, and identical bytes — duplicate stories, a baseline shared across
+      // a story's modes — are embedded once and counted against the budget once.
+      const content = bytes.length + ':' + createHash('sha256').update(bytes).digest('hex');
+      const shared = byContent.get(content);
+      if (shared !== undefined) {
+        images[kind] = shared;
+        continue;
+      }
+      // The cost is accounted before embedding, in the base64 form the report actually
+      // carries: counting only after an image is in would let one large image push the file
+      // far past a budget every later image is then refused for.
+      const cost = 'data:image/png;base64,'.length + Math.ceil(bytes.length / 3) * 4;
+      if (spent + cost > budget) {
+        images[kind] = relative;
+        truncated = true;
+        continue;
+      }
+      const reference = '#' + assets.length;
+      assets.push(`data:image/png;base64,${bytes.toString('base64')}`);
+      byContent.set(content, reference);
+      spent += cost;
+      images[kind] = reference;
     }
-    captures.push({ ...capture, images });
+    decided.set(capture, { images, ...(size ? { size } : {}) });
+    if (truncated) truncatedCaptures += 1;
   }
 
-  return { captures, truncated };
+  const captures: EmbeddedCapture[] = summary.captures.map((capture) => {
+    const done = decided.get(capture);
+    if (!done) return { ...capture, images: {} };
+    return { ...capture, images: done.images, ...(done.size ? { size: done.size } : {}) };
+  });
+
+  return { captures, truncated: truncatedCaptures, assets };
 }
 
 function escapeHtml(value: string): string {
@@ -82,9 +153,14 @@ function embedJson(value: unknown): string {
     .replace(/\u2029/g, '\\u2029');
 }
 
-export async function renderReport(summary: RunSummary, outputDir: string): Promise<string> {
-  const { captures, truncated } = await embed(summary, outputDir);
-  const payload = { ...summary, captures, truncated };
+export async function renderReport(
+  summary: RunSummary,
+  outputDir: string,
+  /** Budget override, so the truncation path can be exercised with a value small enough to bite. */
+  budget: number = EMBED_BUDGET_BYTES,
+): Promise<string> {
+  const { captures, truncated, assets } = await embed(summary, outputDir, budget);
+  const payload = { ...summary, captures, truncated, assets };
 
   return `<!doctype html>
 <html lang="en">
@@ -138,7 +214,7 @@ h1 { margin: 0; font-size: 15px; font-weight: 650; letter-spacing: -0.01em; }
 .chip .dot { width: 7px; height: 7px; border-radius: 2px; }
 .dot.c-changed { background: var(--changed); } .dot.c-new { background: var(--new); }
 .dot.c-failed, .dot.c-render-failed { background: var(--failed); }
-.dot.c-unchanged { background: var(--ok); }
+.dot.c-unchanged { background: var(--ok); } .dot.c-removed { background: var(--muted); }
 
 .search { flex: 1 1 180px; min-width: 130px; max-width: 300px; background: var(--surface);
   border: 1px solid var(--line); border-radius: 6px; color: var(--ink); padding: 5px 9px;
@@ -148,8 +224,43 @@ h1 { margin: 0; font-size: 15px; font-weight: 650; letter-spacing: -0.01em; }
 .progress { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 
 main { padding: 14px 18px 56px; }
+
+/* The overview is a contact sheet: one tile per capture needing review, so a run too large
+   to scroll through can be taken in at a glance before one capture fills the screen. A
+   thumbnail scales by width only and clips what hangs below — the width rule the
+   comparisons follow — so a tall render reads as tall, never squashed. */
+.overview { margin-bottom: 14px; }
+.overview[hidden] { display: none; }
+.ov-toggle { display: inline-flex; align-items: center; gap: 6px; background: transparent;
+  border: 0; padding: 0; color: var(--ink); font: inherit; font-size: 13px; font-weight: 600;
+  cursor: pointer; }
+.ov-toggle::before { content: "\\25B8"; color: var(--muted); font-size: 11px; }
+.ov-toggle[aria-expanded="true"]::before { content: "\\25BE"; }
+.ov-toggle:hover { color: var(--accent); }
+.sheet { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 10px; margin-top: 9px; }
+.sheet[hidden] { display: none; }
+.tile { display: flex; flex-direction: column; gap: 6px; padding: 8px; text-align: left;
+  background: var(--surface); color: var(--ink); border: 1px solid var(--line);
+  border-radius: 8px; font: inherit; cursor: pointer; }
+.tile:hover { background: var(--raised); border-color: var(--accent); }
+.tile.done { opacity: 0.5; }
+.thumb { display: block; height: 160px; overflow: hidden; border-radius: 5px;
+  background: var(--matte-alt); }
+.thumb img { display: block; width: 100%; height: auto; }
+/* A changed capture with regions crops its tile to the largest one: inline width and
+   offsets make the image deliberately wider than the tile and shifted so the region
+   fills the frame, and the thumb's overflow clips the rest. */
+.thumb.text { display: flex; align-items: center; justify-content: center; }
+.tile-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.tile-title { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; }
+.tile-sub { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px;
+  font-variant-numeric: tabular-nums; }
+.tile-dims { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 .story { border: 1px solid var(--line); border-radius: 8px; margin-bottom: 10px;
-  background: var(--surface); overflow: hidden; }
+  background: var(--surface); overflow: hidden; position: relative; }
 .story > summary { cursor: pointer; padding: 9px 12px; display: flex; gap: 10px;
   align-items: center; list-style: none; }
 .story > summary::-webkit-details-marker { display: none; }
@@ -157,9 +268,14 @@ main { padding: 14px 18px 56px; }
 .story[open] > summary::before { content: "\\25BE"; }
 .title { font-weight: 600; font-size: 14px; }
 .sub { color: var(--muted); font-size: 12px; }
-.anchor { margin-left: auto; background: transparent; border: 0; color: var(--muted);
-  font: inherit; font-size: 12px; cursor: pointer; padding: 2px 4px; border-radius: 4px; }
+.anchor { position: absolute; top: 8px; right: 12px; background: transparent; border: 0;
+  color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; padding: 2px 4px;
+  border-radius: 4px; }
 .anchor:hover { color: var(--accent); background: var(--raised); }
+/* The copy-link button sits over the summary's right end but is not inside it: a control
+   nested in <summary> hijacks its toggling and is unreachable for assistive tech. The
+   badge keeps the right edge clear of it. */
+.story > summary .badge { margin-left: auto; margin-right: 26px; }
 
 /* Status reads as a coloured word, not an outlined pill: the pill drew a box around every
    label and left the page looking like a form. */
@@ -168,6 +284,17 @@ main { padding: 14px 18px 56px; }
   background: currentColor; }
 .s-changed { color: var(--changed); } .s-new { color: var(--new); }
 .s-failed, .s-render-failed { color: var(--failed); } .s-unchanged { color: var(--ok); }
+/* Removed is a deletion, not a failure: like unstable it claims no status colour, and the
+   badge is the muted outlined one — a deletion is a fact to check, not an alarm. */
+.s-removed { color: var(--muted); }
+.badge.s-removed { border: 1px solid var(--line); border-radius: 5px; padding: 1px 7px; }
+.badge.s-removed::before { display: none; }
+/* Unstable is not a status: the capture passed, so none of the palette colours speak for
+   it. A muted, outlined badge marks what the run saw without joining the status
+   vocabulary (D-020: a colour means one kind of thing). */
+.badge.unstable { color: var(--muted); border: 1px solid var(--line); border-radius: 5px;
+  padding: 1px 7px; }
+.badge.unstable::before { display: none; }
 
 .capture { border-top: 1px solid var(--line); padding: 12px; }
 .capture.current { box-shadow: inset 2px 0 0 var(--accent); }
@@ -180,12 +307,18 @@ main { padding: 14px 18px 56px; }
   overflow: hidden; }
 .meter i { display: block; height: 100%; background: var(--changed); }
 .modes { display: flex; gap: 4px; margin-left: auto; }
-.modes button, .mark { background: transparent; border: 1px solid var(--line);
+/* One control sets the comparison for every capture on the page; each capture's own buttons
+   still override just that capture until the next page-wide choice. */
+.viewall { display: flex; gap: 4px; align-items: center; margin-left: auto; }
+.viewall > span { color: var(--muted); font-size: 12px; margin-right: 2px; }
+.viewall[hidden] { display: none; }
+.modes button, .viewall button, .mark { background: transparent; border: 1px solid var(--line);
   color: var(--muted); border-radius: 5px; padding: 3px 9px; font: inherit; font-size: 12px;
   cursor: pointer; }
-.modes button[aria-pressed="true"], .mark[aria-pressed="true"] { border-color: var(--accent);
+.modes button[aria-pressed="true"], .viewall button[aria-pressed="true"],
+.mark[aria-pressed="true"] { border-color: var(--accent);
   color: var(--accent); }
-.modes button:hover, .mark:hover { background: var(--raised); }
+.modes button:hover, .viewall button:hover, .mark:hover { background: var(--raised); }
 
 /* The stage shrink-wraps its image: a narrow capture must not sit in a full-width void.
    Its backdrop is a neutral chequerboard so a transparent region reads as transparent
@@ -206,11 +339,13 @@ main { padding: 14px 18px 56px; }
 .stage.actual { max-height: 80vh; }
 .stage.actual img { max-width: none; image-rendering: pixelated; }
 .stage.zoom.actual img { cursor: zoom-out; }
-.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-items: start;
-  max-height: 70vh; overflow: auto; }
+/* Each pane scrolls on its own and the script holds the two at one offset and one zoom, so
+   the same pixel stays under the eye in both. This works because the width rule above keeps
+   their scales equal: one offset can only mean the same pixel when neither pane is scaled
+   by its own height. */
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-items: start; }
 .pair figure { margin: 0; min-width: 0; }
 .pair figcaption { color: var(--muted); font-size: 12px; padding: 3px 2px; }
-.pair .stage { max-height: none; overflow: visible; }
 /* A new capture is one labelled image, not half a comparison: the caption says what "new"
    means, so the absence of a second column reads as nothing-to-compare, not a missing panel. */
 .solo { margin: 0; }
@@ -220,6 +355,18 @@ main { padding: 14px 18px 56px; }
 .overlaywrap, .swipe { display: grid; line-height: 0; }
 .overlaywrap > img, .swipe > img { grid-area: 1 / 1; place-self: start; }
 .swipe > img.top { clip-path: inset(0 50% 0 0); }
+/* The overlay's region boxes sit on the diff, placed in percentages of its natural size
+   so a box stays on its pixels at fit and at actual size alike. Outlined, never filled —
+   the diff underneath is the evidence. The border is the status colour because every box
+   is a change; the accent joins only to mark the one a jump selected (D-020). */
+.diffwrap { position: relative; line-height: 0; width: fit-content; max-width: 100%; }
+/* The box layer is the wrapper's box, so the wrapper needs the same release to the full
+   image the image itself gets at actual size, or the percentages resolve against a
+   clamped width and every box slides left of its region. */
+.stage.actual .diffwrap { max-width: none; }
+.regions { position: absolute; inset: 0; pointer-events: none; }
+.region { position: absolute; border: 2px solid var(--changed); border-radius: 3px; }
+.region.flash { border-color: var(--accent); }
 /* The slider tracks the width of the image it drives, not the width of the row. */
 .stagewrap { width: fit-content; max-width: 100%; margin: 0 auto; }
 input[type=range] { display: block; width: 100%; margin-top: 9px; accent-color: var(--accent); }
@@ -227,6 +374,34 @@ input[type=range] { display: block; width: 100%; margin-top: 9px; accent-color: 
 .err { white-space: pre-wrap; font: 12px/1.5 ui-monospace, monospace; color: var(--failed);
   background: var(--raised); border: 1px solid var(--line); border-radius: 6px; padding: 9px;
   margin-top: 10px; }
+/* Accessibility findings are a second verdict beside the pixels, not a status: nothing in
+   them takes a colour of its own — impact reads as plain text, and "new" is an outlined
+   marker, so colour still means exactly one thing at a time (D-020). */
+.a11y { margin-top: 10px; }
+.a11y ul { margin: 0; padding: 0; list-style: none; }
+.a11y-rule { display: flex; flex-direction: column; gap: 3px; }
+.a11y-rule + .a11y-rule { margin-top: 8px; }
+.a11y-head { display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; }
+.a11y code { font-size: 12px; padding: 1px 5px; white-space: pre-wrap; }
+.a11y .impact { color: var(--muted); font-size: 11px; border: 1px solid var(--line);
+  border-radius: 4px; padding: 0 5px; }
+.a11y a { color: var(--ink); font-size: 12px; text-decoration: underline;
+  text-underline-offset: 2px; }
+.a11y-targets { padding-left: 12px; display: flex; flex-direction: column; gap: 2px; }
+.a11y-targets li { display: flex; align-items: baseline; gap: 7px; }
+.a11y-new { color: var(--muted); border: 1px solid var(--line); border-radius: 4px;
+  padding: 0 5px; font-size: 11px; }
+/* Carried is neither a status nor a verdict — the capture was never shot — so it claims no
+   colour of its own: muted grey like removed, reading as bookkeeping, not review. */
+.carried { border: 1px solid var(--line); border-radius: 8px; background: var(--surface);
+  margin-bottom: 10px; }
+.carried > summary { cursor: pointer; padding: 9px 12px; color: var(--muted); font-size: 12px;
+  list-style: none; }
+.carried > summary::-webkit-details-marker { display: none; }
+.carried > summary::before { content: "\\25B8"; margin-right: 8px; font-size: 11px; }
+.carried[open] > summary::before { content: "\\25BE"; }
+.carried-line { border-top: 1px solid var(--line); padding: 4px 12px 4px 26px;
+  color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .accept { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
 code { font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--bg);
   border: 1px solid var(--line); border-radius: 5px; padding: 4px 8px; color: var(--ink);
@@ -244,14 +419,19 @@ button.copy:hover { background: var(--raised); }
     <h1>Diopsis</h1>
     <div class="meta" id="meta"></div>
     <div class="keys"><b>/</b> search &middot; <b>j k</b> move &middot; <b>1&ndash;4</b> mode
-      &middot; <b>r</b> reviewed</div>
+      &middot; <b>&#8679;1&ndash;4</b> all &middot; <b>n N</b> region &middot; <b>r</b>
+      reviewed &middot; <b>o</b> overview</div>
   </div>
   <div class="tools">
     <div class="totals" id="filters"></div>
+    <div class="totals" id="modefilters"></div>
     <input class="search" id="q" type="search" placeholder="Filter stories" autocomplete="off"
       spellcheck="false" aria-label="Filter stories">
-    <span class="progress" id="progress"></span>
+    <span class="progress" id="progress" aria-live="polite"></span>
+    <span id="acceptreviewed"></span>
     <span id="acceptvisible"></span>
+    <div class="viewall" id="viewall" role="group" aria-label="Comparison mode for every capture"
+      hidden></div>
   </div>
 </header>
 <main id="out"></main>
@@ -267,27 +447,95 @@ ${CLIENT_SCRIPT}
 /** Client behaviour. Kept as one string so the report stays a single file with no assets. */
 const CLIENT_SCRIPT = String.raw`
 const data = JSON.parse(document.getElementById('data').textContent);
-const REVIEW = new Set(['changed', 'new', 'render-failed', 'failed']);
-const LABEL = { changed: 'Changed', new: 'New', 'render-failed': 'Render failed',
-  failed: 'Failed', unchanged: 'Unchanged' };
-const order = ['changed', 'new', 'render-failed', 'failed', 'unchanged'];
+/* Identical images are embedded once, in "assets", and a capture points at its bytes by
+   reference. Resolving them here leaves every later consumer holding one of exactly two
+   things — inlined bytes, or a path to the file beside the report — with no third form to
+   special-case anywhere. */
+const assets = data.assets || [];
+for (const c of data.captures) {
+  if (!c.images) continue;
+  for (const k of ['expected', 'actual', 'diff']) {
+    const v = c.images[k];
+    if (typeof v === 'string' && v[0] === '#') c.images[k] = assets[Number(v.slice(1))];
+  }
+}
+const REVIEW = new Set(['changed', 'new', 'removed', 'render-failed', 'failed']);
+const LABEL = { changed: 'Changed', new: 'New', removed: 'Removed',
+  'render-failed': 'Render failed', failed: 'Failed', unchanged: 'Unchanged' };
+const order = ['changed', 'new', 'removed', 'render-failed', 'failed', 'unchanged'];
 
 document.getElementById('meta').textContent =
   data.totals.captures + ' captures across ' + data.totals.stories + ' stories, ' +
-  data.platform + '-' + data.arch + ', ' + data.mode + ', ' + data.createdAt;
+  data.platform + '-' + data.arch + ', ' +
+  // A diff has no moment worth stamping; what its reader needs is what it was diffed against.
+  (data.mode === 'diff'
+    ? 'diff against ' + data.base + ' (' + String(data.mergeBase || '').slice(0, 7) + ')'
+    : data.mode + ', ' + data.createdAt);
 
 const counts = {};
 for (const c of data.captures) counts[c.status] = (counts[c.status] || 0) + 1;
+// Unstable captures are unchanged — counted here, not in "counts", so no status gains a
+// member that is really a pass.
+const unstableCount = data.captures.filter(c => c.unstable).length;
 
 // Anything needing review leads; unchanged is available but never the default view.
 let active = order.find(s => REVIEW.has(s) && counts[s]) ? 'review' : 'all';
 let query = '';
 let cursor = -1;
 
+/* The run's modes, in first-appearance order — the order the plan captured them in. A run
+   without modes shows no mode chips, and the filter below passes everything untouched. */
+const modeNames = [];
+for (const c of data.captures) if (c.mode && !modeNames.includes(c.mode)) modeNames.push(c.mode);
+let activeMode = 'all';
+/* The same for the interaction states, chips of their own beside the mode ones. */
+const stateNames = [];
+for (const c of data.captures) if (c.state && !stateNames.includes(c.state)) stateNames.push(c.state);
+let activeState = 'all';
+
+/* The comparison modes, named once: the page-wide toolbar offers this list, Shift+1–4 walks
+   it, and each capture's own buttons are the labels from it the capture can show. The overlay
+   is first because it alone reads the diff image; the rest need the pair. */
+const ALL_MODES = ['Overlay', 'Side by side', 'Swipe', 'Onion-skin'];
+/* The comparison mode chosen for the whole page. A capture that cannot show it — one with no
+   diff image, or no baseline to compare against — keeps its own default instead of going blank. */
+let preferred = ALL_MODES[0];
+
+/* A pair worth comparing: this branch's render beside a baseline it did not write itself — a
+   new capture's "expected" is written from its own render, which would compare an image with
+   itself. The stage and the toolbar's visibility both ask this, so the page-wide control can
+   never appear for a page none of whose captures it could switch. */
+function comparable(capture) {
+  const img = capture.images || {};
+  return capture.status !== 'new' && Boolean(img.expected && img.actual);
+}
+
+/* The labels from ALL_MODES one capture can actually show: the diff image enables the
+   overlay, a comparable pair the rest, and a lone render falls back to the single
+   "Actual" view. */
+function modesFor(capture) {
+  const img = capture.images || {};
+  const modes = [];
+  if (img.diff) modes.push(ALL_MODES[0]);
+  if (comparable(capture)) modes.push(...ALL_MODES.slice(1));
+  if (!modes.length && img.actual) modes.push('Actual');
+  return modes;
+}
+
 /* Triage is remembered per run, not per file: the same report reopened after a fresh run
    describes different pixels, so a stale tick would claim a capture was seen that never was. */
 const STORE = 'diopsis:reviewed:' + data.createdAt;
-function keyOf(c) { return c.storyId + '@' + c.width; }
+/* A mode capture shares its story and width with the base capture, and a state capture
+   shares its story, width and mode with the plain one, so the key names mode and state
+   too — ticking one off must not tick off its twin. */
+function keyOf(c) {
+  return c.storyId + '@' + c.width + (c.mode ? '[' + c.mode + ']' : '') +
+    (c.state ? '{' + c.state + '}' : '');
+}
+/* Width, mode and state name a capture the same way everywhere: bar, tile, key. */
+function dimsOf(c) {
+  return c.width + 'px' + (c.mode ? ' [' + c.mode + ']' : '') + (c.state ? ' {' + c.state + '}' : '');
+}
 function loadReviewed() {
   try { return new Set(JSON.parse(localStorage.getItem(STORE) || '[]')); }
   catch { return new Set(); }
@@ -299,10 +547,14 @@ const reviewed = loadReviewed();
 
 const searchEl = document.getElementById('q');
 const filters = document.getElementById('filters');
+const modeFilters = document.getElementById('modefilters');
 const progressEl = document.getElementById('progress');
+const acceptReviewedEl = document.getElementById('acceptreviewed');
 const acceptVisibleEl = document.getElementById('acceptvisible');
 
-const maxRatio = data.captures.reduce((m, c) => Math.max(m, c.diffRatio || 0), 0);
+// One measure for the ordering and the meters: differing pixels. Ranking captures by ratio
+// instead left the two disagreeing — a story led the list while its meter sat below another's.
+const maxDiffPixels = data.captures.reduce((m, c) => Math.max(m, c.diffPixels || 0), 0);
 
 function chip(key, label, status) {
   const b = document.createElement('button');
@@ -318,22 +570,77 @@ function chip(key, label, status) {
   const n = document.createElement('span');
   n.className = 'n';
   b.append(text, n);
-  b.onclick = () => { active = key; render(); };
+  b.onclick = () => { active = key; applyFilter(); };
   return b;
 }
 filters.appendChild(chip('review', 'Needs review'));
 for (const s of order) if (counts[s]) filters.appendChild(chip(s, LABEL[s], s));
+// Offered only when a run actually saw flake; no dot, because there is no unstable colour.
+if (unstableCount) filters.appendChild(chip('unstable', 'Unstable'));
+/* The audit's findings are offered the same way — only when the run has any, and with no
+   dot, because findings are not a status. The chip selects the audited captures that
+   carry them: one per story and mode. */
+if (data.captures.some(c => c.accessibility && c.accessibility.violations.length)) {
+  filters.appendChild(chip('a11y', 'Accessibility'));
+}
+/* Carried captures are not in data.captures — they were never shot — so the chip counts the
+   carried list itself and no capture can match its filter: the view it selects is the grey
+   section under the list. */
+const carried = data.carried || [];
+if (carried.length) filters.appendChild(chip('carried', 'Carried'));
 filters.appendChild(chip('all', 'All'));
 
-searchEl.oninput = () => { query = searchEl.value.trim().toLowerCase(); render(); };
+/* The mode chips sit beside the status chips and compose with them and the search: a mode
+   is a second thing a capture can be filtered by, not a second view. The keys carry a
+   prefix because a mode is free to be named "all" or "base". */
+if (modeNames.length) {
+  const modeChip = (key, label) => {
+    const b = chip('mode:' + key, label);
+    b.onclick = () => { activeMode = key; applyFilter(); };
+    modeFilters.appendChild(b);
+  };
+  modeChip('all', 'All modes');
+  modeChip('base', 'Base');
+  for (const m of modeNames) modeChip(m, m);
+}
+/* The state chips sit after the mode ones and compose with everything else too. "Plain"
+   is the capture no state tag asked for — the twin every state capture is held against. */
+if (stateNames.length) {
+  const stateChip = (key, label) => {
+    const b = chip('state:' + key, label);
+    b.onclick = () => { activeState = key; applyFilter(); };
+    modeFilters.appendChild(b);
+  };
+  stateChip('all', 'All states');
+  stateChip('plain', 'Plain');
+  for (const s of stateNames) stateChip(s, s);
+}
+
+searchEl.oninput = () => { query = searchEl.value.trim().toLowerCase(); applyFilter(); };
 
 function textOf(c) {
   return (c.storyId + ' ' + c.storyTitle + ' ' + c.storyName).toLowerCase();
 }
 function inSearch(c) { return !query || textOf(c).includes(query); }
 function inFilter(c, key) {
-  return key === 'all' ? true : key === 'review' ? REVIEW.has(c.status) : c.status === key;
+  return key === 'all' ? true
+    : key === 'review' ? REVIEW.has(c.status)
+    : key === 'unstable' ? !!c.unstable
+    : key === 'a11y' ? !!(c.accessibility && c.accessibility.violations.length)
+    : key === 'carried' ? false
+    : c.status === key;
 }
+function inMode(c, key) {
+  return key === 'all' ? true : key === 'base' ? !c.mode : c.mode === key;
+}
+function inState(c, key) {
+  return key === 'all' ? true : key === 'plain' ? !c.state : c.state === key;
+}
+
+/* Carried lines carry only an id, a width and maybe a mode; the search reads the id. */
+const carriedLines = [];
+let carriedEl = null;
+function carriedInSearch(c) { return !query || c.storyId.toLowerCase().includes(query); }
 
 function copyButton(text, label) {
   const wrap = document.createElement('div');
@@ -353,12 +660,112 @@ function copyButton(text, label) {
   return wrap;
 }
 
+/* A toolbar copy control keeps its command out of sight until the clipboard refuses it: the
+   toolbar travels with every scroll, and an id list long enough to be worth copying is long
+   enough to crowd the filters. On refusal the command appears beside the button, selectable,
+   the way the inline copy buttons carry theirs. */
+function copyCompact(text, label) {
+  const btn = document.createElement('button');
+  btn.className = 'copy';
+  btn.textContent = label;
+  btn.onclick = async () => {
+    try { await navigator.clipboard.writeText(text); btn.textContent = 'Copied'; }
+    catch (e) {
+      btn.textContent = 'Select it manually';
+      if (!btn.nextElementSibling || btn.nextElementSibling.tagName !== 'CODE') {
+        const code = document.createElement('code');
+        code.textContent = text;
+        btn.after(code);
+      }
+    }
+    setTimeout(() => (btn.textContent = label), 1600);
+  };
+  return btn;
+}
+
+/* What replaces an image the report does not carry: one the budget left out is a file
+   beside the report, so "No image artifacts" would be false — the line says why the image
+   is absent and where the files are, relative to the report itself. */
+function truncatedNote(capture, parent) {
+  const p = document.createElement('p');
+  p.className = 'note';
+  const where = capture.artifacts.actual || capture.artifacts.expected || capture.artifacts.diff;
+  p.append('Images not embedded to keep this report openable — see ');
+  const code = document.createElement('code');
+  code.textContent = where || '';
+  p.appendChild(code);
+  parent.appendChild(p);
+}
+
+/* The audit's findings, beside the pixels: each rule with its impact and its help, and
+   every element it failed on. Impact is plain text and "new" an outlined marker, so colour
+   keeps meaning status alone (D-020). */
+function a11yList(a11y) {
+  const wrap = document.createElement('div');
+  wrap.className = 'a11y';
+  const list = document.createElement('ul');
+  for (const v of a11y.violations) {
+    const rule = document.createElement('li');
+    rule.className = 'a11y-rule';
+    const head = document.createElement('div');
+    head.className = 'a11y-head';
+    const id = document.createElement('code');
+    id.textContent = v.id;
+    head.appendChild(id);
+    if (v.impact) {
+      const impact = document.createElement('span');
+      impact.className = 'impact';
+      impact.textContent = v.impact;
+      head.appendChild(impact);
+    }
+    const help = document.createElement('a');
+    help.href = v.helpUrl;
+    help.target = '_blank';
+    help.rel = 'noreferrer';
+    help.textContent = v.help;
+    head.appendChild(help);
+    rule.appendChild(head);
+    if (v.targets.length) {
+      const targets = document.createElement('ul');
+      targets.className = 'a11y-targets';
+      for (const t of v.targets) {
+        const li = document.createElement('li');
+        const code = document.createElement('code');
+        code.textContent = t.target;
+        li.appendChild(code);
+        if (t.new) {
+          const marker = document.createElement('span');
+          marker.className = 'a11y-new';
+          marker.textContent = 'new';
+          li.appendChild(marker);
+        }
+        targets.appendChild(li);
+      }
+      rule.appendChild(targets);
+    }
+    list.appendChild(rule);
+  }
+  wrap.appendChild(list);
+  return wrap;
+}
+
 /* One image is drawn at a time and only once its story is open: every capture needing review
    carries three inlined PNGs, and decoding the whole matrix up front is what made a large
    report slow to become interactive. */
 function stage(capture) {
   const el = document.createElement('div');
   const img = capture.images || {};
+  /* A referenced image — one the budget left to the file beside the report — fails to load
+     when the report is opened without its files. The stage it was to fill steps aside for
+     the pointer to those files, once per capture; everything else on the page carries on. */
+  let filesMissing = false;
+  function onMissing(event) {
+    const box = event.target.closest('.stage');
+    if (box) box.remove();
+    if (filesMissing) return;
+    filesMissing = true;
+    truncatedNote(capture, el);
+  }
   // A new capture has no baseline to compare against: the "expected" a run leaves behind is
   // the baseline written from this very render, so a two-column presentation would show one
   // image twice and read as a difference that does not exist. One column, labelled as new —
@@ -371,35 +778,56 @@ function stage(capture) {
     const box = document.createElement('div');
     box.className = 'stage';
     zoomable(box);
-    box.appendChild(picture(img.actual || img.expected));
+    box.appendChild(picture(img.actual || img.expected, 'This run'));
     fig.append(cap, box);
     el.appendChild(fig);
-    return { el, modes: null, setMode: null, nudge: null };
+    return { el, modes: null, setMode: null, nudge: null, jumpRegion: null };
+  }
+  // A removed baseline is the other single-image case: the branch deletes it, so there is
+  // no current render — one labelled column of what is being deleted, where a new capture
+  // shows one column of what was added.
+  if (capture.status === 'removed' && img.expected) {
+    const fig = document.createElement('figure');
+    fig.className = 'solo';
+    const cap = document.createElement('figcaption');
+    cap.textContent = 'Removed — this baseline is deleted by this branch.';
+    const box = document.createElement('div');
+    box.className = 'stage';
+    zoomable(box);
+    box.appendChild(picture(img.expected, 'Deleted baseline of ' + capture.storyId + ' at ' + capture.width + 'px'));
+    fig.append(cap, box);
+    el.appendChild(fig);
+    return { el, modes: null, setMode: null, nudge: null, jumpRegion: null };
   }
   // The highlight overlay is the default: it answers "what changed?" without any interaction.
-  const modes = [];
-  if (img.diff) modes.push('Overlay');
-  if (img.expected && img.actual) modes.push('Side by side', 'Swipe', 'Onion-skin');
-  if (!modes.length && img.actual) modes.push('Actual');
+  const modes = modesFor(capture);
   if (!modes.length) {
     // An unchanged capture is meant to have no images; saying so on every row of a full
-    // matrix reads as a fault report. Only an absence that needs explaining gets a line.
-    if (REVIEW.has(capture.status)) {
+    // matrix reads as a fault report. Only an absence that needs explaining gets a line —
+    // and a capture that failed on findings has its explanation already: the findings
+    // listed beside the pixels are the content, no image was ever missing.
+    if (REVIEW.has(capture.status) && !(capture.accessibility && capture.accessibility.violations.length)) {
       el.className = 'note';
       el.textContent = 'No image artifacts for this capture.';
     }
-    return { el, modes: null, setMode: null, nudge: null };
+    return { el, modes: null, setMode: null, nudge: null, jumpRegion: null };
   }
 
   const body = document.createElement('div');
-  let current = modes[0];
+  let current = modes.includes(preferred) ? preferred : modes[0];
   let slider = null;
+  // Alt text names what a tool that cannot see the image is reading out; the baseline also
+  // names the story and width, because that pair is what a reviewer quotes back.
+  const baselineAlt = 'Baseline of ' + capture.storyId + ' at ' + capture.width + 'px';
 
-  function picture(src) {
+  function picture(src, alt) {
     const i = document.createElement('img');
     i.loading = 'lazy';
     i.decoding = 'async';
+    i.alt = alt;
     i.src = src;
+    // Inlined bytes are already here; a reference can fail to be, and says so above.
+    if (!src.startsWith('data:')) i.addEventListener('error', onMissing);
     return i;
   }
   // Fit is for "did anything move", actual size is for "by how much" — a downscaled diff can
@@ -410,6 +838,62 @@ function stage(capture) {
     return box;
   }
 
+  /* Where this capture changed. Each box is grown past its region on every side, so the
+     border frames the change without sitting on the pixels that changed, and percentage
+     placing keeps it on those pixels at fit and at actual size alike — the wrapper is
+     exactly the image's box at either scale. */
+  const regions = capture.regions || [];
+  let regionAt = -1;
+  let flashTimer = 0;
+  function drawRegions(wrap) {
+    if (!regions.length || !capture.size) return;
+    const w = capture.size.width, h = capture.size.height;
+    const layer = document.createElement('div');
+    layer.className = 'regions';
+    regions.forEach((r, i) => {
+      const b = document.createElement('div');
+      b.className = 'region';
+      b.dataset.i = String(i);
+      b.style.left = 'calc(' + (r.x / w * 100) + '% - 2px)';
+      b.style.top = 'calc(' + (r.y / h * 100) + '% - 2px)';
+      b.style.width = 'calc(' + (r.width / w * 100) + '% + 4px)';
+      b.style.height = 'calc(' + (r.height / h * 100) + '% + 4px)';
+      layer.appendChild(b);
+    });
+    wrap.appendChild(layer);
+  }
+  /* n/N walk the regions. The jump is the reader selecting a box: the capture switches to
+     the overlay, the stage scrolls the box to its centre, and the accent outlines it
+     briefly before the status colour takes it back. */
+  function jumpRegion(step) {
+    if (!img.diff || !regions.length || !capture.size) return;
+    regionAt = regionAt < 0
+      ? (step > 0 ? 0 : regions.length - 1)
+      : (regionAt + step + regions.length) % regions.length;
+    if (current !== 'Overlay') select('Overlay');
+    const stageEl = body.querySelector('.stage');
+    const image = body.querySelector('.diffwrap img');
+    const target = body.querySelector('.region[data-i="' + regionAt + '"]');
+    if (!stageEl || !image || !target) return;
+    const place = () => {
+      if (!target.isConnected) return;
+      el.scrollIntoView({ block: 'nearest' });
+      const sr = stageEl.getBoundingClientRect();
+      const br = target.getBoundingClientRect();
+      stageEl.scrollLeft += br.left + br.width / 2 - sr.left - sr.width / 2;
+      stageEl.scrollTop += br.top + br.height / 2 - sr.top - sr.height / 2;
+      const prev = body.querySelector('.region.flash');
+      if (prev) prev.classList.remove('flash');
+      target.classList.add('flash');
+      clearTimeout(flashTimer);
+      flashTimer = setTimeout(() => target.classList.remove('flash'), 800);
+    };
+    // Centring needs the image laid out at its intrinsic size; before that its rects are
+    // zero and the scroll would aim at nothing.
+    if (image.complete && image.naturalWidth) place();
+    else image.decode().then(place, () => {});
+  }
+
   function draw() {
     body.innerHTML = '';
     slider = null;
@@ -417,20 +901,55 @@ function stage(capture) {
       const box = document.createElement('div');
       box.className = 'stage';
       zoomable(box);
-      box.appendChild(picture(current === 'Overlay' ? img.diff : img.actual));
+      if (current === 'Overlay') {
+        // The boxes belong to the diff image; they are drawn over it and nothing else.
+        const wrap = document.createElement('div');
+        wrap.className = 'diffwrap';
+        wrap.appendChild(picture(img.diff, 'Difference highlight'));
+        drawRegions(wrap);
+        box.appendChild(wrap);
+      } else {
+        box.appendChild(picture(img.actual, 'This run'));
+      }
       body.appendChild(box);
     } else if (current === 'Side by side') {
       const pair = document.createElement('div');
       pair.className = 'pair';
-      for (const [src, cap] of [[img.expected, 'Baseline'], [img.actual, 'This run']]) {
+      const panes = [];
+      for (const [src, cap, alt] of [[img.expected, 'Baseline', baselineAlt], [img.actual, 'This run', 'This run']]) {
         const f = document.createElement('figure');
         const c = document.createElement('figcaption');
         c.textContent = cap;
         const s = document.createElement('div');
-        s.className = 'stage';
-        s.appendChild(picture(src));
+        s.className = 'stage zoom';
+        s.appendChild(picture(src, alt));
         f.append(c, s);
         pair.appendChild(f);
+        panes.push(s);
+      }
+      /* One pair of pixels, one pair of hands: actual size is a property of the comparison,
+         not of a pane, so clicking either side toggles it for both — a pane kept at fit while
+         its neighbour shows real pixels compares two different scales. */
+      for (const s of panes) {
+        s.onclick = () => {
+          const actual = !panes[0].classList.contains('actual');
+          for (const p of panes) p.classList.toggle('actual', actual);
+        };
+      }
+      /* The panes scroll as one, so the same pixel stays under the eye in both. The script's
+         own writes must not write back: a pane the script just scrolled fires a scroll event
+         of its own, and unguarded that event would drive its neighbour in turn — against a
+         shorter pane's clamp, yanking the pane under the reader's hand. A written pane is
+         marked, its next event (the script's) spends the mark and does nothing. */
+      const written = new Set();
+      for (const s of panes) {
+        s.addEventListener('scroll', () => {
+          if (written.has(s)) { written.delete(s); return; }
+          for (const p of panes) if (p !== s) {
+            if (p.scrollTop !== s.scrollTop) { written.add(p); p.scrollTop = s.scrollTop; }
+            if (p.scrollLeft !== s.scrollLeft) { written.add(p); p.scrollLeft = s.scrollLeft; }
+          }
+        });
       }
       body.appendChild(pair);
     } else {
@@ -439,8 +958,8 @@ function stage(capture) {
       zoomable(box);
       const wrap = document.createElement('div');
       wrap.className = current === 'Swipe' ? 'swipe' : 'overlaywrap';
-      const base = picture(img.expected);
-      const top = picture(img.actual);
+      const base = picture(img.expected, baselineAlt);
+      const top = picture(img.actual, 'This run');
       top.className = 'top';
       wrap.append(base, top);
       box.appendChild(wrap);
@@ -449,6 +968,7 @@ function stage(capture) {
       slider.min = '0';
       slider.max = '100';
       slider.value = '50';
+      slider.setAttribute('aria-label', current === 'Swipe' ? 'Swipe divider position' : 'Overlay opacity');
       slider.onclick = (e) => e.stopPropagation();
       slider.oninput = () => {
         if (current === 'Swipe') top.style.clipPath = 'inset(0 ' + (100 - slider.value) + '% 0 0)';
@@ -484,16 +1004,55 @@ function stage(capture) {
     el,
     modes: bar,
     setMode: (i) => select(modes[i]),
+    // A capture already showing the resolved mode keeps its pixels: one page-wide choice then
+    // redraws only the captures that actually change.
+    follow: (m) => {
+      const target = modes.includes(m) ? m : modes[0];
+      if (current !== target) select(target);
+    },
     nudge: (step) => {
       if (!slider) return;
       slider.value = String(Math.min(100, Math.max(0, Number(slider.value) + step)));
       slider.oninput();
     },
+    jumpRegion,
   };
 }
 
-/** Every capture currently on the page, in reading order — the target list for j/k. */
+/** Every capture entry, built once; filtering after that only shows and hides them. */
+const entries = [];
+const storyEls = [];
+/** Overview tiles, one per capture needing review — built once and hidden, never rebuilt. */
+const tiles = [];
+/** The visible captures in reading order — the target list for j/k. */
 let flat = [];
+
+const viewAllEl = document.getElementById('viewall');
+function setPreferred(m) {
+  preferred = m;
+  for (const b of viewAllEl.querySelectorAll('button')) {
+    b.setAttribute('aria-pressed', String(b.textContent === m));
+  }
+  // Only captures already drawn need redrawing; the rest read the choice when they are built.
+  // Every entry, not just the visible ones: a capture hidden by a filter keeps the choice
+  // for when it is shown again.
+  for (const entry of entries) if (entry.built && entry.built.follow) entry.built.follow(m);
+}
+// The page-wide control is offered only when some capture has two renders to compare; a run of
+// new captures alone has nothing it could switch between.
+if (data.captures.some(comparable)) {
+  const label = document.createElement('span');
+  label.textContent = 'All:';
+  viewAllEl.appendChild(label);
+  for (const m of ALL_MODES) {
+    const b = document.createElement('button');
+    b.textContent = m;
+    b.setAttribute('aria-pressed', String(m === preferred));
+    b.onclick = () => setPreferred(m);
+    viewAllEl.appendChild(b);
+  }
+  viewAllEl.hidden = false;
+}
 
 function setCursor(next) {
   if (!flat.length) return;
@@ -514,58 +1073,202 @@ function toggleReviewed(entry) {
   else reviewed.add(key);
   saveReviewed();
   entry.box.classList.toggle('done', reviewed.has(key));
+  if (entry.tile) entry.tile.classList.toggle('done', reviewed.has(key));
   entry.mark.setAttribute('aria-pressed', String(reviewed.has(key)));
   entry.mark.textContent = reviewed.has(key) ? 'Reviewed' : 'Mark reviewed';
   drawProgress();
 }
 
 function drawProgress() {
+  // The ticks this counts are what the reviewed-accept button offers as a command, so the
+  // two are redrawn together — the button must never describe a stale set of ticks.
+  drawAcceptReviewed();
   const all = data.captures.filter(c => REVIEW.has(c.status));
   if (!all.length) { progressEl.textContent = ''; return; }
   const done = all.filter(c => reviewed.has(keyOf(c))).length;
   progressEl.textContent = done + ' of ' + all.length + ' reviewed';
 }
 
-/* The accept command takes one story id at a time, so a filtered set is offered as one command
-   per line rather than as a single call that would silently adopt only the first. */
+/* What accept adopts: changed and new captures. The rest it skips, so a tick on a
+   render-failure names a story the command would not act on and joins no command. */
+const ADOPTABLE = new Set(['changed', 'new']);
+
+/* A merged report's run lives where its shards were merged, not in the output directory a
+   plain accept reads — so every command this report offers names that directory, and a
+   copied command cannot adopt whatever older run sits in the output directory. */
+const acceptCmd = (args) => 'npx diopsis accept' +
+  (data.acceptFrom ? ' --from ' + data.acceptFrom : '') + (args ? ' ' + args : '');
+
+/* Ticks are per capture; accept adopts per story. The bridge is one command listing the
+   ticked stories. A story ticked only in part is the trap: accepting it adopts its unticked
+   changed captures too, so the label says how many stories that concerns rather than letting
+   a partial review look complete. */
+function drawAcceptReviewed() {
+  acceptReviewedEl.innerHTML = '';
+  const ticked = data.captures.filter(c => reviewed.has(keyOf(c)) && ADOPTABLE.has(c.status));
+  if (!ticked.length) return;
+  const ids = [...new Set(ticked.map(c => c.storyId))].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  const partial = ids.filter(id => data.captures.some(c =>
+    c.storyId === id && ADOPTABLE.has(c.status) && !reviewed.has(keyOf(c))));
+  // Counted in stories, because stories are what the command adopts.
+  const label = 'Copy accept for ' + ids.length + ' reviewed ' +
+    (ids.length === 1 ? 'story' : 'stories') +
+    (partial.length
+      ? ' (' + partial.length + (partial.length === 1 ? ' includes' : ' include') +
+        ' unticked captures)'
+      : '');
+  const btn = copyCompact(acceptCmd(ids.join(' ')), label);
+  if (partial.length) btn.title = 'accepting a story adopts all of its changed captures';
+  acceptReviewedEl.appendChild(btn);
+}
+
+/* A filtered set is one accept call: the command takes any number of story ids, so what is on
+   screen is offered as one copyable line rather than one line per story. */
 function drawAcceptVisible(stories) {
+  // Accepting adopts a run's renders; a diff reviews the baseline history and has none.
+  if (data.mode === 'diff') return;
   acceptVisibleEl.innerHTML = '';
   const ids = stories.filter(id => data.changedStories.includes(id));
   if (!ids.length || ids.length === data.changedStories.length) return;
-  const cmd = ids.map(id => 'npx diopsis accept ' + id).join('\n');
-  const holder = copyButton(cmd, 'Copy accept for these ' + ids.length);
-  holder.querySelector('code').remove();
-  acceptVisibleEl.appendChild(holder);
+  acceptVisibleEl.appendChild(copyCompact(
+    acceptCmd(ids.join(' ')), 'Copy accept for these ' + ids.length));
 }
 
-function render() {
+const out = document.getElementById('out');
+// Everything filterable lives in the list; the empty-state line sits beside it, with one of
+// the two always hidden.
+const listEl = document.createElement('div');
+const emptyEl = document.createElement('p');
+emptyEl.className = 'empty';
+emptyEl.hidden = true;
+
+/* The overview is a contact sheet above the list: one tile per capture needing review, so a
+   run too large to scroll capture by capture can still be taken in at a glance. Unlike
+   triage — remembered per run, because it describes that run's pixels — collapsed or
+   expanded is a preference about the interface, so it is kept per browser. */
+const overviewEl = document.createElement('section');
+overviewEl.className = 'overview';
+overviewEl.setAttribute('aria-label', 'Captures needing review');
+const ovToggle = document.createElement('button');
+ovToggle.className = 'ov-toggle';
+ovToggle.id = 'ov-toggle';
+ovToggle.textContent = 'Overview';
+ovToggle.setAttribute('aria-expanded', 'false');
+ovToggle.setAttribute('aria-controls', 'ov-sheet');
+const sheetEl = document.createElement('div');
+sheetEl.className = 'sheet';
+sheetEl.id = 'ov-sheet';
+overviewEl.append(ovToggle, sheetEl);
+out.append(overviewEl, listEl, emptyEl);
+
+const OV_STORE = 'diopsis:overview';
+// Expanded only once there are enough captures to be worth a glance over; a small run reads
+// faster starting at the captures themselves.
+let overviewCollapsed = data.captures.filter(c => REVIEW.has(c.status)).length <= 3;
+try {
+  const stored = localStorage.getItem(OV_STORE);
+  if (stored !== null) overviewCollapsed = stored === 'collapsed';
+} catch (e) { /* private mode */ }
+function applyOverview() {
+  ovToggle.setAttribute('aria-expanded', String(!overviewCollapsed));
+  sheetEl.hidden = overviewCollapsed;
+}
+function setOverviewCollapsed(collapsed) {
+  overviewCollapsed = collapsed;
+  try { localStorage.setItem(OV_STORE, collapsed ? 'collapsed' : 'expanded'); } catch (e) { /* private mode */ }
+  applyOverview();
+}
+ovToggle.onclick = () => setOverviewCollapsed(!overviewCollapsed);
+
+/* Filtering hides and shows what was built once. Rebuilding on every keystroke threw away
+   every drawn image stage — and with it the comparison mode and zoom a reviewer had already
+   chosen — to change nothing but which rows are on screen. */
+function applyFilter() {
   for (const b of filters.children) {
     const key = b.dataset.key;
     b.setAttribute('aria-pressed', String(key === active));
     b.querySelector('.n').textContent =
-      data.captures.filter(c => inSearch(c) && inFilter(c, key)).length;
+      data.captures.filter(c => inSearch(c) && inMode(c, activeMode) && inState(c, activeState) && inFilter(c, key)).length;
+  }
+  // Each group's counts reflect the other groups' active filters, so a count is always "of
+  // what is one click away", never of a set the click would not actually show.
+  for (const b of modeFilters.children) {
+    const mode = b.dataset.key.startsWith('mode:');
+    const key = b.dataset.key.slice(mode ? 5 : 6);
+    b.setAttribute('aria-pressed', String(mode ? key === activeMode : key === activeState));
+    b.querySelector('.n').textContent = data.captures.filter(c =>
+      inSearch(c) && inFilter(c, active) &&
+      (mode ? inMode(c, key) && inState(c, activeState)
+            : inState(c, key) && inMode(c, activeMode))).length;
   }
 
-  const visible = data.captures.filter(c => inSearch(c) && inFilter(c, active));
-  const out = document.getElementById('out');
-  out.innerHTML = '';
-  flat = [];
+  // The carried chip counts its own list — the captures it stands for were never shot, so
+  // no member of data.captures can ever match the filter it selects.
+  const carriedChip = filters.querySelector('[data-key="carried"]');
+  if (carriedChip) {
+    carriedChip.querySelector('.n').textContent = carried.filter(carriedInSearch).length;
+  }
+  // Carried lines answer only to the search; choosing their chip opens their section.
+  for (const line of carriedLines) line.el.hidden = !carriedInSearch(line.capture);
+  const carriedShown = active === 'carried' && carriedLines.some(l => !l.el.hidden);
+  if (active === 'carried' && carriedEl) carriedEl.open = true;
+
+  for (const entry of entries) {
+    entry.box.hidden = !inSearch(entry.capture) || !inFilter(entry.capture, active) ||
+      !inMode(entry.capture, activeMode) || !inState(entry.capture, activeState);
+  }
+  // A story stays on the page while any of its captures does; its other rows hide with it.
+  for (const story of storyEls) story.el.hidden = story.entries.every(e => e.box.hidden);
+  flat = entries.filter(e => !e.box.hidden && !e.story.hidden);
   cursor = -1;
 
-  if (!visible.length) {
-    const p = document.createElement('p');
-    p.className = 'empty';
-    p.textContent = query
-      ? 'No story matches "' + query + '".'
-      : 'Nothing here. Every capture matched its baseline.';
-    out.appendChild(p);
-    drawProgress();
-    drawAcceptVisible([]);
-    return;
+  // The sheet mirrors the list capture by capture: the same filter and search decide which
+  // tiles show, and with none left the overview steps aside entirely.
+  let shownTiles = 0;
+  for (const tile of tiles) {
+    tile.el.hidden = tile.entry.box.hidden;
+    if (!tile.el.hidden) shownTiles += 1;
   }
+  overviewEl.hidden = shownTiles === 0;
+  ovToggle.textContent = 'Overview · ' + shownTiles;
 
+  // With nothing to show, the whole list — its accept-everything footer included — steps
+  // aside for one line that says so, unless the carried section is the view in question.
+  const empty = flat.length === 0 && !carriedShown;
+  listEl.hidden = empty;
+  emptyEl.hidden = !empty;
+  emptyEl.textContent = query
+    ? 'No story matches "' + query + '".'
+    : data.mode === 'diff'
+      ? 'No baseline changes against this base.'
+      : 'Nothing here. Every capture matched its baseline.';
+  drawAcceptVisible(empty ? [] : storyEls.filter(s => !s.el.hidden).map(s => s.id));
+}
+
+/* The carried section answers "why wasn't this re-shot?": one grey line per capture the run
+   planned but did not shoot, under the base that decided it. Not review work — no tick, no
+   images, never in the contact sheet — and collapsible, because on a wide change the list
+   of what stood untouched is the longest one in the report. */
+function buildCarried() {
+  const det = document.createElement('details');
+  det.className = 'carried';
+  const sum = document.createElement('summary');
+  sum.textContent = 'Carried · ' + carried.length + ' — not affected since ' +
+    (data.affected ? data.affected.base : '') + '; baselines kept';
+  det.appendChild(sum);
+  for (const c of carried) {
+    const line = document.createElement('div');
+    line.className = 'carried-line';
+    line.textContent = c.storyId + ' @' + c.width + (c.mode ? ' [' + c.mode + ']' : '');
+    det.appendChild(line);
+    carriedLines.push({ el: line, capture: c });
+  }
+  return det;
+}
+
+function buildAll() {
   const byStory = new Map();
-  for (const c of visible) {
+  for (const c of data.captures) {
     if (!byStory.has(c.storyId)) byStory.set(c.storyId, []);
     byStory.get(c.storyId).push(c);
   }
@@ -584,6 +1287,7 @@ function render() {
     det.className = 'story';
     det.id = 'story-' + storyId;
     det.open = REVIEW.has(worst);
+    const storyEntry = { el: det, id: storyId, entries: [] };
 
     const sum = document.createElement('summary');
     const t = document.createElement('span');
@@ -596,21 +1300,22 @@ function render() {
     const badge = document.createElement('span');
     badge.className = 'badge s-' + worst;
     badge.textContent = LABEL[worst];
-    // A reviewer's finding has to survive the trip into a pull-request comment.
+    // A reviewer's finding has to survive the trip into a pull-request comment. The button
+    // sits over the summary's right end but is a sibling of it — see the .anchor style — so
+    // a click needs no defending against the summary's own toggling.
     const anchor = document.createElement('button');
     anchor.className = 'anchor';
     anchor.textContent = '#';
     anchor.title = 'Copy a link to this story';
-    anchor.onclick = async (e) => {
-      e.preventDefault();
-      e.stopPropagation();
+    anchor.setAttribute('aria-label', 'Copy a link to this story');
+    anchor.onclick = async () => {
       location.hash = det.id;
       try { await navigator.clipboard.writeText(location.href); anchor.textContent = 'copied'; }
       catch (err) { anchor.textContent = location.hash; }
       setTimeout(() => (anchor.textContent = '#'), 1600);
     };
-    sum.append(t, s, anchor, badge);
-    det.appendChild(sum);
+    sum.append(t, s, badge);
+    det.append(sum, anchor);
 
     for (const c of captures) {
       const box = document.createElement('div');
@@ -620,19 +1325,61 @@ function render() {
       bar.className = 'bar';
       const w = document.createElement('span');
       w.className = 'w';
-      w.textContent = c.width + 'px' +
-        (c.diffPixels != null ? ', ' + c.diffPixels.toLocaleString() + ' px differ (' +
-          (c.diffRatio * 100).toFixed(2) + '%)' : '');
-      bar.appendChild(w);
+      if (c.unstable) {
+        // The capture passed, so it has no images, no count of its own and no meter — the
+        // sentence is the whole story of the row.
+        w.textContent = dimsOf(c) + ' · ' +
+          (c.unstableDiffPixels != null
+          ? 'Differed on one load (' + c.unstableDiffPixels.toLocaleString() +
+            ' px) and matched on the next.'
+          : c.unstableStatus === 'render-failed'
+            ? 'Failed to render on one load, and matched on the next.'
+            : 'Failed on one load, and matched on the next.');
+        bar.appendChild(w);
+        const unstable = document.createElement('span');
+        unstable.className = 'badge unstable';
+        unstable.textContent = 'unstable';
+        bar.appendChild(unstable);
+      } else {
+        // Playwright states its ratio rounded to two decimals, so a small change can arrive as
+        // "0.00%" — a number that says nothing moved. Where the actual image's pixel size is
+        // known the share is recomputed from the pixels; where it is not, a share that would
+        // print as zero is left out rather than shown as one.
+        let share = null;
+        if (c.diffPixels != null) {
+          const pixels = c.size ? c.size.width * c.size.height : 0;
+          if (pixels > 0) share = (c.diffPixels / pixels) * 100;
+          else if (c.diffRatio != null && c.diffRatio * 100 >= 0.005) share = c.diffRatio * 100;
+        }
+        w.textContent = dimsOf(c) + (c.diffPixels == null
+          ? ''
+          : ', ' + c.diffPixels.toLocaleString() + ' px differ' +
+            (share == null ? '' : ' (' + Number(share.toPrecision(2)) + '%)'));
+        bar.appendChild(w);
+      }
 
-      if (c.diffRatio != null && maxRatio > 0) {
+      if (c.diffPixels != null && maxDiffPixels > 0) {
         const meter = document.createElement('div');
         meter.className = 'meter';
-        meter.title = 'Relative to the largest change in this run';
+        meter.title = "Share of this run's largest pixel difference";
         const fill = document.createElement('i');
-        fill.style.width = Math.max(4, (c.diffRatio / maxRatio) * 100) + '%';
+        fill.style.width = Math.max(4, (c.diffPixels / maxDiffPixels) * 100) + '%';
         meter.appendChild(fill);
         bar.appendChild(meter);
+      }
+
+      // Where, to go with how much: the regions the change broke into, with the ones past
+      // the cap summed as "+M" rather than each listed.
+      if (c.regions && c.regions.length) {
+        const count = document.createElement('span');
+        count.className = 'w';
+        count.textContent = c.regions.length +
+          (c.regions.length === 1 ? ' region' : ' regions') +
+          (c.regionsDropped ? ' +' + c.regionsDropped : '');
+        if (c.regionsDropped) {
+          count.title = c.regionsDropped + ' smaller regions are not shown';
+        }
+        bar.appendChild(count);
       }
 
       // The story row already carries this status; repeating it is only worth the space when
@@ -676,52 +1423,171 @@ function render() {
         e.textContent = c.error;
         box.appendChild(e);
       }
+      // The findings list sits after everything the capture's own status explains, so it
+      // reads as the second verdict it is — beside the pixels, never under them.
+      if (c.accessibility && c.accessibility.violations.length) {
+        box.appendChild(a11yList(c.accessibility));
+      }
       det.appendChild(box);
-      flat.push(entry);
+      entries.push(entry);
+      storyEntry.entries.push(entry);
     }
 
-    const build = () => { for (const e of flat) if (e.story === det) e.build(); };
+    const build = () => { for (const e of storyEntry.entries) e.build(); };
     det.addEventListener('toggle', () => { if (det.open) build(); });
     if (det.open) build();
 
-    if (captures.some(c => REVIEW.has(c.status))) {
+    if (captures.some(c => REVIEW.has(c.status)) && data.mode !== 'diff') {
       const foot = document.createElement('div');
       foot.className = 'capture';
-      foot.appendChild(copyButton('npx diopsis accept ' + storyId));
+      foot.appendChild(copyButton(acceptCmd(storyId)));
       det.appendChild(foot);
     }
-    out.appendChild(det);
+    storyEls.push(storyEntry);
+    listEl.appendChild(det);
   }
 
-  if (data.changedStories.length) {
+  if (data.changedStories.length && data.mode !== 'diff') {
     const all = document.createElement('div');
     all.style.marginTop = '18px';
-    all.appendChild(copyButton('npx diopsis accept'));
-    out.appendChild(all);
+    all.appendChild(copyButton(acceptCmd()));
+    listEl.appendChild(all);
   }
   if (data.truncated) {
     const n = document.createElement('p');
     n.className = 'note';
-    n.textContent = data.truncated + ' capture(s) had images omitted to keep this file openable.';
-    out.appendChild(n);
+    // A report that reads images from its own directory should say so: moved away from
+    // them, those captures fall back to the pointer, and the rest still works.
+    n.textContent = data.truncated +
+      ' capture(s) show images from the files beside this report, to keep it openable.';
+    listEl.appendChild(n);
   }
-
-  drawProgress();
-  drawAcceptVisible([...byStory.keys()]);
+  if (carried.length) {
+    carriedEl = buildCarried();
+    listEl.appendChild(carriedEl);
+  }
 }
 
-/* A link into the report has to land even when the current filter excludes its target, so a
-   miss widens the view once and tries again rather than scrolling nowhere. */
+/* One tile per capture needing review, in the list's own order — worst story first, largest
+   change first. Each thumbnail reuses a data URI the report already carries: the sheet
+   multiplies what there is to see, not the size of the file. */
+
+/** Padding around a tile's crop region, in image pixels. */
+const TILE_CROP_PAD = 24;
+/* The window a cropped tile shows: the region padded and clamped to the image. Only the
+   horizontal extent is returned — the tile scales by width and clips what hangs below. */
+function tileCrop(region, size) {
+  const x = Math.max(0, region.x - TILE_CROP_PAD);
+  const y = Math.max(0, region.y - TILE_CROP_PAD);
+  const width = Math.min(size.width, region.x + region.width + TILE_CROP_PAD) - x;
+  return { x, y, width };
+}
+
+function buildOverview() {
+  for (const entry of entries) {
+    const c = entry.capture;
+    if (!REVIEW.has(c.status)) continue;
+    const tile = document.createElement('button');
+    tile.className = 'tile' + (reviewed.has(keyOf(c)) ? ' done' : '');
+    tile.dataset.key = keyOf(c);
+
+    // A tile shows the one image that says why the capture is here — the highlight for a
+    // change, the single render for a new capture — and the status as text when there is no
+    // image to show: nothing rendered, or images the embed budget left out.
+    const img = c.images || {};
+    const src = c.status === 'changed' ? img.diff
+      : c.status === 'new' ? (img.actual || img.expected) : null;
+    const thumb = document.createElement('span');
+    thumb.className = 'thumb';
+    if (src) {
+      const i = document.createElement('img');
+      i.loading = 'lazy';
+      i.decoding = 'async';
+      i.alt = (c.status === 'changed' ? 'Difference thumbnail of ' : 'First render of ') +
+        c.storyTitle + ' › ' + c.storyName + ' at ' + c.width + 'px' +
+        (c.mode ? ' in ' + c.mode : '') + (c.state ? ', ' + c.state : '');
+      i.src = src;
+      // A referenced thumbnail fails with the same missing files; the tile becomes the text
+      // tile it would have been had no image been available.
+      if (!src.startsWith('data:')) i.addEventListener('error', () => {
+        thumb.classList.remove('crop');
+        thumb.classList.add('text');
+        const st = document.createElement('span');
+        st.className = 'badge s-' + c.status;
+        st.textContent = LABEL[c.status];
+        i.replaceWith(st);
+      }, { once: true });
+      // A change with known regions is shown at the change: the tile crops to the largest
+      // region and scales it by width to the tile, answering "where" without a second
+      // embedded image. Every offset is a percentage of the tile's width — margins resolve
+      // against the container's width on both axes, so the vertical offset divides by the
+      // crop's width too.
+      const crop = c.status === 'changed' && c.regions && c.regions.length && c.size
+        ? tileCrop(c.regions[0], c.size)
+        : null;
+      if (crop) {
+        thumb.classList.add('crop');
+        i.style.width = (c.size.width / crop.width * 100) + '%';
+        i.style.marginLeft = (-crop.x / crop.width * 100) + '%';
+        i.style.marginTop = (-crop.y / crop.width * 100) + '%';
+      }
+      thumb.appendChild(i);
+    } else {
+      thumb.classList.add('text');
+      const st = document.createElement('span');
+      st.className = 'badge s-' + c.status;
+      st.textContent = LABEL[c.status];
+      thumb.appendChild(st);
+    }
+
+    const meta = document.createElement('span');
+    meta.className = 'tile-meta';
+    const titleEl = document.createElement('span');
+    titleEl.className = 'tile-title';
+    const name = c.storyTitle + ' › ' + c.storyName;
+    titleEl.textContent = name;
+    titleEl.title = name;
+    const sub = document.createElement('span');
+    sub.className = 'tile-sub';
+    const dot = document.createElement('span');
+    dot.className = 'dot c-' + c.status;
+    const dims = document.createElement('span');
+    dims.className = 'tile-dims';
+    dims.textContent = dimsOf(c) +
+      (c.status === 'changed' && c.diffPixels != null
+        ? ' · ' + c.diffPixels.toLocaleString() + ' px differ' : '');
+    sub.append(dot, dims);
+    meta.append(titleEl, sub);
+    tile.append(thumb, meta);
+
+    // Landing from the sheet behaves like arriving by j/k: the story opens, the capture
+    // scrolls into view and the cursor sits on it.
+    tile.onclick = () => {
+      const at = flat.indexOf(entry);
+      if (at >= 0) setCursor(at);
+    };
+
+    sheetEl.appendChild(tile);
+    tiles.push({ el: tile, entry });
+    entry.tile = tile;
+  }
+}
+
+/* A link into the report has to land even when the current filter excludes its target. Every
+   story is built — a filtered-out one is hidden, not absent — so a hidden target widens the
+   view once and tries again rather than scrolling nowhere. */
 function focusHash() {
   const id = decodeURIComponent(location.hash.slice(1));
   if (!id.startsWith('story-')) return;
-  if (!document.getElementById(id)) {
+  const target = document.getElementById(id);
+  if (target && target.hidden) {
     active = 'all';
+    activeMode = 'all';
+    activeState = 'all';
     query = '';
     searchEl.value = '';
-    render();
+    applyFilter();
   }
-  const target = document.getElementById(id);
   if (!target) return;
   target.open = true;
   target.scrollIntoView({ block: 'start' });
@@ -731,16 +1597,33 @@ document.addEventListener('keydown', (e) => {
   const typing = e.target instanceof HTMLElement &&
     (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA');
   if (e.key === 'Escape') {
-    if (typing) { searchEl.value = ''; query = ''; searchEl.blur(); render(); }
+    if (typing) { searchEl.value = ''; query = ''; searchEl.blur(); applyFilter(); }
     return;
   }
   if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key === '/') { e.preventDefault(); searchEl.focus(); searchEl.select(); return; }
-  if (e.key === 'j' || e.key === 'ArrowDown') { e.preventDefault(); setCursor(cursor + 1); return; }
-  if (e.key === 'k' || e.key === 'ArrowUp') { e.preventDefault(); setCursor(cursor - 1); return; }
+  // Only the horizontal arrows are ours, and only for the current capture's slider; the
+  // vertical ones stay with the page, so a keyboard user can still scroll a long report.
+  if (e.key === 'j') { e.preventDefault(); setCursor(cursor + 1); return; }
+  if (e.key === 'k') { e.preventDefault(); setCursor(cursor - 1); return; }
+  if (e.key === 'o') { e.preventDefault(); setOverviewCollapsed(!overviewCollapsed); return; }
+  // Shift turns a number into a page-wide choice. The code, not the key, identifies the digit:
+  // with Shift held the key reads as whatever symbol the layout puts above it.
+  const digit = /^Digit([1-4])$/.exec(e.code);
+  if (digit && e.shiftKey) {
+    if (viewAllEl.hidden) return;
+    e.preventDefault();
+    setPreferred(ALL_MODES[Number(digit[1]) - 1]);
+    return;
+  }
   if (cursor < 0 || !flat[cursor]) return;
   const entry = flat[cursor];
   if (e.key === 'r') { e.preventDefault(); toggleReviewed(entry); return; }
+  if (e.key === 'n' || e.key === 'N') {
+    e.preventDefault();
+    if (entry.built && entry.built.jumpRegion) entry.built.jumpRegion(e.key === 'n' ? 1 : -1);
+    return;
+  }
   if (e.key >= '1' && e.key <= '4') {
     e.preventDefault();
     if (entry.built && entry.built.setMode) entry.built.setMode(Number(e.key) - 1);
@@ -755,6 +1638,10 @@ document.addEventListener('keydown', (e) => {
 
 window.addEventListener('hashchange', focusHash);
 
-render();
+buildAll();
+buildOverview();
+applyFilter();
+applyOverview();
+drawProgress();
 focusHash();
 `;
