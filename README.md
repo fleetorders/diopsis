@@ -204,6 +204,19 @@ captured. `diopsis:modes=dark` limits a story to the modes it names and `diopsis
 its plain form. A mode multiplies captures like a width does, and `init` and `doctor` count it.
 Plain captures keep the paths they always had, so adding a mode leaves existing baselines valid.
 
+### Hover, focus and press
+
+A pointer or keyboard state is captured by naming the element it applies to:
+
+```ts
+export const Primary = {
+  tags: ['diopsis:hover=button', 'diopsis:focus=button', 'diopsis:active=button'],
+};
+```
+
+Each state is its own capture and baseline, at every width and mode. Focus arrives the way a
+keyboard user's does, so `:focus-visible` styles show.
+
 ### Per-story tolerance
 
 The occasional story that cannot be made deterministic — a gradient that dithers, a chart that

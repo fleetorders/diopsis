@@ -33,6 +33,8 @@ export interface CaptureResult {
   status: CaptureStatus;
   /** The configured mode this capture ran under; absent for the base capture. */
   mode?: string;
+  /** The interaction state this capture was taken in; absent for the plain capture. */
+  state?: string;
   /** Baseline location, relative to the configured snapshot directory. */
   snapshotPath: string;
   /** Tolerance overrides in effect for this capture; present only when its story set them. */

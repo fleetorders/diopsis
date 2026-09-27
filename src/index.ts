@@ -23,9 +23,10 @@ export {
   resolveMatrix,
   scopeForStory,
   snapshotPathFor,
+  statesForStory,
   widthsForStory,
 } from './matrix.ts';
-export type { Capture, ParsedSnapshotPath, ResolvedMatrix } from './matrix.ts';
+export type { Capture, InteractionState, ParsedSnapshotPath, ResolvedMatrix } from './matrix.ts';
 
 export { serveStatic, storyUrlFor } from './server.ts';
 export type { StaticServer } from './server.ts';

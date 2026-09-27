@@ -1,5 +1,6 @@
-import type { Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 import type { StabilizeOptions } from '../config.ts';
+import type { InteractionState } from '../matrix.ts';
 
 /** Storybook 7+ renders into `#storybook-root`; v6 used `#root`. */
 export const RENDER_ROOTS = ['#storybook-root', '#root'] as const;
@@ -386,6 +387,14 @@ export async function stabilize(
   }
 
   // One more frame, so anything scheduled by the waits above has painted.
+  await nextPaint(page);
+}
+
+/**
+ * Two animation frames: enough for anything the page just scheduled — the last wait of a
+ * capture, or a state the browser is still applying — to reach the screen.
+ */
+async function nextPaint(page: Page): Promise<void> {
   await page.evaluate(
     () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))),
   );
@@ -475,6 +484,56 @@ export async function componentClip(page: Page): Promise<ComponentClip | undefin
     },
     { roots: RENDER_ROOTS, padding: COMPONENT_PADDING, limit: MAX_WALKED_ELEMENTS },
   );
+}
+
+/** The first element inside a render root that a state's selector names — it alone, never the manager UI around the root. */
+async function stateTarget(page: Page, selector: string): Promise<Locator> {
+  for (const root of RENDER_ROOTS) {
+    const found = page.locator(root).locator(selector);
+    if ((await found.count()) > 0) return found.first();
+  }
+  // An element without a box is as unusable for a state as a selector naming nothing: both
+  // leave the tag pointing at nothing the camera can hold.
+  throw new StoryRenderError('State target not found', selector);
+}
+
+/**
+ * Hold a story's interaction state for the shutter — the pointer and keyboard states a play
+ * function cannot still be holding when the screenshot is taken, which is why they are
+ * applied after `openStory` rather than scripted into the story.
+ *
+ * `hover` moves the pointer onto the target; `focus` focuses it after pressing and releasing
+ * Shift, because `:focus-visible` follows the browser's focus modality and an element focused
+ * from a script shows that styling only once a key has gone down — Shift being the one no
+ * story listens for; `active` presses the target's centre and leaves the button down, since
+ * releasing it is what ends `:active` — the release is `releaseState`'s, after the assertion.
+ */
+export async function applyState(page: Page, state: InteractionState): Promise<void> {
+  const target = await stateTarget(page, state.selector);
+  if (state.action === 'hover') {
+    await target.hover();
+  } else if (state.action === 'focus') {
+    await page.keyboard.press('Shift');
+    await target.focus();
+  } else {
+    const box = await target.boundingBox();
+    if (!box) throw new StoryRenderError('State target not found', state.selector);
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+  }
+  await nextPaint(page);
+}
+
+/**
+ * Give back what a state held. The page is reused for the captures one worker takes, so a
+ * button still down — or a pointer still parked over the element — would leak into the next
+ * story's capture: the button goes up and the pointer returns to the corner it started
+ * from. Focus and hover need nothing here; the next capture's navigation replaces the
+ * document they lived in.
+ */
+export async function releaseState(page: Page): Promise<void> {
+  await page.mouse.up().catch(() => undefined);
+  await page.mouse.move(0, 0).catch(() => undefined);
 }
 
 /**

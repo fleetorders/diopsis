@@ -11,6 +11,7 @@ import {
   resolveMatrix,
   scopeForStory,
   snapshotPathFor,
+  statesForStory,
   toleranceForStory,
   widthsForStory,
 } from '../src/matrix.ts';
@@ -442,6 +443,49 @@ describe('modesForStory', () => {
   });
 });
 
+describe('statesForStory', () => {
+  it('reads one state per tag, in tag order, with the action the tag names', () => {
+    const result = statesForStory(story('a--one', ['diopsis:hover=button', 'diopsis:focus=input']));
+    assert.deepEqual(result.states, [
+      { name: 'hover', action: 'hover', selector: 'button' },
+      { name: 'focus', action: 'focus', selector: 'input' },
+    ]);
+    assert.deepEqual(result.warnings, []);
+  });
+
+  it('keeps everything after the first equals — spaces and further equals included', () => {
+    const result = statesForStory(
+      story('a--one', ['diopsis:active=button[type=submit] .label=x']),
+    );
+    assert.deepEqual(result.states, [
+      { name: 'active', action: 'active', selector: 'button[type=submit] .label=x' },
+    ]);
+  });
+
+  it('numbers a kind beyond its first tag: hover, hover-2, hover-3', () => {
+    const result = statesForStory(
+      story('a--one', ['diopsis:hover=a', 'diopsis:hover=b', 'diopsis:hover=c', 'diopsis:focus=d']),
+    );
+    assert.deepEqual(
+      result.states.map((state) => state.name),
+      ['hover', 'hover-2', 'hover-3', 'focus'],
+    );
+  });
+
+  it('warns about a tag whose selector names nothing, and captures no state for it', () => {
+    const result = statesForStory(story('a--one', ['diopsis:hover=', 'diopsis:focus= ']));
+    assert.deepEqual(result.states, []);
+    assert.equal(result.warnings.length, 2);
+    assert.match(result.warnings[0] ?? '', /a--one: tag "diopsis:hover=" names no selector — ignored\./);
+  });
+
+  it('never touches width resolution — a state-only story keeps the default widths', () => {
+    const result = widthsForStory(story('a--one', ['diopsis:hover=button']), viewports);
+    assert.deepEqual(result.widths, [320, 1280]);
+    assert.deepEqual(result.warnings, []);
+  });
+});
+
 describe('resolveMatrix with modes', () => {
   const modes = { dark: { theme: 'dark' }, rtl: { direction: 'rtl' } };
   const withModes: Pick<DiopsisConfig, 'viewports' | 'viewportHeight' | 'capture' | 'modes'> = {
@@ -511,6 +555,102 @@ describe('resolveMatrix with modes', () => {
   });
 });
 
+describe('resolveMatrix with states', () => {
+  const plain: Pick<DiopsisConfig, 'viewports' | 'viewportHeight' | 'capture'> = {
+    viewports: { default: [320] },
+    viewportHeight: 900,
+    capture: 'page',
+  };
+  const withStates: Pick<DiopsisConfig, 'viewports' | 'viewportHeight' | 'capture' | 'modes'> = {
+    ...plain,
+    modes: { dark: { theme: 'dark' } },
+  };
+
+  it('adds one capture per state beside the plain one, which always remains', () => {
+    const matrix = resolveMatrix([story('a--one', ['diopsis:hover=button'])], plain, 'linux-x64');
+    assert.deepEqual(
+      matrix.captures.map((c) => [c.snapshotPath, c.state?.name]),
+      [
+        ['a--one/320w-linux-x64.png', undefined],
+        ['a--one/320w-hover-linux-x64.png', 'hover'],
+      ],
+    );
+    assert.deepEqual(matrix.captures[1]?.state, {
+      name: 'hover',
+      action: 'hover',
+      selector: 'button',
+    });
+    // The plain capture carries no state key at all, so it stays byte-identical to before.
+    assert.equal('state' in (matrix.captures[0] ?? {}), false);
+  });
+
+  it('captures every state in every mode, the state after the mode in the path', () => {
+    const matrix = resolveMatrix([story('a--one', ['diopsis:focus=input'])], withStates, 'linux-x64');
+    assert.deepEqual(
+      matrix.captures.map((c) => c.snapshotPath),
+      [
+        'a--one/320w-linux-x64.png',
+        'a--one/320w-focus-linux-x64.png',
+        'a--one/320w-dark-linux-x64.png',
+        'a--one/320w-dark-focus-linux-x64.png',
+      ],
+    );
+  });
+
+  it('numbers repeated tags of a kind in tag order, one baseline each', () => {
+    const matrix = resolveMatrix(
+      [story('a--one', ['diopsis:hover=a', 'diopsis:hover=b'])],
+      { viewports: { default: [320] }, viewportHeight: 900, capture: 'page' },
+      'linux-x64',
+    );
+    assert.deepEqual(
+      matrix.captures.map((c) => c.snapshotPath),
+      ['a--one/320w-linux-x64.png', 'a--one/320w-hover-linux-x64.png', 'a--one/320w-hover-2-linux-x64.png'],
+    );
+  });
+
+  it('carries the story metadata into every state capture, and warns once for a malformed tag', () => {
+    const matrix = resolveMatrix(
+      [story('a--one', ['diopsis:threshold=0.4', 'diopsis:hover='])],
+      { viewports: { default: [320] }, viewportHeight: 900, capture: 'page' },
+      'linux-x64',
+    );
+    assert.equal(matrix.warnings.length, 1);
+    assert.match(matrix.warnings[0] ?? '', /diopsis:hover=/);
+    assert.deepEqual(
+      matrix.captures.map((c) => c.snapshotPath),
+      ['a--one/320w-linux-x64.png'],
+    );
+    assert.deepEqual(matrix.captures[0]?.compare, { threshold: 0.4 });
+  });
+
+  it('leaves a story without state tags exactly as it was', () => {
+    const matrix = resolveMatrix([story('a--one')], withStates, 'linux-x64');
+    assert.deepEqual(matrix.captures.map((c) => 'state' in c), [false, false]);
+  });
+});
+
+describe('snapshotPathFor with a state', () => {
+  it('puts the state after the mode, before the platform', () => {
+    assert.equal(
+      snapshotPathFor('a--one', 320, 'linux-x64', 'dark', 'hover-2'),
+      'a--one/320w-dark-hover-2-linux-x64.png',
+    );
+  });
+
+  it('writes a state with no mode directly after the width', () => {
+    assert.equal(
+      snapshotPathFor('a--one', 320, 'linux-x64', undefined, 'focus'),
+      'a--one/320w-focus-linux-x64.png',
+    );
+  });
+
+  it('leaves the plain and mode paths exactly as they were', () => {
+    assert.equal(snapshotPathFor('a--one', 320, 'linux-x64'), 'a--one/320w-linux-x64.png');
+    assert.equal(snapshotPathFor('a--one', 320, 'linux-x64', 'dark'), 'a--one/320w-dark-linux-x64.png');
+  });
+});
+
 describe('parseSnapshotPath', () => {
   it('reads a base path back into what it names', () => {
     assert.deepEqual(parseSnapshotPath(snapshotPathFor('a--one', 320, 'linux-x64')), {
@@ -544,6 +684,42 @@ describe('parseSnapshotPath', () => {
   it('round-trips through the safe segment, not the id that was folded into it', () => {
     // A parse cannot unfold what safeSegment never wrote; the segment is the honest answer.
     assert.equal(parseSnapshotPath(snapshotPathFor('a b--c', 320, 'linux-x64'))?.storyId, 'a_b--c');
+  });
+
+  it('reads a state path back, state included beside its mode', () => {
+    assert.deepEqual(parseSnapshotPath(snapshotPathFor('a--one', 1280, 'linux-x64', 'dark', 'hover')), {
+      storyId: 'a--one',
+      width: 1280,
+      mode: 'dark',
+      state: 'hover',
+      platform: 'linux-x64',
+    });
+  });
+
+  it('reads a state with no mode directly after the width', () => {
+    assert.deepEqual(parseSnapshotPath(snapshotPathFor('a--one', 320, 'linux-x64', undefined, 'focus')), {
+      storyId: 'a--one',
+      width: 320,
+      state: 'focus',
+      platform: 'linux-x64',
+    });
+  });
+
+  it('reads a numbered state as one name', () => {
+    assert.deepEqual(parseSnapshotPath('a--one/320w-dark-hover-2-linux-x64.png'), {
+      storyId: 'a--one',
+      width: 320,
+      mode: 'dark',
+      state: 'hover-2',
+      platform: 'linux-x64',
+    });
+  });
+
+  it('keeps a mode out of the state vocabulary untouched', () => {
+    // "hovering" only starts like a state, and the numbering begins at 2, so neither is one.
+    assert.equal(parseSnapshotPath('a--one/320w-hovering-linux-x64.png')?.mode, 'hovering');
+    assert.equal(parseSnapshotPath('a--one/320w-hover-1-linux-x64.png')?.mode, 'hover-1');
+    assert.equal(parseSnapshotPath('a--one/320w-hover-dark-linux-x64.png')?.mode, 'hover-dark');
   });
 
   it('refuses what the matrix would never write', () => {

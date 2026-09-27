@@ -98,7 +98,8 @@ export async function acceptCommand(options: AcceptOptions): Promise<number> {
   for (const capture of skipped) {
     process.stdout.write(
       `  skipped ${capture.storyId} @${capture.width}` +
-        `${capture.mode ? ` [${capture.mode}]` : ''}: ${capture.status}\n`,
+        `${capture.mode ? ` [${capture.mode}]` : ''}` +
+        `${capture.state ? ` {${capture.state}}` : ''}: ${capture.status}\n`,
     );
   }
 

@@ -29,7 +29,7 @@ try {
   process.exit(1);
 }
 
-const { componentClip, openStory, StoryRenderError } = await import('../src/runtime/capture.ts');
+const { applyState, componentClip, openStory, releaseState, StoryRenderError } = await import('../src/runtime/capture.ts');
 const { serveStatic } = await import('../src/server.ts');
 const { defaultConfig } = await import('../src/config.ts');
 
@@ -120,6 +120,15 @@ await writeFile(
 );
 // A render root with nothing in it.
 await writeFile(path.join(work, 'component-empty.html'), clipPage(''));
+
+// Interaction states: applyState holds a pointer or keyboard state for the shutter, and the
+// page's own styles answer — the colour after the state is what the screenshot would show.
+// The button sits away from the origin, because the cleanup parks the pointer there.
+await writeFile(path.join(work, 'states.html'), `<!doctype html><meta charset=utf-8>
+<style>body{margin:0}button{display:block;margin:60px;border:0;width:120px;height:40px;
+background:#eeeeee}button:hover{background:#ff8800}button:focus-visible{background:#0088ff}
+button:active{background:#ff00ff}</style>
+<div id="storybook-root"><button id="b">go</button></div>`);
 
 const results = [];
 const check = (name, pass, detail) => results.push({ name, pass, detail });
@@ -267,6 +276,46 @@ try {
     await p.goto(`${server.url}/component-empty.html`);
     const clip = await componentClip(p);
     check('an empty render root has no clip to take', clip === undefined, JSON.stringify(clip));
+    await context.close();
+  }
+  // applyState, against a page whose styles say which state is held.
+  {
+    const context = await browser.newContext();
+    const p = await context.newPage();
+    const open = async () => {
+      await openStory(p, `${server.url}/states.html`, defaultConfig.stabilize);
+    };
+    const colour = () => p.locator('#b').evaluate((el) => getComputedStyle(el).backgroundColor);
+
+    await open();
+    await applyState(p, { name: 'hover', action: 'hover', selector: '#b' });
+    const hovered = await colour();
+    check('hover styles the target after applyState', hovered === 'rgb(255, 136, 0)', hovered);
+
+    await open();
+    await applyState(p, { name: 'focus', action: 'focus', selector: '#b' });
+    const focused = await colour();
+    check('a scripted focus shows the keyboard-focus styling', focused === 'rgb(0, 136, 255)', focused);
+
+    await open();
+    await applyState(p, { name: 'active', action: 'active', selector: '#b' });
+    const pressed = await colour();
+    check('a pressed target shows its active styling', pressed === 'rgb(255, 0, 255)', pressed);
+    await releaseState(p);
+    const released = await colour();
+    check('the cleanup releases the press and parks the pointer clear',
+      released === 'rgb(238, 238, 238)', released);
+
+    await open();
+    let missing;
+    try {
+      await applyState(p, { name: 'hover', action: 'hover', selector: '#absent' });
+    } catch (error) {
+      missing = error;
+    }
+    check('a selector naming nothing is a render failure',
+      missing instanceof StoryRenderError && missing.message === 'State target not found: #absent',
+      missing ? `${missing.name}: ${missing.message}` : 'resolved');
     await context.close();
   }
 } finally {
