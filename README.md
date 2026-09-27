@@ -206,12 +206,17 @@ its own link to paste into the review. From the keyboard: `/` filters, `j` and `
 captures, `1`–`4` switch how the pair is compared, and `r` ticks one off.
 
 **Accept** — `npx diopsis accept` adopts the whole run, or `npx diopsis accept card--default`
-adopts one story. Both copy the new images over the baselines and stage them for review.
+adopts one story; name several to adopt them together. Only changed and new captures are
+adopted — one that failed to render has nothing worth keeping — and nothing is copied unless
+every image the run left behind is present. The new images replace the baselines and are
+staged for review.
 
 **Regenerate** — `npx diopsis update` rewrites baselines wholesale, for when you already know
 everything changed.
 
-Add `--grep <text>` to any of these to limit the run to stories whose id contains `<text>`.
+Add `--grep <text>` to `run` or `update` to limit them to stories whose id contains `<text>`.
+Anything after `--` goes to Playwright unchanged, so `npx diopsis run -- --shard=1/3` splits a
+run across machines.
 
 ## Reference
 
@@ -220,9 +225,10 @@ Add `--grep <text>` to any of these to limit the run to stories whose id contain
 | `diopsis init` | Scaffold config, git settings and a CI recipe; print what the matrix costs |
 | `diopsis run` | Verify against committed baselines *(default command)* |
 | `diopsis update` | Regenerate baselines |
-| `diopsis accept [story-id]` | Adopt the last run's output, per story or wholesale |
+| `diopsis accept [story-id...]` | Adopt the last run's output, for the named stories or wholesale |
 | `diopsis report` | Open the last report |
 | `diopsis doctor` | Audit the setup |
+| `diopsis --version` | Print the installed version |
 
 | Flag | Applies to | Effect |
 |---|---|---|
@@ -231,6 +237,12 @@ Add `--grep <text>` to any of these to limit the run to stories whose id contain
 | `--force` | `init` | Overwrite an existing config |
 | `--lfs` | `init` | Set the baselines up for Git LFS |
 | `--no-stage` | `accept` | Write the files without staging them in git |
+| `-- <args>` | `run`, `update` | Pass the rest to Playwright, e.g. `--shard=1/3` |
+
+A flag given to a command it does not belong to is refused rather than ignored. The config is
+checked when it loads, and every problem is reported at once with the key and the value it
+had; `viewports` must name a `default` set, and an empty one means only tagged stories are
+captured.
 
 | Config key | Default | Meaning |
 |---|---|---|

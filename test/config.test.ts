@@ -117,3 +117,157 @@ describe('loadConfig', () => {
     await assert.rejects(() => loadConfig(dir), /default export/);
   });
 });
+
+import { validateConfig, type DiopsisConfig } from '../src/config.ts';
+
+describe('validateConfig', () => {
+  function configWith(over: {
+    viewports?: unknown;
+    viewportHeight?: unknown;
+    timeout?: unknown;
+    workers?: unknown;
+    fullPage?: unknown;
+    mask?: unknown;
+    affected?: unknown;
+    stabilize?: Record<string, unknown>;
+    compare?: Record<string, unknown>;
+  }): DiopsisConfig {
+    const base = resolveConfig();
+    return {
+      ...base,
+      ...over,
+      stabilize: { ...base.stabilize, ...over.stabilize },
+      compare: { ...base.compare, ...over.compare },
+    } as DiopsisConfig;
+  }
+
+  it('accepts an explicit empty default set — the "only tagged stories" choice', () => {
+    assert.deepEqual(validateConfig(configWith({ viewports: { default: [], mobile: [320] } })), []);
+  });
+
+  it('demands a default set, so untagged stories cannot silently lose their widths', () => {
+    const problems = validateConfig(configWith({ viewports: { mobile: [320] } }));
+    assert.equal(problems.length, 1);
+    assert.match(problems[0] ?? '', /viewports must define a "default" set/);
+  });
+
+  it('names the key and the bad value of each viewport set', () => {
+    const problems = validateConfig(configWith({ viewports: { default: [640], mobile: 640 } }));
+    assert.equal(problems.length, 1);
+    assert.match(
+      problems[0] ?? '',
+      /viewports\.mobile must be an array of positive integer widths \(got 640\)/,
+    );
+  });
+
+  it('rejects zero and fractional widths', () => {
+    const problems = validateConfig(configWith({ viewports: { default: [320, 0, 1.5] } }));
+    assert.match(problems[0] ?? '', /got \[320,0,1\.5\]/);
+  });
+
+  it('checks every numeric knob', () => {
+    const problems = validateConfig(
+      configWith({ viewportHeight: 0, timeout: -1, stabilize: { settleTimeout: 0 } }),
+    );
+    assert.ok(problems.some((p) => /viewportHeight must be a positive integer \(got 0\)/.test(p)));
+    assert.ok(problems.some((p) => /timeout must be a positive number \(got -1\)/.test(p)));
+    assert.ok(
+      problems.some((p) => /stabilize\.settleTimeout must be a positive number \(got 0\)/.test(p)),
+    );
+  });
+
+  it('bounds both comparators to the unit interval', () => {
+    const problems = validateConfig(configWith({ compare: { threshold: 2, maxDiffPixelRatio: 'x' } }));
+    assert.ok(
+      problems.some((p) => /compare\.threshold must be a number between 0 and 1 \(got 2\)/.test(p)),
+    );
+    assert.ok(
+      problems.some((p) => /compare\.maxDiffPixelRatio must be a number between 0 and 1 \(got "x"\)/.test(p)),
+    );
+  });
+
+  it('accepts workers as a count or a percentage, and nothing else', () => {
+    assert.deepEqual(validateConfig(configWith({ workers: 4 })), []);
+    assert.deepEqual(validateConfig(configWith({ workers: '50%' })), []);
+    const problems = validateConfig(configWith({ workers: 'all' }));
+    assert.match(
+      problems[0] ?? '',
+      /workers must be a positive integer or a percentage like "50%" \(got "all"\)/,
+    );
+  });
+
+  it('checks the remaining shape rules', () => {
+    const problems = validateConfig(
+      configWith({
+        fullPage: 'yes',
+        mask: '[data-x]',
+        affected: 'everything',
+        stabilize: { freezeClock: 'not-a-date' },
+      }),
+    );
+    assert.ok(problems.some((p) => /fullPage must be true or false/.test(p)));
+    assert.ok(problems.some((p) => /mask must be an array of selector strings/.test(p)));
+    assert.ok(problems.some((p) => /affected must be "all" or "auto"/.test(p)));
+    assert.ok(problems.some((p) => /stabilize\.freezeClock must be false or a date/.test(p)));
+  });
+
+  it('accepts freezeClock false and a date Date can parse', () => {
+    assert.deepEqual(validateConfig(configWith({ stabilize: { freezeClock: false } })), []);
+    assert.deepEqual(
+      validateConfig(configWith({ stabilize: { freezeClock: '2026-01-15T12:00:00Z' } })),
+      [],
+    );
+  });
+});
+
+describe('loadConfig validation', () => {
+  it('throws one error, prefixed with the file name, listing every problem', async () => {
+    const dir = await scratch();
+    await writeFile(
+      path.join(dir, 'diopsis.config.mjs'),
+      'export default { viewportHeight: 0, timeout: -1 };',
+    );
+    await assert.rejects(
+      () => loadConfig(dir),
+      (error: unknown) => {
+        const message = error instanceof Error ? error.message : '';
+        assert.match(message, /^diopsis\.config\.mjs has 2 problems:\n/);
+        assert.match(message, /\n  - viewportHeight must be a positive integer/);
+        assert.match(message, /\n  - timeout must be a positive number/);
+        return true;
+      },
+    );
+  });
+
+  it('rejects viewports that leave untagged stories with nothing', async () => {
+    const dir = await scratch();
+    await writeFile(
+      path.join(dir, 'diopsis.config.mjs'),
+      'export default { viewports: { mobile: [320] } };',
+    );
+    await assert.rejects(
+      () => loadConfig(dir),
+      /diopsis\.config\.mjs: viewports must define a "default" set/,
+    );
+  });
+
+  it('wraps a config that throws while loading', async () => {
+    const dir = await scratch();
+    await writeFile(path.join(dir, 'diopsis.config.mjs'), 'throw new Error("boom");');
+    await assert.rejects(() => loadConfig(dir), /Could not load diopsis\.config\.mjs: boom/);
+  });
+
+  it('hints at the module format when a .js config cannot be loaded', async () => {
+    const dir = await scratch();
+    await writeFile(path.join(dir, 'diopsis.config.js'), 'throw new Error("nope");');
+    await assert.rejects(
+      () => loadConfig(dir),
+      (error: unknown) => {
+        const message = error instanceof Error ? error.message : '';
+        assert.match(message, /Could not load diopsis\.config\.js: nope/);
+        assert.match(message, /"type": "module".*\.mjs extension/);
+        return true;
+      },
+    );
+  });
+});

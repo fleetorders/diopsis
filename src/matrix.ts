@@ -17,6 +17,8 @@ export interface ResolvedMatrix {
   captures: Capture[];
   /** Stories excluded by a `diopsis:skip` tag. */
   skipped: string[];
+  /** Stories that resolved to no width at all, so nothing watches them. */
+  unwatched: string[];
   /** Tags that looked like Diopsis directives but named nothing. `doctor` reports these. */
   warnings: string[];
 }
@@ -102,7 +104,12 @@ export function resolveMatrix(
 ): ResolvedMatrix {
   const captures: Capture[] = [];
   const skipped: string[] = [];
+  const unwatched: string[] = [];
   const warnings: string[] = [];
+  // A baseline directory segment is the story id with unsafe characters replaced, so two
+  // different ids can collapse onto the same segment and silently share a baseline. The
+  // collision is an error the moment it happens, not a wrong diff months later.
+  const owners = new Map<string, string>();
 
   for (const story of stories) {
     const resolved = widthsForStory(story, config.viewports);
@@ -111,6 +118,21 @@ export function resolveMatrix(
       skipped.push(story.id);
       continue;
     }
+    if (resolved.widths.length === 0) {
+      // An empty `viewports.default` is the deliberate "only tagged stories" choice; the
+      // stories it leaves without widths are surfaced, never dropped quietly.
+      unwatched.push(story.id);
+      continue;
+    }
+    const segment = safeSegment(story.id);
+    const owner = owners.get(segment);
+    if (owner !== undefined && owner !== story.id) {
+      throw new Error(
+        `Stories "${owner}" and "${story.id}" both map to the baseline path "${segment}" — ` +
+          'rename one of them, or the two will silently share every baseline.',
+      );
+    }
+    owners.set(segment, story.id);
     for (const width of resolved.widths) {
       captures.push({
         storyId: story.id,
@@ -124,5 +146,5 @@ export function resolveMatrix(
     }
   }
 
-  return { captures, skipped, warnings };
+  return { captures, skipped, unwatched, warnings };
 }

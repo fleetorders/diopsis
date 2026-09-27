@@ -99,3 +99,27 @@ describe('readStoryIndex', () => {
     await assert.rejects(() => readStoryIndex(fixtures), /No story index/);
   });
 });
+
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { afterEach } from 'node:test';
+
+const invalidTemporaries: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(
+    invalidTemporaries.splice(0).map((dir) => rm(dir, { recursive: true, force: true })),
+  );
+});
+
+describe('readStoryIndex with a broken index', () => {
+  it('names the file when the index is not valid JSON', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'diopsis-index-'));
+    invalidTemporaries.push(dir);
+    await writeFile(path.join(dir, 'index.json'), '{ not json');
+    await assert.rejects(
+      () => readStoryIndex(dir),
+      /is not valid JSON \(.*\)\. Rebuild the Storybook\./,
+    );
+  });
+});

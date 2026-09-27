@@ -79,3 +79,50 @@ describe('storyUrlFor', () => {
     assert.match(storyUrlFor('http://x', 'a b&c'), /id=a%20b%26c$/);
   });
 });
+
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { afterEach } from 'node:test';
+
+const errorTemporaries: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(
+    errorTemporaries.splice(0).map((dir) => rm(dir, { recursive: true, force: true })),
+  );
+});
+
+describe('serveStatic error handling', () => {
+  let errorServer: StaticServer;
+
+  before(async () => {
+    errorServer = await serveStatic(root);
+  });
+  after(async () => {
+    await errorServer.close();
+  });
+
+  it('answers 400, not 500, on a malformed percent-escape', async () => {
+    const response = await fetch(`${errorServer.url}/%zz`);
+    assert.equal(response.status, 400);
+  });
+
+  it('ends with 500 instead of crashing when the file cannot be read', async (t) => {
+    if (typeof process.getuid === 'function' && process.getuid() === 0) {
+      return t.skip('root can read a mode-000 file');
+    }
+    const dir = await mkdtemp(path.join(tmpdir(), 'diopsis-server-'));
+    errorTemporaries.push(dir);
+    // stat succeeds without read permission; opening the stream then fails, which is the
+    // window an unhandled stream error used to crash the process in.
+    await writeFile(path.join(dir, 'denied.png'), 'x');
+    await chmod(path.join(dir, 'denied.png'), 0o000);
+    const server = await serveStatic(dir);
+    try {
+      const response = await fetch(`${server.url}/denied.png`);
+      assert.equal(response.status, 500);
+    } finally {
+      await server.close();
+    }
+  });
+});

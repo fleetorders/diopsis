@@ -583,3 +583,29 @@ rendering branches on the capture's status rather than on which artifacts happen
 present, so a result carrying both references still shows one column.
 
 **Scope:** repo.
+
+## D-025 — 2026-09-27 — Refuse what would silently do the wrong thing
+
+**Decision:** Six places where Diopsis used to carry on quietly now stop or say so. Each
+command accepts only its own flags and refuses any other. The config is validated on load and
+every problem is reported together, naming the key and its value; `viewports.default` must
+exist, and an explicitly empty one is the way to capture only tagged stories, which `run` and
+`doctor` then count as unwatched. Whether a capture is new is decided by the generated spec
+checking the baseline file before comparing, recorded as a test annotation, rather than by
+matching Playwright's message wording. `accept` adopts only changed and new captures, takes
+any number of story ids, reports an id it cannot find, and copies nothing unless every source
+image is present. Two story ids that would share a baseline path are an error. An interrupted
+run lists the captures it never reached and does not offer them for acceptance.
+
+**Why:** each of these produced a green or plausible result from a wrong state. The worst
+was `accept --grep <id>`: the flag was parsed and ignored, so the whole run was adopted and
+staged. A config without a `default` set captured nothing for untagged stories and still
+passed. Message matching held on the installed Playwright but broke on a snapshot mode that
+words a missing baseline differently, and the peer range has no upper bound.
+
+**Consequences:** a config that omitted `viewports.default` and relied on capturing only
+tagged stories must now say so with `default: []`. The pixel count is still read from the
+comparator's message, because nothing else reports it; a wording change there degrades to a
+changed capture without a count, not to a wrong status.
+
+**Scope:** repo.

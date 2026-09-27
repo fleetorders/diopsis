@@ -157,3 +157,63 @@ describe('stripAnsi', () => {
     assert.equal(stripAnsi('6798 pixels are different'), '6798 pixels are different');
   });
 });
+
+import { NOT_RUN } from '../src/report/summary.ts';
+
+describe('classify with the baseline annotation', () => {
+  const NONE_VARIANT =
+    "A snapshot doesn't exist at /repo/__screenshots__/a--one/320w-linux-x64.png.";
+
+  it('calls a missing baseline new whatever the message says', () => {
+    assert.equal(classify({ passed: false, errorText: 'boom', baseline: 'missing' }).status, 'new');
+  });
+
+  it('fixes the --update-snapshots=none wording, which carries no ", writing actual"', () => {
+    assert.equal(
+      classify({ passed: false, errorText: NONE_VARIANT, baseline: 'missing' }).status,
+      'new',
+    );
+  });
+
+  it('keeps a timeout a failure even when no baseline exists', () => {
+    assert.equal(
+      classify({ passed: false, errorText: 'Test timed out.', timedOut: true, baseline: 'missing' })
+        .status,
+      'failed',
+    );
+  });
+
+  it('keeps a story that never rendered out of "new"', () => {
+    assert.equal(
+      classify({ passed: false, errorText: 'StoryRenderError: boom', baseline: 'missing' }).status,
+      'render-failed',
+    );
+  });
+
+  it('falls back to the message regexes when no annotation is present', () => {
+    assert.equal(classify({ passed: false, errorText: MISSING }).status, 'new');
+  });
+});
+
+describe('interrupted runs', () => {
+  it('counts not-run captures separately from real failures', () => {
+    const totals = totalsFor([
+      capture({}),
+      capture({ status: 'failed', error: NOT_RUN }),
+      capture({ storyId: 'b--two', status: 'failed', error: 'expect(page) failed' }),
+    ]);
+    assert.equal(totals.captures, 3);
+    assert.equal(totals.notRun, 1);
+    assert.equal(totals.failed, 1);
+  });
+
+  it('does not advertise a not-run story as needing review', () => {
+    assert.deepEqual(
+      changedStoriesOf([
+        capture({ status: 'failed', error: NOT_RUN }),
+        capture({ storyId: 'b--two', status: 'changed' }),
+      ]),
+      ['b--two'],
+    );
+  });
+});

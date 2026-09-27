@@ -46,6 +46,8 @@ export interface RunTotals {
   new: number;
   renderFailed: number;
   failed: number;
+  /** Captures the run never reached — an interrupted run, not a comparison verdict. */
+  notRun: number;
 }
 
 export interface RunSummary {
@@ -55,6 +57,8 @@ export interface RunSummary {
   platform: string;
   arch: string;
   mode: 'run' | 'update';
+  /** Present (true) only when the Playwright run ended interrupted. */
+  interrupted?: boolean;
   snapshotDir: string;
   totals: RunTotals;
   /** Story ids with at least one capture needing review. */
@@ -77,6 +81,12 @@ export function needsReview(status: CaptureStatus): boolean {
   return REVIEWABLE.has(status);
 }
 
+/**
+ * Error text of a capture that never ran because the run was interrupted. Carried by the
+ * error rather than a new status so every consumer of `failed` keeps working unchanged.
+ */
+export const NOT_RUN = 'Not run: the run was interrupted.';
+
 /** `6798 pixels (ratio 0.03 of all image pixels) are different.` */
 const PIXELS_PATTERN = /([\d,]+) pixels \(ratio ([\d.]+) of all image pixels\) are different/;
 
@@ -87,6 +97,8 @@ export interface ClassifyInput {
   /** Concatenated error text from the Playwright result. */
   errorText: string;
   timedOut?: boolean;
+  /** Baseline existence recorded by the generated spec, when the spec got that far. */
+  baseline?: 'present' | 'missing';
 }
 
 /** Turn a Playwright result into the state a reviewer actually cares about. */
@@ -97,9 +109,17 @@ export function classify(input: ClassifyInput): {
 } {
   if (input.passed) return { status: 'unchanged' };
 
-  if (MISSING_PATTERN.test(input.errorText)) return { status: 'new' };
+  // A timeout produced no screenshot at all, whatever the baseline state says.
+  if (input.timedOut) return { status: 'failed' };
 
+  // A story that would not render produced no screenshot either; it is not "new".
   if (input.errorText.includes('StoryRenderError')) return { status: 'render-failed' };
+
+  // Baseline existence is recorded by the spec itself, so classification does not ride on
+  // Playwright's wording — which differs between snapshot modes ("writing actual" or not).
+  if (input.baseline === 'missing') return { status: 'new' };
+
+  if (MISSING_PATTERN.test(input.errorText)) return { status: 'new' };
 
   const pixels = PIXELS_PATTERN.exec(input.errorText);
   if (pixels) {
@@ -125,12 +145,14 @@ export function totalsFor(captures: CaptureResult[]): RunTotals {
     new: 0,
     renderFailed: 0,
     failed: 0,
+    notRun: 0,
   };
   for (const capture of captures) {
     if (capture.status === 'unchanged') totals.unchanged += 1;
     else if (capture.status === 'changed') totals.changed += 1;
     else if (capture.status === 'new') totals.new += 1;
     else if (capture.status === 'render-failed') totals.renderFailed += 1;
+    else if (capture.error === NOT_RUN) totals.notRun += 1;
     else totals.failed += 1;
   }
   return totals;
@@ -138,7 +160,12 @@ export function totalsFor(captures: CaptureResult[]): RunTotals {
 
 export function changedStoriesOf(captures: CaptureResult[]): string[] {
   const ids = new Set<string>();
-  for (const capture of captures) if (needsReview(capture.status)) ids.add(capture.storyId);
+  for (const capture of captures) {
+    // A capture that did not run needs a re-run, not a review; an interrupted run must
+    // not advertise changes to accept from what it never compared.
+    if (capture.error === NOT_RUN) continue;
+    if (needsReview(capture.status)) ids.add(capture.storyId);
+  }
   return [...ids].sort();
 }
 
