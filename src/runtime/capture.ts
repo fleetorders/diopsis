@@ -88,7 +88,9 @@ function timerProbe(horizon: number): void {
     let id: unknown;
     const run = function (this: unknown): unknown {
       pending.delete(id);
-      lastFired = performance.now();
+      // Only a counted timer can be about to start a request the wait cares about; letting a
+      // re-arming one refresh this would keep an animation-paced loop busy until the deadline.
+      if (track) lastFired = performance.now();
       depth += 1;
       try {
         return (handler as (...a: unknown[]) => unknown).apply(this, args);
