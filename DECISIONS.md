@@ -631,6 +631,31 @@ window returning.
 
 **Scope:** repo.
 
+## D-024 — 2026-09-27 — One page per worker, isolated between stories
+
+**Decision:** The generated spec reuses one browser page per Playwright worker for every
+capture that worker takes, instead of a fresh context and page per capture. Before each
+navigation the runtime clears the previous story's state for the preview's origin through the
+browser — local storage, IndexedDB, cache storage, service workers and cookies — and clears
+session storage in the page. A page that crashed is replaced by a fresh one for the next
+capture.
+
+**Why:** creating a context per capture was the largest remaining fixed cost. On a
+generated benchmark Storybook — 104 simple stories at two widths, 208 captures — a verify run
+went from 24–25 s to 16–18 s, with every capture identical to baselines taken with fresh
+contexts. Reuse without clearing
+would have been a determinism regression — a story could read what the previous one stored —
+so the clearing is part of the decision, not an option: a browser check writes all four kinds
+of state in one story and asserts the next one sees none of it.
+
+**Consequences:** the clearing uses Chromium's own storage protocol, which the single-browser
+design (D-001) permits; a cross-browser matrix would need its own isolation. Playwright still
+replaces a worker after a failing test, so a run with many changed captures gains less than a
+clean one. The context options in the generated spec mirror the project's `use` block, because
+worker-scoped fixtures do not receive it; the two are written side by side in the generator.
+
+**Scope:** repo.
+
 ## D-027 — 2026-09-27 — The report opens with a contact sheet
 
 **Decision:** Above the story list the report shows an overview: one thumbnail per capture that
