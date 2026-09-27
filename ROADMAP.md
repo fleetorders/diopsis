@@ -12,8 +12,6 @@ freely — the *decisions* behind deferrals, and everything ruled out, live in
   does not reach a story.
 - **Sharded runs with one review**: split a large matrix across CI machines by story, then merge
   the shards back into a single report and verdict.
-- **Interaction states**: capture a story again with an element hovered, focused or pressed —
-  the states a play function cannot hold still for a screenshot — each with its own baseline.
 
 ## Later
 

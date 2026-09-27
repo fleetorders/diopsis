@@ -102,7 +102,7 @@ change afterwards.
 | **Captures that do not flake** | A frozen clock, settled fonts, images, network and play functions, animations disabled, locale and timezone pinned — [all on by default](#configuration) — and a capture that differs only once is retaken and reported unstable, not changed |
 | **Baselines that cannot collide** | Platform and architecture in every snapshot path, so a local run can never overwrite what CI reads |
 | **A diff you can actually review** | A self-contained HTML report that opens on an overview of every change, outlines where each capture changed, and offers [four ways to compare](#everyday-use) each pair — keyboard-driven, with one command to accept what you reviewed |
-| **Every state you ship** | Widths, [modes](#modes) such as a dark theme or right-to-left, and stories captured after their play functions, each with its own baselines |
+| **Every state you ship** | Widths, [modes](#modes) such as a dark theme or right-to-left, hover, focus and press states, and stories captured after their play functions, each with its own baselines |
 | **Reviewable baselines** | [`diopsis diff`](#everyday-use) renders a branch's baseline changes straight from git, for the pull request that accepts them |
 | **A machine-readable result** | `summary.json` with every capture and changed story id, for your existing CI bot |
 | **Visible cost** | [`diopsis doctor`](#reference) reports capture count and baseline weight against a budget, and `diopsis prune` removes what no capture writes any more |
