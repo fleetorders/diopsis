@@ -22,6 +22,7 @@ import {
   type CaptureArtifacts,
   type CaptureResult,
   type CaptureStatus,
+  type CarriedCapture,
   type RunSummary,
 } from './report/summary.ts';
 import type { PlannedCapture, RunPlan } from './runner/generate.ts';
@@ -46,6 +47,10 @@ export interface DiopsisReporterOptions {
   arch: string;
   /** Fixed timestamp, so a report is reproducible when the run is. */
   createdAt: string;
+  /** Change-aware runs: what the affected set was decided against. */
+  affected?: RunSummary['affected'];
+  /** Change-aware runs: the planned captures not shot, carried from their baselines. */
+  carried?: CarriedCapture[];
 }
 
 /**
@@ -306,9 +311,14 @@ export default class DiopsisReporter implements Reporter {
       mode: this.options.mode,
       ...(interrupted ? { interrupted: true } : {}),
       snapshotDir: this.options.snapshotDir,
-      totals: totalsFor(ordered),
+      totals: {
+        ...totalsFor(ordered),
+        ...(this.options.carried ? { carried: this.options.carried.length } : {}),
+      },
       changedStories: changedStoriesOf(ordered),
       captures: ordered,
+      ...(this.options.affected ? { affected: this.options.affected } : {}),
+      ...(this.options.carried ? { carried: this.options.carried } : {}),
     };
 
     await mkdir(this.options.outputDir, { recursive: true });

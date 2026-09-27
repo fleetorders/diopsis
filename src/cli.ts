@@ -10,6 +10,7 @@ import { initCommand } from './commands/init.ts';
 import { pruneCommand } from './commands/prune.ts';
 import { reportCommand } from './commands/report.ts';
 import { runCommand } from './commands/run.ts';
+import { traceCommand } from './commands/trace.ts';
 
 const USAGE = `diopsis — visual regression for Storybook
 
@@ -20,6 +21,7 @@ Usage
   diopsis accept [story-id...] adopt the last run's output as the baseline
   diopsis diff [base]          review the baseline changes a branch makes
   diopsis prune                delete baselines no capture would write (dry run by default)
+  diopsis trace <file...>      show how a change to each file reaches stories
   diopsis report               open the last report
   diopsis doctor               audit the setup for what silently breaks a baseline set
   diopsis help                 show this message
@@ -27,6 +29,9 @@ Usage
 Options belong to their command; a flag another command takes is refused here.
   run, update   --grep <text>   only stories whose id contains <text>
                 --keep          keep the generated Playwright project
+  run           --changed [base] capture only stories a change since <base> could reach;
+                                  everything else is carried from its baseline
+                                  (base defaults to origin/main, then main)
   accept        --no-stage      accept without staging the result in git
   diff          --open          open the report after writing it
                 --platform <t>  only baselines of one platform token, e.g. linux-x64
@@ -47,7 +52,7 @@ Playwright options go after --, e.g. diopsis run -- --shard=1/2.
  * silently ignored flag (`accept --grep x` accepting the whole run) is worse than an error.
  */
 const COMMAND_FLAGS: Record<string, ReadonlySet<string>> = {
-  run: new Set(['grep', 'keep', 'help']),
+  run: new Set(['grep', 'keep', 'changed', 'help']),
   update: new Set(['grep', 'keep', 'help']),
   accept: new Set(['no-stage', 'help']),
   diff: new Set(['open', 'platform', 'help']),
@@ -55,8 +60,39 @@ const COMMAND_FLAGS: Record<string, ReadonlySet<string>> = {
   init: new Set(['force', 'lfs', 'help']),
   doctor: new Set(['json', 'help']),
   report: new Set(['help']),
+  trace: new Set(['help']),
   help: new Set(['help']),
 };
+
+/**
+ * `--changed` takes an optional base ref, which parseArgs cannot express, so it is lifted
+ * out of argv before parsing, for every command alike: `--changed`, `--changed=<ref>` and
+ * `--changed <ref>` all reach this helper. Run keeps the result; every other command is
+ * refused below — a silently ignored --changed would promise a full matrix's coverage from
+ * whatever subset ran instead.
+ */
+function extractChanged(args: string[]): { changed: true | string; rest: string[] } | undefined {
+  const terminator = args.indexOf('--');
+  const end = terminator === -1 ? args.length : terminator;
+  for (let at = 0; at < end; at += 1) {
+    const arg = args[at]!;
+    if (arg === '--changed') {
+      const next = at + 1 < end ? args[at + 1] : undefined;
+      if (next !== undefined && !next.startsWith('-')) {
+        return { changed: next, rest: [...args.slice(0, at), ...args.slice(at + 2)] };
+      }
+      return { changed: true, rest: [...args.slice(0, at), ...args.slice(at + 1)] };
+    }
+    if (arg.startsWith('--changed=')) {
+      const value = arg.slice('--changed='.length);
+      return {
+        changed: value || true,
+        rest: [...args.slice(0, at), ...args.slice(at + 1)],
+      };
+    }
+  }
+  return undefined;
+}
 
 /** Read beside this module, so the version is found from `src/` in development and from `dist/` installed. */
 function version(): string {
@@ -81,12 +117,13 @@ export async function main(argv: string[]): Promise<number> {
   }
 
   const rest = first && !first.startsWith('-') ? argv.slice(1) : argv;
+  const extracted = extractChanged(rest);
   let values: { grep?: string; keep?: boolean; force?: boolean; lfs?: boolean; json?: boolean; open?: boolean; platform?: string; yes?: boolean; 'no-stage'?: boolean; help?: boolean };
   let positionals: string[];
   let usedFlags: string[];
   try {
     const parsed = parseArgs({
-      args: rest,
+      args: extracted ? extracted.rest : rest,
       options: {
         grep: { type: 'string' },
         keep: { type: 'boolean', default: false },
@@ -129,6 +166,13 @@ export async function main(argv: string[]): Promise<number> {
     return 1;
   }
 
+  // --changed shapes only run: update must regenerate the whole matrix every time, and
+  // accepting a partial run's output as the baseline of everything is worse still.
+  if (extracted && command !== 'run') {
+    process.stderr.write(`diopsis ${command} does not take --changed.\n\n${USAGE}`);
+    return 1;
+  }
+
   if (values.help) {
     process.stdout.write(USAGE);
     return 0;
@@ -145,6 +189,7 @@ export async function main(argv: string[]): Promise<number> {
         ...(values.grep ? { grep: values.grep } : {}),
         keep: values.keep,
         passthrough: positionals,
+        ...(extracted ? { changed: extracted.changed } : {}),
       });
     case 'accept':
       return acceptCommand({
@@ -177,6 +222,12 @@ export async function main(argv: string[]): Promise<number> {
       });
     case 'doctor':
       return doctorCommand({ root, json: values.json });
+    case 'trace':
+      if (positionals.length === 0) {
+        process.stderr.write(`diopsis trace takes at least one file.\n\n${USAGE}`);
+        return 1;
+      }
+      return traceCommand({ root, files: positionals });
     case 'report':
       return reportCommand({ root });
     default:

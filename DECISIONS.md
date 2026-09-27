@@ -898,6 +898,31 @@ neutral, outlined treatment unstable uses; it is not a failure.
 
 **Scope:** repo.
 
+## D-036 — 2026-09-27 — Change-aware capture: a proven filter, or a full run
+
+**Decision:** `diopsis run --changed [base]` captures only the stories that the files changed
+since the merge base with `base` can reach through the module graph the Storybook build writes
+with `--stats-json`, and carries every other capture from its baseline, listed as carried in the
+summary and the report. The resolver walks importers from each changed file to story files;
+anything it cannot prove harmless forces a full run with the reason printed — Storybook's config
+directory, the Diopsis config, package manifests and lockfiles, builder and styling configs,
+static directories, a changed file absent from the graph, a missing or inconsistent stats file.
+Stories whose import path is virtual are always captured. `diopsis trace <file…>` prints the
+same resolver's answer for any file. This is the filter §4 and D-006 reserved the seam for.
+
+**Why:** on a pull request that touches one component, capturing the whole matrix spends
+minutes proving that nothing else moved. On a test Storybook, changing one shared component
+captured the 3 stories that import it — 6 of 214 captures — in 5 seconds instead of about 18,
+and still caught the change. The failure direction matters more than the saving: a filter that
+silently skips a story that did change is worse than no filter, so every doubt becomes a full
+run, never a skip.
+
+**Consequences:** the saving depends on the import graph; a change to a file every story
+imports, such as a barrel file or shared tokens, reaches every story. `update` and `accept`
+refuse `--changed`, because baselines are always generated whole.
+
+**Scope:** repo.
+
 ## D-037 — 2026-09-27 — A weight budget, and pruning what nothing captures
 
 **Decision:** The config can set `budget: { weight, captures }`. `doctor` reports the baselines'
