@@ -11,7 +11,7 @@
 //
 // Bypass is deliberate and loud: REPORT_CHECK_SKIP=1.
 
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -822,6 +822,96 @@ check('a diff report offers nothing to accept',
   !(await page.locator('main').textContent()).includes('diopsis accept'));
 check('a changed capture in a diff keeps its full comparison',
   (await page.locator('#story-card--default .modes button').count()) === 4);
+await page.close();
+
+// A merged run: shards written by separate jobs, one review. Every artifact path in the
+// merged summary points back into a shard directory, and only a browser can prove the
+// report finds every image through them. The accept commands it offers must name the
+// merged directory too, or a copied command would adopt whatever older run sits in the
+// output directory.
+const mergeRoot = path.join(work, 'merged-project');
+for (const [dir, files] of [
+  ['shard-1-of-2', [['test-results/a-base.png', 'a-base.png'], ['test-results/a-act.png', 'a-act.png'], ['test-results/a-diff.png', 'a-diff.png']]],
+  ['shard-2-of-2', [['test-results/b-base.png', 'b-base.png'], ['test-results/b-act.png', 'b-act.png'], ['test-results/b-diff.png', 'b-diff.png'], ['test-results/c-act.png', 'c-act.png']]],
+]) {
+  await mkdir(path.join(mergeRoot, '.diopsis', dir, 'test-results'), { recursive: true });
+  for (const [to, from] of files) {
+    await copyFile(path.join(work, 'shots', from), path.join(mergeRoot, '.diopsis', dir, to));
+  }
+}
+// The shard summaries carry no totals of their own that anyone reads; the merge recomputes.
+const shardSummary = (index, captures) => ({
+  diopsis: 1, createdAt: `2026-01-01T00:00:0${index}Z`, platform: 'linux', arch: 'x64',
+  mode: 'run', shard: { index, total: 2 }, snapshotDir: '__screenshots__',
+  totals: {}, changedStories: [], captures,
+});
+await writeFile(path.join(mergeRoot, '.diopsis', 'shard-1-of-2', 'summary.json'), JSON.stringify(shardSummary(1, [
+  capture({ t: 'Card', n: 'Default', id: 'card--default', w: 640, s: 'changed', px: 12840, r: 0.0412,
+    a: { expected: 'test-results/a-base.png', actual: 'test-results/a-act.png', diff: 'test-results/a-diff.png' } }),
+  capture({ t: 'Footer', n: 'Default', id: 'footer--default', w: 1280, s: 'unchanged' }),
+])));
+await writeFile(path.join(mergeRoot, '.diopsis', 'shard-2-of-2', 'summary.json'), JSON.stringify(shardSummary(2, [
+  capture({ t: 'Card', n: 'Long', id: 'card--long', w: 380, s: 'changed', px: 8000, r: 0.06,
+    a: { expected: 'test-results/b-base.png', actual: 'test-results/b-act.png', diff: 'test-results/b-diff.png' } }),
+  capture({ t: 'Card', n: 'Brand new', id: 'card--brand-new', w: 480, s: 'new',
+    a: { actual: 'test-results/c-act.png' } }),
+])));
+
+const { mergeCommand } = await import('../src/commands/merge.ts');
+const mergeCode = await mergeCommand({ root: mergeRoot });
+check('merge exits 1 when the merged run needs review', mergeCode === 1);
+const merged = JSON.parse(await readFile(path.join(mergeRoot, '.diopsis', 'merged', 'summary.json'), 'utf8'));
+check('the merged summary keeps every capture, in plan order',
+  JSON.stringify(merged.captures.map((c) => c.storyId + '@' + c.width)) ===
+    JSON.stringify(['card--brand-new@480', 'card--default@640', 'card--long@380', 'footer--default@1280']));
+check('the merged summary retotals across the shards',
+  merged.totals.captures === 4 && merged.totals.changed === 2 &&
+    merged.totals.new === 1 && merged.totals.unchanged === 1);
+check('the merged summary points its artifacts back into the shards',
+  merged.captures[1].artifacts.actual === '../shard-1-of-2/test-results/a-act.png');
+
+page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+page.on('pageerror', (e) => crashes.push(String(e)));
+page.on('console', (m) => { if (m.type() === 'error') crashes.push(m.text()); });
+await page.goto('file://' + path.join(mergeRoot, '.diopsis', 'merged', 'report.html'));
+await page.waitForTimeout(250);
+// Capture views build when their story opens; open them all so every image the run carried
+// is on the page and loadable through the shard directories the paths point into.
+await page.locator('details.story').evaluateAll((els) => els.forEach((el) => { el.open = true; }));
+await page.waitForTimeout(250);
+check('the merged report renders every image, from both shards',
+  await page.evaluate(() => {
+    const imgs = [...document.querySelectorAll('img')];
+    // Six: a tile and a stage image for each of the three captures needing review. The
+    // widths tie each render to the fixture of the shard that captured it — 640 from
+    // shard 1, 380 and 480 from shard 2 — so an unresolved or crossed path fails here.
+    return imgs.length === 6 && imgs.every((i) => i.naturalWidth > 0);
+  }));
+check('each tile carries its own capture’s width',
+  JSON.stringify(await page.locator('.tile img').evaluateAll((els) => els.map((i) => i.naturalWidth).sort((a, b) => a - b))) ===
+    JSON.stringify([380, 480, 640]));
+// The overlay shows the diff alone; switching to the side-by-side view pulls the baseline
+// and the render through their rewritten paths too.
+await page.locator('#story-card--default').getByRole('button', { name: 'Side by side' }).click();
+await page.waitForTimeout(150);
+check('a changed capture shows both its renders, at its shard’s width',
+  JSON.stringify(await page.locator('#story-card--default .capture img')
+    .evaluateAll((els) => els.map((i) => i.naturalWidth))) === JSON.stringify([640, 640]));
+check('the other shard’s changed capture renders beside it',
+  JSON.stringify(await page.locator('#story-card--long .capture img')
+    .evaluateAll((els) => els.map((i) => i.naturalWidth))) === JSON.stringify([380]));
+check('a new capture shows its one render, at its shard’s width',
+  JSON.stringify(await page.locator('#story-card--brand-new .capture img')
+    .evaluateAll((els) => els.map((i) => i.naturalWidth))) === JSON.stringify([480]));
+check('the merged report numbers the whole run',
+  (await page.locator('#meta').textContent()).includes('4 captures across 4 stories'));
+check('every accept command the merged report offers names the merged directory',
+  (await page.locator('.accept').count()) === 4 &&
+  await page.evaluate(() => [...document.querySelectorAll('.accept code')]
+    .every((c) => c.textContent.includes('--from .diopsis/merged'))));
+check('a story’s accept command names the story after the directory',
+  (await page.locator('#story-card--default .accept code').textContent()) ===
+    'npx diopsis accept --from .diopsis/merged card--default');
 await page.close();
 
 // Past the embed budget the artifacts exist as files; the report must point at them instead

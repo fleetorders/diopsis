@@ -70,17 +70,37 @@ describe('main', () => {
   });
 
   it('hints at the -- passthrough when a flag is unknown altogether', async () => {
-    const { code, err } = await runMain(['run', '--shard=1/2']);
+    const { code, err } = await runMain(['run', '--frobnicate']);
     assert.equal(code, 1);
-    assert.match(err, /diopsis run does not take --shard\./);
-    assert.match(err, /Playwright options go after --, e\.g\. diopsis run -- --shard=1\/2/);
+    assert.match(err, /diopsis run does not take --frobnicate\./);
+    assert.match(err, /Playwright options go after --, e\.g\. diopsis run -- --workers=2/);
+  });
+
+  it('refuses Playwright’s own sharding, which would split by test not by story', async () => {
+    for (const argv of [['run', '--', '--shard=1/2'], ['run', '--', '--shard', '1/2']]) {
+      const { code, err } = await runMain(argv);
+      assert.equal(code, 1, argv.join(' '));
+      assert.match(err, /shards by test, not by story/);
+      assert.match(err, /Use --shard <i>\/<n>\./);
+    }
+  });
+
+  it('refuses a --shard that is not <i>/<n> between 1 and n', async () => {
+    for (const bad of ['0/4', '5/4', '2', 'a/b']) {
+      const { code, err } = await runMain(['run', '--shard', bad]);
+      assert.equal(code, 1, bad);
+      assert.match(err, new RegExp(`--shard takes <i>/<n> with 1 ≤ i ≤ n.*\\(got "${bad}"\\)`));
+    }
   });
 
   it('documents the per-command options, version and passthrough in the usage text', async () => {
     const { out } = await runMain(['help']);
     assert.match(out, /--version \| -v/);
     assert.match(out, /accept \[story-id\.\.\.\]/);
-    assert.match(out, /--shard=1\/2/);
+    assert.match(out, /merge \[dir\.\.\.\]/);
+    assert.match(out, /--shard <i>\/<n>/);
+    assert.match(out, /accept +--from <dir>/);
+    assert.match(out, /--workers=2/);
     assert.match(out, /doctor +--json/);
   });
 

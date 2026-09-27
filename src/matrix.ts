@@ -403,6 +403,58 @@ export function effectiveCompare(
   } as CompareOptions;
 }
 
+/** A shard of a run: `--shard 2/4` captures the second of four parts. */
+export interface ShardSpec {
+  index: number;
+  total: number;
+}
+
+/**
+ * `--shard`'s value: `<i>/<n>`, two integers with 1 ≤ i ≤ n. Anything else is undefined, so
+ * the CLI can name the value it refused rather than guessing at the intent behind it.
+ */
+export function parseShard(text: string): ShardSpec | undefined {
+  const match = /^(\d+)\/(\d+)$/.exec(text.trim());
+  if (!match) return undefined;
+  const index = Number.parseInt(match[1] ?? '', 10);
+  const total = Number.parseInt(match[2] ?? '', 10);
+  return index >= 1 && index <= total ? { index, total } : undefined;
+}
+
+/**
+ * This shard's part of a capture plan.
+ *
+ * Stories are assigned whole — a story split across shards is a story reviewed twice, and
+ * its captures belong together wherever they are reviewed — over the stories sorted by id,
+ * each to the shard with the fewest captures so far. The split is therefore deterministic
+ * (any machine computing it gets the same answer) and stays balanced within one story's
+ * capture count, the most any single assignment can move the balance. The returned
+ * captures keep the plan's own order.
+ */
+export function shardCaptures(captures: Capture[], index: number, total: number): Capture[] {
+  const byStory = new Map<string, Capture[]>();
+  for (const capture of captures) {
+    const own = byStory.get(capture.storyId);
+    if (own) own.push(capture);
+    else byStory.set(capture.storyId, [capture]);
+  }
+
+  const loads = Array.from({ length: total }, () => 0);
+  const assigned = Array.from({ length: total }, () => [] as string[]);
+  for (const id of [...byStory.keys()].sort()) {
+    // The least-loaded shard, ties to the lowest index: same plan in, same split out.
+    let least = 0;
+    for (let shard = 1; shard < total; shard++) {
+      if (loads[shard]! < loads[least]!) least = shard;
+    }
+    loads[least] = loads[least]! + byStory.get(id)!.length;
+    assigned[least]!.push(id);
+  }
+
+  const mine = new Set(assigned[index - 1] ?? []);
+  return captures.filter((capture) => mine.has(capture.storyId));
+}
+
 /** How many differing pixels a comparison lets through on an image of `area` pixels. */
 function allowance(compare: Partial<CompareOptions>, area: number): number {
   return Math.min(

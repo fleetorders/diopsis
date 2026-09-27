@@ -36,6 +36,8 @@ export interface DiopsisReporterOptions {
   /** Absolute snapshot directory, for locating baselines. */
   snapshotDirAbs: string;
   mode: 'run' | 'update';
+  /** The shard this run captures, when it was started with `--shard`; kept in the summary. */
+  shard?: { index: number; total: number };
   /**
    * Retries the run was generated with. Region computation starts only on the attempt that
    * can decide a capture — the one no retry can replace — so a superseded attempt's diff is
@@ -302,6 +304,7 @@ export default class DiopsisReporter implements Reporter {
       platform: this.options.platform,
       arch: this.options.arch,
       mode: this.options.mode,
+      ...(this.options.shard ? { shard: this.options.shard } : {}),
       ...(interrupted ? { interrupted: true } : {}),
       snapshotDir: this.options.snapshotDir,
       totals: totalsFor(ordered),
@@ -368,7 +371,14 @@ export default class DiopsisReporter implements Reporter {
     lines.push(`  report   ${show(reportPath)}`, `  summary  ${show(summaryPath)}`);
 
     if (summary.changedStories.length > 0 && summary.mode === 'run') {
-      lines.push('', '  Accept as the new baseline:  npx diopsis accept');
+      // A shard's captures are a slice of the review; the whole review — and the accept —
+      // begins once the shards are merged, so that is what a shard run points at.
+      lines.push(
+        '',
+        this.options.shard
+          ? '  Merge the shards for one review:  npx diopsis merge'
+          : '  Accept as the new baseline:  npx diopsis accept',
+      );
     }
     lines.push('');
     process.stdout.write(lines.join('\n'));

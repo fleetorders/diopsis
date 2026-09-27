@@ -88,12 +88,20 @@ export interface RunSummary {
   platform: string;
   arch: string;
   mode: 'run' | 'update' | 'diff';
+  /** The shard a sharded run wrote this summary for; a plain or merged run has none. */
+  shard?: { index: number; total: number };
   /** The ref a diff compared against, and the commit the two sides meet at; diff only. */
   base?: string;
   mergeBase?: string;
   /** Present (true) only when the Playwright run ended interrupted. */
   interrupted?: boolean;
   snapshotDir: string;
+  /**
+   * Directory `accept` should read this run from, when it does not sit in the output
+   * directory a plain `accept` reads — a merged run. Every accept command the report
+   * offers to copy carries it, so a copied command cannot adopt another run's pixels.
+   */
+  acceptFrom?: string;
   totals: RunTotals;
   /** Story ids with at least one capture needing review. */
   changedStories: string[];

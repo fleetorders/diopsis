@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { baselineWeight } from '../baselines.ts';
@@ -7,9 +8,13 @@ import {
   loosenedStoryIds,
   platformToken,
   resolveMatrix,
+  shardCaptures,
   type Capture,
   type ResolvedMatrix,
+  type ShardSpec,
 } from '../matrix.ts';
+import { renderReport } from '../report/html.ts';
+import { totalsFor, type RunSummary } from '../report/summary.ts';
 import { distRoot, generateProject, projectDir } from '../runner/generate.ts';
 import { runPlaywright } from '../runner/execute.ts';
 import { serveStatic } from '../server.ts';
@@ -21,6 +26,8 @@ export interface RunOptions {
   update?: boolean;
   /** Substring filter on story ids. */
   grep?: string;
+  /** Capture only this shard's stories of the plan; `merge` joins shards back into one run. */
+  shard?: ShardSpec;
   /** Keep the generated Playwright project for inspection. */
   keep?: boolean;
   /** Playwright pass-through arguments. */
@@ -47,6 +54,8 @@ export function headerLine(captures: Capture[], grep: string | undefined): strin
 export function headerBlock(input: {
   captures: Capture[];
   grep?: string;
+  /** The shard this run captures; absent for a whole-plan run. */
+  shard?: ShardSpec;
   /** Config source as shown to the user — a relative path, or 'defaults (no config file)'. */
   configSource: string;
   /** The configured capture scope — the stories departing from it are counted beside it. */
@@ -95,8 +104,17 @@ export function headerBlock(input: {
       ? `  budget    ${captureBudget.used} of ${captureBudget.cap} captures — ${verdict(captureBudget.used, captureBudget.cap)}\n`
       : '');
 
+  // A shard run's header says it is one: which of how many jobs, and this job's own counts,
+  // so a CI log quoted alone still names what the job covered.
+  const shardStories = new Set(input.captures.map((capture) => capture.storyId)).size;
+  const shardLine = input.shard
+    ? `  shard     ${input.shard.index} of ${input.shard.total} · ` +
+      `${shardStories} ${shardStories === 1 ? 'story' : 'stories'}, ${input.captures.length} captures\n`
+    : '';
+
   return (
     `${headerLine(input.captures, input.grep)}\n` +
+    shardLine +
     `  config    ${input.configSource}\n` +
     `  storybook ${input.storybookDir}\n` +
     `  baselines ${input.snapshotDir}\n` +
@@ -153,7 +171,65 @@ export function explainEmptyRun(input: {
   ];
 }
 
+/**
+ * Write a shard that captured nothing. The runner is not started at all — Playwright
+ * treats an empty test list as a failure, and an empty shard is not one: it is a plan
+ * split among more shards than it has stories, and the merge still expects its index.
+ */
+async function writeEmptyShard(input: {
+  root: string;
+  outputDir: string;
+  snapshotDir: string;
+  mode: 'run' | 'update';
+  shard: ShardSpec;
+  createdAt: string;
+}): Promise<number> {
+  const summary: RunSummary = {
+    diopsis: 1,
+    createdAt: input.createdAt,
+    platform: process.platform,
+    arch: process.arch,
+    mode: input.mode,
+    shard: input.shard,
+    snapshotDir: input.snapshotDir,
+    totals: totalsFor([]),
+    changedStories: [],
+    captures: [],
+  };
+
+  await mkdir(input.outputDir, { recursive: true });
+  const summaryPath = path.join(input.outputDir, 'summary.json');
+  const reportPath = path.join(input.outputDir, 'report.html');
+  await writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`, 'utf8');
+  await writeFile(reportPath, await renderReport(summary, input.outputDir), 'utf8');
+
+  const show = (target: string): string => path.relative(input.root, target) || target;
+  process.stdout.write(
+    [
+      '  shard empty — the plan gave this shard no stories',
+      `  report   ${show(reportPath)}`,
+      `  summary  ${show(summaryPath)}`,
+      '',
+    ].join('\n'),
+  );
+  return 0;
+}
+
 export async function runCommand(options: RunOptions): Promise<number> {
+  // Playwright's own --shard would split the run by test, scattering one story's captures
+  // across shards and splitting its review. Diopsis shards by story, so the passthrough is
+  // refused rather than quietly obeyed.
+  const playwrightShard = options.passthrough?.find(
+    (arg) => arg === '--shard' || arg.startsWith('--shard='),
+  );
+  if (playwrightShard) {
+    process.stderr.write(
+      `${playwrightShard} shards by test, not by story — a story's captures would land in ` +
+        'different shards and its review would be split. Use --shard <i>/<n>.\n',
+    );
+    return 1;
+  }
+
   const { config, filepath } = await loadConfig(options.root);
   const storybookDir = path.resolve(options.root, config.storybookDir);
 
@@ -207,12 +283,19 @@ export async function runCommand(options: RunOptions): Promise<number> {
         }
       : undefined;
 
+  // The shard split works on the plan this run would capture — after --grep, so the two
+  // compose: sharding a grepped plan splits that plan's stories, rebalanced.
+  const runCaptures = options.shard
+    ? shardCaptures(captures, options.shard.index, options.shard.total)
+    : captures;
+
   // Captures, not stories: a viewport matrix multiplies, and every cost that matters —
   // runtime, repository weight, review effort — scales with captures (DECISIONS.md §3).
   process.stdout.write(
     headerBlock({
-      captures,
+      captures: runCaptures,
       ...(options.grep ? { grep: options.grep } : {}),
+      ...(options.shard ? { shard: options.shard } : {}),
       capture: config.capture,
       configSource: filepath ? path.relative(options.root, filepath) : 'defaults (no config file)',
       storybookDir: config.storybookDir,
@@ -225,28 +308,58 @@ export async function runCommand(options: RunOptions): Promise<number> {
     }),
   );
 
+  const createdAt = new Date().toISOString();
+  const mode: 'run' | 'update' = options.update ? 'update' : 'run';
+  // A shard writes under its own directory beside the output root, so shard artifacts
+  // downloaded into one directory land beside each other instead of over each other.
+  // Concurrent shards in one checkout still share the generated project, as any two
+  // concurrent runs do; CI shards run in separate checkouts.
+  const outputDir = options.shard
+    ? path.resolve(
+        options.root,
+        config.outputDir,
+        `shard-${options.shard.index}-of-${options.shard.total}`,
+      )
+    : path.resolve(options.root, config.outputDir);
+
+  // A shard can hold no stories while the plan does not — a branch with fewer stories than
+  // shards. Playwright fails an empty test list, so the summary is written here instead: an
+  // empty shard is a completed shard, and the merge expects every index to be present.
+  if (options.shard && runCaptures.length === 0) {
+    return writeEmptyShard({
+      root: options.root,
+      outputDir,
+      snapshotDir: config.snapshotDir,
+      mode,
+      shard: options.shard,
+      createdAt,
+    });
+  }
+
   const server = await serveStatic(storybookDir);
   let project;
   try {
     project = await generateProject({
       root: options.root,
       config,
-      captures,
+      captures: runCaptures,
       baseUrl: server.url,
+      outputDir,
       reporterPath: path.join(distRoot(), 'reporter.js'),
       // The retries the reporter sees are the retries the generated project runs with, so
       // it starts region work only on the attempt that can decide a capture.
       ...(options.update ? { mode: 'update' as const } : {}),
       reporterOptions: {
         planPath: path.join(projectDir(options.root), 'plan.json'),
-        outputDir: path.resolve(options.root, config.outputDir),
+        outputDir,
         snapshotDir: config.snapshotDir,
         snapshotDirAbs: path.resolve(options.root, config.snapshotDir),
-        mode: options.update ? 'update' : 'run',
+        mode,
+        ...(options.shard ? { shard: options.shard } : {}),
         retries: options.update ? 0 : config.stabilize.retries,
         platform: process.platform,
         arch: process.arch,
-        createdAt: new Date().toISOString(),
+        createdAt,
       },
     });
 

@@ -18,14 +18,16 @@ export { parseStoryIndex, readStoryIndex } from './story-index.ts';
 export type { StoryEntry } from './story-index.ts';
 
 export {
+  parseShard,
   parseSnapshotPath,
   platformToken,
   resolveMatrix,
   scopeForStory,
+  shardCaptures,
   snapshotPathFor,
   widthsForStory,
 } from './matrix.ts';
-export type { Capture, ParsedSnapshotPath, ResolvedMatrix } from './matrix.ts';
+export type { Capture, ParsedSnapshotPath, ResolvedMatrix, ShardSpec } from './matrix.ts';
 
 export { serveStatic, storyUrlFor } from './server.ts';
 export type { StaticServer } from './server.ts';
@@ -35,3 +37,6 @@ export type { RunOptions } from './commands/run.ts';
 
 export { diffCommand } from './commands/diff.ts';
 export type { DiffOptions } from './commands/diff.ts';
+
+export { mergeCommand } from './commands/merge.ts';
+export type { MergeOptions } from './commands/merge.ts';

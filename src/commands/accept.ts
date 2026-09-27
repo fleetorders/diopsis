@@ -11,6 +11,8 @@ export interface AcceptOptions {
   root: string;
   /** Accept only these stories. Omitted means the whole run. */
   storyIds?: string[];
+  /** Directory of the run to accept from — a merged run, or any downloaded one. */
+  from?: string;
   /** Skip staging the result in git. */
   noStage?: boolean;
 }
@@ -24,7 +26,9 @@ export interface AcceptOptions {
  */
 export async function acceptCommand(options: AcceptOptions): Promise<number> {
   const { config } = await loadConfig(options.root);
-  const outputDir = path.resolve(options.root, config.outputDir);
+  // A merged run, or a downloaded one, is accepted from where its summary sits; the
+  // configured output directory is only the default.
+  const outputDir = path.resolve(options.root, options.from ?? config.outputDir);
   const snapshotDir = path.resolve(options.root, config.snapshotDir);
   const summaryPath = path.join(outputDir, 'summary.json');
 
@@ -81,7 +85,7 @@ export async function acceptCommand(options: AcceptOptions): Promise<number> {
         missing
           .map((from) => `  ${path.relative(options.root, from).split(path.sep).join('/')}`)
           .join('\n') +
-        `\nA run artifact must include ${config.outputDir}/test-results.\n`,
+        `\nA run artifact must include its test-results images.\n`,
     );
     return 1;
   }

@@ -262,6 +262,11 @@ staged for review.
 **Regenerate** — `npx diopsis update` rewrites baselines wholesale, for when you already know
 everything changed.
 
+**Split a large run across machines** — `npx diopsis run --shard 2/4` captures one quarter of
+the matrix, split by story so a story's review is never divided, into its own directory. Download
+every shard into one place and `npx diopsis merge` writes one report and gives the verdict a
+single run would; `npx diopsis accept --from .diopsis/merged` accepts from it.
+
 **Review a branch's baselines** — a pull request that accepts changes shows its reviewers two
 opaque PNGs per file. `npx diopsis diff` renders the same report straight from git instead:
 every baseline the branch changed, added or deleted against `origin/main` (or a ref you name),
@@ -283,6 +288,7 @@ run across machines.
 | `diopsis report` | Open the last report |
 | `diopsis doctor` | Audit the setup |
 | `diopsis prune` | List baselines no capture would write any more; `--yes` deletes and stages them |
+| `diopsis merge [dir…]` | Merge sharded runs into one report and one verdict |
 | `diopsis diff [base]` | Report the baseline changes this branch makes against `base` (default `origin/main`) |
 | `diopsis --version` | Print the installed version |
 
@@ -293,6 +299,8 @@ run across machines.
 | `--force` | `init` | Overwrite an existing config |
 | `--lfs` | `init` | Set the baselines up for Git LFS |
 | `--no-stage` | `accept` | Write the files without staging them in git |
+| `--shard <i>/<n>` | `run` | Capture one shard of the matrix, split by story |
+| `--from <dir>` | `accept` | Accept from a merged or downloaded run instead of the output directory |
 | `--open` | `diff` | Open the report when it is written |
 | `--platform <token>` | `diff` | Only baselines of one platform, e.g. `linux-x64` |
 | `--json` | `doctor` | Print the audit as one JSON document, for a CI step to read |
