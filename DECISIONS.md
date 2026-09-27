@@ -966,6 +966,24 @@ names are chosen by the project, and the writer's order is the one the parser as
 
 **Scope:** repo.
 
+## D-039 — 2026-09-27 — Sharded runs split by story, merged into one review
+
+**Decision:** `diopsis run --shard <i>/<n>` captures one deterministic shard of the plan, split by
+story — every width, mode and state of a story in the same shard — balanced greedily by capture
+count, into `<outputDir>/shard-<i>-of-<n>/`. `diopsis merge` finds the shard summaries, refuses a
+missing or duplicated shard or a platform mismatch, and writes one summary and report with
+artifact paths rewritten, exiting as a single unsharded run would. `accept --from <dir>` accepts
+from the merged run. Playwright's own `--shard` is refused, because it splits by test.
+
+**Why:** a matrix of thousands of captures is a wall-clock problem one machine cannot solve,
+and the answer every CI offers is parallel jobs. What must not change is the review: one report,
+one verdict, and never half a story in each of two places.
+
+**Consequences:** a shard alone is not a verdict on the change; the merge is. Shard directories
+are separate so that downloading every job's artifact into one place cannot overwrite anything.
+
+**Scope:** repo.
+
 ## D-040 — 2026-09-27 — The report embeds each image once, and references the rest
 
 **Decision:** The report embeds identical images once — identity by size, then SHA-256 — and

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
+  consideredFiles,
   normaliseModuleName,
   resolveAffected,
   traceFile,
@@ -230,6 +231,28 @@ describe('resolveAffected', () => {
       'example-button--primary',
       'example-button--secondary',
     ]);
+  });
+});
+
+describe('consideredFiles', () => {
+  it('counts what the decision saw, with the run’s own output ignored', () => {
+    // Later shards of one run see earlier shards' output as untracked files; the ignore
+    // globs remove it from classification, and the count must follow or the shards report
+    // different decisions about the same change.
+    assert.deepEqual(
+      consideredFiles(
+        ['src/Button.tsx', '.diopsis/shard-1-of-2/summary.json', '.diopsis/summary.json'],
+        ['.diopsis/**', '__screenshots__/**'],
+      ),
+      ['src/Button.tsx'],
+    );
+    assert.deepEqual(
+      consideredFiles(['src/Button.tsx', '__screenshots__/a/320w-linux-x64.png'], [
+        '.diopsis/**',
+        '__screenshots__/**',
+      ]),
+      ['src/Button.tsx'],
+    );
   });
 });
 

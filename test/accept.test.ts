@@ -52,13 +52,17 @@ function summaryOf(captures: CaptureResult[]): RunSummary {
   };
 }
 
-async function project(captures: CaptureResult[], artifacts: string[]): Promise<string> {
+async function project(
+  captures: CaptureResult[],
+  artifacts: string[],
+  runDir = '.diopsis',
+): Promise<string> {
   const dir = await mkdtemp(path.join(tmpdir(), 'diopsis-accept-'));
   temporaries.push(dir);
-  await mkdir(path.join(dir, '.diopsis'), { recursive: true });
-  await writeFile(path.join(dir, '.diopsis', 'summary.json'), JSON.stringify(summaryOf(captures)));
+  await mkdir(path.join(dir, runDir), { recursive: true });
+  await writeFile(path.join(dir, runDir, 'summary.json'), JSON.stringify(summaryOf(captures)));
   for (const artifact of artifacts) {
-    const file = path.join(dir, '.diopsis', artifact);
+    const file = path.join(dir, runDir, artifact);
     await mkdir(path.dirname(file), { recursive: true });
     await writeFile(file, 'png');
   }
@@ -68,6 +72,7 @@ async function project(captures: CaptureResult[], artifacts: string[]): Promise<
 async function runAccept(
   root: string,
   storyIds?: string[],
+  from?: string,
 ): Promise<{ code: number; out: string; err: string }> {
   const stdout: string[] = [];
   const stderr: string[] = [];
@@ -82,7 +87,12 @@ async function runAccept(
     return true;
   }) as typeof writeErr;
   try {
-    const code = await acceptCommand({ root, ...(storyIds ? { storyIds } : {}), noStage: true });
+    const code = await acceptCommand({
+      root,
+      ...(storyIds ? { storyIds } : {}),
+      ...(from ? { from } : {}),
+      noStage: true,
+    });
     return { code, out: stdout.join(''), err: stderr.join('') };
   } finally {
     process.stdout.write = writeOut;
@@ -197,7 +207,7 @@ describe('acceptCommand', () => {
     // than a refused one.
     assert.equal(existsSync(path.join(root, '__screenshots__', 'a--one')), false);
     assert.match(err, /\.diopsis\/test-results\/a--one-1280-missing\.png/);
-    assert.match(err, /must include \.diopsis\/test-results/);
+    assert.match(err, /must include its test-results images/);
   });
 
   it('exits 0 when the wanted stories simply have nothing to accept', async () => {
@@ -286,6 +296,62 @@ describe('acceptCommand refusing paths outside the run', () => {
     // The refusal is total: the honest capture beside the escape is not copied either, and
     // the file the escape aimed at was never written.
     assert.equal(existsSync(path.join(root, '__screenshots__')), false);
+    assert.equal(existsSync(path.join(root, 'outside-baseline.png')), false);
+  });
+});
+
+describe('acceptCommand --from', () => {
+  it('accepts a run from another directory than the output one', async () => {
+    const root = await project(
+      [capture({})],
+      ['test-results/a--one-320-actual.png'],
+      '.ci-run',
+    );
+
+    const { code } = await runAccept(root, undefined, '.ci-run');
+    assert.equal(code, 0);
+    assert.equal(existsSync(path.join(root, '__screenshots__', 'a--one', '320w-linux-x64.png')), true);
+  });
+
+  it('says which directory had no summary, when --from points somewhere empty', async () => {
+    const root = await project([capture({})], ['test-results/a--one-320-actual.png']);
+    const { code, err } = await runAccept(root, undefined, 'nowhere');
+    assert.equal(code, 1);
+    assert.match(err, /nowhere\/summary\.json is missing/);
+    assert.equal(existsSync(path.join(root, '__screenshots__')), false);
+  });
+});
+
+describe('acceptCommand --from and path containment', () => {
+  it('refuses a crafted summary in the --from directory whose run image climbs out of it', async () => {
+    // The directory a summary is read from is the one its paths are held to: a summary
+    // crafted inside --from must not reach past --from, exactly as one in the output
+    // directory cannot reach past that.
+    const root = await project([capture({ artifacts: { actual: '../secret.png' } })], [], '.ci-run');
+    await writeFile(path.join(root, 'secret.png'), 'not a run artifact');
+
+    const { code, err } = await runAccept(root, undefined, '.ci-run');
+    assert.equal(code, 1);
+    assert.match(err, /a--one/);
+    assert.match(err, /run image "\.\.\/secret\.png" is not inside \.ci-run/);
+    assert.equal(existsSync(path.join(root, '__screenshots__')), false);
+  });
+
+  it('keeps destinations inside the snapshot directory while reading from --from', async () => {
+    const root = await project(
+      [
+        capture({
+          snapshotPath: '../outside-baseline.png',
+          artifacts: { actual: 'test-results/a--one-320-actual.png' },
+        }),
+      ],
+      ['test-results/a--one-320-actual.png'],
+      '.ci-run',
+    );
+
+    const { code, err } = await runAccept(root, undefined, '.ci-run');
+    assert.equal(code, 1);
+    assert.match(err, /baseline path "\.\.\/outside-baseline\.png" is not inside __screenshots__/);
     assert.equal(existsSync(path.join(root, 'outside-baseline.png')), false);
   });
 });

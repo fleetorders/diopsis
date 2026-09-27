@@ -39,6 +39,12 @@ export interface GenerateOptions {
   config: DiopsisConfig;
   captures: Capture[];
   baseUrl: string;
+  /**
+   * Absolute run-output directory, when it is not the configured one — a shard writes
+   * under `shard-<i>-of-<n>` beside it, so shards downloaded into one directory land
+   * beside each other instead of over each other.
+   */
+  outputDir?: string;
   /** Absolute path of the reporter module, if one is being attached. */
   reporterPath?: string;
   /** Options handed to the reporter. */
@@ -96,7 +102,7 @@ export async function generateProject(options: GenerateOptions): Promise<Generat
   await mkdir(dir, { recursive: true });
 
   const snapshotDir = path.resolve(root, config.snapshotDir);
-  const outputDir = path.resolve(root, config.outputDir);
+  const outputDir = options.outputDir ?? path.resolve(root, config.outputDir);
   const runtimeUrl = pathToFileURL(path.join(distRoot(), 'runtime', 'capture.js')).href;
 
   const plan: RunPlan = {

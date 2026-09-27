@@ -99,6 +99,20 @@ export function normaliseModuleName(raw: string, projectDir = ''): NormalisedNam
 }
 
 /**
+ * The changed files the ignore globs leave in — the set a decision was made against, in the
+ * one spelling every comparison relies on. The count a run reports must be of this set, not
+ * the raw diff: a run's own output is ignored by classification but changes with every shard
+ * that finishes, so shards of one run agree about their decision only when they count it.
+ */
+export function consideredFiles(files: string[], patterns: string[]): string[] {
+  // Changed paths go through the same normaliser as graph names — git paths arrive plain,
+  // but one spelling for both sides is the invariant every match below relies on.
+  return [...new Set(files.map((file) => normaliseModuleName(file).path))]
+    .filter((file) => !patterns.some((pattern) => matchesGlob(file, pattern)))
+    .sort();
+}
+
+/**
  * A minimal glob: `*` within one segment, `**` across them, everything else literal.
  * Changed sets are small, so compiling per match beats caching compiled forms.
  */
@@ -316,11 +330,7 @@ export function resolveAffected(input: {
   const projectDir = cleanDir(input.projectDir ?? '');
   const options = resolveAffectedOptions(input.options, projectDir);
 
-  // Changed paths go through the same normaliser as graph names — git paths arrive plain,
-  // but one spelling for both sides is the invariant every match below relies on.
-  const changed = [...new Set(input.changed.map((file) => normaliseModuleName(file).path))]
-    .filter((file) => !options.ignore.some((pattern) => matchesGlob(file, pattern)))
-    .sort();
+  const changed = consideredFiles(input.changed, options.ignore);
 
   for (const file of changed) {
     const reason = fullRunReasonFor(file, options);

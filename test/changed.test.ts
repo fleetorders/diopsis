@@ -6,8 +6,9 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 
+import { mergeCommand } from '../src/commands/merge.ts';
 import { changedFilesSince, changedLine, runCommand, splitByAffected } from '../src/commands/run.ts';
-import type { Capture } from '../src/matrix.ts';
+import { shardCaptures, type Capture } from '../src/matrix.ts';
 import { gitEnv } from '../src/git.ts';
 import type { RunSummary } from '../src/report/summary.ts';
 
@@ -158,6 +159,56 @@ describe('runCommand --changed', () => {
   });
 });
 
+describe('runCommand --changed with --shard', () => {
+  it('lists the same carried set in every shard, and the merge lists it once', async () => {
+    const { root, mergeBase } = await repoWithBuild();
+    // Nothing the branch changed reaches a story, so each shard bypasses the browser and
+    // writes its own summary — carried in full, because --changed narrows the plan, not
+    // the carried set — with both the shard and the changed line in its header.
+    for (const index of [1, 2]) {
+      const { value: code, out } = await withCapturedStdout(() =>
+        runCommand({ root, changed: true, shard: { index, total: 2 } }),
+      );
+      assert.equal(code, 0, `shard ${index}`);
+      assert.match(out, /Diopsis · 0 stories → 0 captures · /);
+      assert.match(out, new RegExp(`  shard     ${index} of 2 · 0 stories, 0 captures\n`));
+      assert.match(out, /  changed   nothing affected since main\n/);
+      assert.match(out, new RegExp(`report +\\.diopsis/shard-${index}-of-2/report\\.html`));
+
+      const shard = JSON.parse(
+        await readFile(path.join(root, '.diopsis', `shard-${index}-of-2`, 'summary.json'), 'utf8'),
+      ) as RunSummary;
+      assert.deepEqual(shard.shard, { index, total: 2 });
+      assert.equal(shard.totals.carried, 4);
+      assert.deepEqual(
+        shard.carried?.map((entry) => `${entry.storyId}@${entry.width}`),
+        [
+          'example-button--primary@320',
+          'example-button--primary@1280',
+          'example-input--filled@320',
+          'example-input--filled@1280',
+        ],
+      );
+      assert.equal(shard.affected?.mergeBase, mergeBase);
+    }
+    // A shard run leaves the plain output directory alone; the merge is what unites them.
+    assert.equal(existsSync(path.join(root, '.diopsis', 'summary.json')), false);
+
+    const { value: code } = await withCapturedStdout(() => mergeCommand({ root }));
+    assert.equal(code, 0);
+    const merged = JSON.parse(
+      await readFile(path.join(root, '.diopsis', 'merged', 'summary.json'), 'utf8'),
+    ) as RunSummary;
+    assert.equal(merged.shard, undefined);
+    assert.deepEqual(merged.captures, []);
+    // Both shards listed the same four carried captures; the merged run lists them once.
+    assert.equal(merged.totals.carried, 4);
+    assert.equal(merged.carried?.length, 4);
+    assert.equal(merged.affected?.mergeBase, mergeBase);
+    assert.equal(merged.affected?.base, 'main');
+  });
+});
+
 describe('changedFilesSince', () => {
   it('collects committed, staged, working-tree and untracked files as one set', async () => {
     const { root, mergeBase } = await repoWithBuild();
@@ -212,6 +263,44 @@ describe('splitByAffected', () => {
     assert.deepEqual(out.carried, [
       { storyId: 'a--one', width: 320 },
       { storyId: 'a--one', width: 320, mode: 'dark' },
+    ]);
+  });
+});
+
+describe('a --changed plan under --shard', () => {
+  const capture = (storyId: string, width: number): Capture => ({
+    storyId,
+    storyName: storyId,
+    storyTitle: storyId,
+    width,
+    height: 900,
+    scope: 'page',
+    snapshotPath: `${storyId}/${width}w-linux-x64.png`,
+  });
+
+  it('narrows the plan first, then splits what is left to capture', () => {
+    const captures = [
+      capture('a--one', 320),
+      capture('a--one', 1280),
+      capture('b--two', 320),
+      capture('b--two', 1280),
+      capture('c--three', 320),
+    ];
+    // The change reaches two stories; --shard divides those two stories' captures between
+    // jobs, and b--two is carried whole — it appears in no shard.
+    const narrowed = splitByAffected(captures, ['a--one', 'c--three']);
+    const shards = [1, 2].map((index) => shardCaptures(narrowed.captures, index, 2));
+    const key = (shot: Capture) => `${shot.storyId}@${shot.width}`;
+    assert.deepEqual(
+      shards.flat().map(key).sort(),
+      narrowed.captures.map(key).sort(),
+    );
+    for (const shard of shards) {
+      assert.equal(shard.some((shot) => shot.storyId === 'b--two'), false);
+    }
+    assert.deepEqual(narrowed.carried, [
+      { storyId: 'b--two', width: 320 },
+      { storyId: 'b--two', width: 1280 },
     ]);
   });
 });

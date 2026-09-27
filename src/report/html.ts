@@ -989,6 +989,12 @@ function drawProgress() {
    render-failure names a story the command would not act on and joins no command. */
 const ADOPTABLE = new Set(['changed', 'new']);
 
+/* A merged report's run lives where its shards were merged, not in the output directory a
+   plain accept reads — so every command this report offers names that directory, and a
+   copied command cannot adopt whatever older run sits in the output directory. */
+const acceptCmd = (args) => 'npx diopsis accept' +
+  (data.acceptFrom ? ' --from ' + data.acceptFrom : '') + (args ? ' ' + args : '');
+
 /* Ticks are per capture; accept adopts per story. The bridge is one command listing the
    ticked stories. A story ticked only in part is the trap: accepting it adopts its unticked
    changed captures too, so the label says how many stories that concerns rather than letting
@@ -1007,7 +1013,7 @@ function drawAcceptReviewed() {
       ? ' (' + partial.length + (partial.length === 1 ? ' includes' : ' include') +
         ' unticked captures)'
       : '');
-  const btn = copyCompact('npx diopsis accept ' + ids.join(' '), label);
+  const btn = copyCompact(acceptCmd(ids.join(' ')), label);
   if (partial.length) btn.title = 'accepting a story adopts all of its changed captures';
   acceptReviewedEl.appendChild(btn);
 }
@@ -1021,7 +1027,7 @@ function drawAcceptVisible(stories) {
   const ids = stories.filter(id => data.changedStories.includes(id));
   if (!ids.length || ids.length === data.changedStories.length) return;
   acceptVisibleEl.appendChild(copyCompact(
-    'npx diopsis accept ' + ids.join(' '), 'Copy accept for these ' + ids.length));
+    acceptCmd(ids.join(' ')), 'Copy accept for these ' + ids.length));
 }
 
 const out = document.getElementById('out');
@@ -1325,7 +1331,7 @@ function buildAll() {
     if (captures.some(c => REVIEW.has(c.status)) && data.mode !== 'diff') {
       const foot = document.createElement('div');
       foot.className = 'capture';
-      foot.appendChild(copyButton('npx diopsis accept ' + storyId));
+      foot.appendChild(copyButton(acceptCmd(storyId)));
       det.appendChild(foot);
     }
     storyEls.push(storyEntry);
@@ -1335,7 +1341,7 @@ function buildAll() {
   if (data.changedStories.length && data.mode !== 'diff') {
     const all = document.createElement('div');
     all.style.marginTop = '18px';
-    all.appendChild(copyButton('npx diopsis accept'));
+    all.appendChild(copyButton(acceptCmd()));
     listEl.appendChild(all);
   }
   if (data.truncated) {

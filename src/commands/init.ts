@@ -105,6 +105,8 @@ export function ciRecipe(image: string, snapshotDir: string): string {
   return `# Verify visual regressions in the same image the baselines were generated in.
 # The image below must stay identical to \`image\` in diopsis.config — \`diopsis doctor\`
 # fails when they drift apart.
+# Long builds can split instead: \`npx diopsis run --shard <i>/<n>\` in parallel jobs, then
+# \`npx diopsis merge\` over the downloaded shard-* directories for one review.
 jobs:
   visual:
     image: ${image}

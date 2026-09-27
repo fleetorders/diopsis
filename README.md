@@ -286,6 +286,11 @@ file outside the graph, a missing stats file — runs everything, and says why. 
 run output are never counted as changes.
 `npx diopsis trace <file>` shows the chain from a file to the stories it reaches.
 
+**Split a large run across machines** — `npx diopsis run --shard 2/4` captures one quarter of
+the matrix, split by story so a story's review is never divided, into its own directory. Download
+every shard into one place and `npx diopsis merge` writes one report and gives the verdict a
+single run would; `npx diopsis accept --from .diopsis/merged` accepts from it.
+
 **Review a branch's baselines** — a pull request that accepts changes shows its reviewers two
 opaque PNGs per file. `npx diopsis diff` renders the same report straight from git instead:
 every baseline the branch changed, added or deleted against `origin/main` (or a ref you name),
@@ -293,8 +298,9 @@ with the same comparison views and changed regions, and no browser run at all. I
 0 — it is for looking, not gating.
 
 Add `--grep <text>` to `run` or `update` to limit them to stories whose id contains `<text>`.
-Anything after `--` goes to Playwright unchanged, so `npx diopsis run -- --shard=1/3` splits a
-run across machines.
+Anything after `--` goes to Playwright unchanged, e.g. `npx diopsis run -- --workers=2`.
+Playwright's own `--shard` is refused — it splits by test, not by story, and would divide a
+story's review across machines.
 
 ## Reference
 
@@ -307,6 +313,7 @@ run across machines.
 | `diopsis report` | Open the last report |
 | `diopsis doctor` | Audit the setup |
 | `diopsis prune` | List baselines no capture would write any more; `--yes` deletes and stages them |
+| `diopsis merge [dir…]` | Merge sharded runs into one report and one verdict |
 | `diopsis trace <file…>` | Show which stories a file reaches, or why it forces a full run |
 | `diopsis diff [base]` | Report the baseline changes this branch makes against `base` (default `origin/main`) |
 | `diopsis --version` | Print the installed version |
@@ -319,10 +326,12 @@ run across machines.
 | `--lfs` | `init` | Set the baselines up for Git LFS |
 | `--no-stage` | `accept` | Write the files without staging them in git |
 | `--changed [base]` | `run` | Capture only the stories the changes since `base` can affect |
+| `--shard <i>/<n>` | `run` | Capture one shard of the matrix, split by story |
+| `--from <dir>` | `accept` | Accept from a merged or downloaded run instead of the output directory |
 | `--open` | `diff` | Open the report when it is written |
 | `--platform <token>` | `diff` | Only baselines of one platform, e.g. `linux-x64` |
 | `--json` | `doctor` | Print the audit as one JSON document, for a CI step to read |
-| `-- <args>` | `run`, `update` | Pass the rest to Playwright, e.g. `--shard=1/3` |
+| `-- <args>` | `run`, `update` | Pass the rest to Playwright, e.g. `--workers=2` |
 
 A flag given to a command it does not belong to is refused rather than ignored. The config is
 checked when it loads, and every problem is reported at once with the key and the value it

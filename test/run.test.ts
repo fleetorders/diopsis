@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 
 import { explainEmptyRun, headerBlock, headerLine } from '../src/commands/run.ts';
 import { resolveConfig } from '../src/config.ts';
-import { loosenedStoryIds, resolveMatrix } from '../src/matrix.ts';
+import { loosenedStoryIds, resolveMatrix, shardCaptures } from '../src/matrix.ts';
 import type { StoryEntry } from '../src/story-index.ts';
 
 const stories = (ids: string[], tags: string[] = []): StoryEntry[] =>
@@ -135,6 +135,67 @@ describe('explainEmptyRun', () => {
       }),
       ['All 1 story is tagged diopsis:skip.'],
     );
+  });
+});
+
+describe('headerBlock shard line', () => {
+  const config = resolveConfig({ viewports: { default: [320, 1280] } });
+
+  function blockFor(all: StoryEntry[], shard?: { index: number; total: number }): string {
+    const matrix = resolveMatrix(all, config);
+    const captures = shard
+      ? shardCaptures(matrix.captures, shard.index, shard.total)
+      : matrix.captures;
+    return headerBlock({
+      captures,
+      ...(shard ? { shard } : {}),
+      capture: config.capture,
+      configSource: 'diopsis.config.mjs',
+      storybookDir: 'storybook-static',
+      snapshotDir: '__screenshots__',
+      skipped: matrix.skipped,
+      unwatched: matrix.unwatched,
+      loosened: [],
+    });
+  }
+
+  it('says which shard of how many, with the shard’s own counts', () => {
+    // Three stories over three shards give each one story of two captures; the header
+    // counts what this job will capture, not the plan it was split from.
+    const out = blockFor(stories(['a--one', 'b--two', 'c--three']), { index: 2, total: 3 });
+    assert.match(out, /^Diopsis · 1 story → 2 captures · /);
+    assert.match(out, /  shard     2 of 3 · 1 story, 2 captures\n/);
+  });
+
+  it('counts a many-story shard in the plural', () => {
+    const out = blockFor(stories(['a--one', 'b--two', 'c--three', 'd--four']), { index: 2, total: 2 });
+    assert.match(out, /  shard     2 of 2 · 2 stories, 4 captures\n/);
+  });
+
+  it('prints no shard line for a whole-plan run', () => {
+    assert.doesNotMatch(blockFor(stories(['a--one'])), /shard/);
+  });
+
+  it('prints the changed line beside the shard line when both shaped the run', () => {
+    const matrix = resolveMatrix(stories(['a--one', 'b--two', 'c--three']), config);
+    const shard = shardCaptures(matrix.captures, 1, 2);
+    const out = headerBlock({
+      captures: shard,
+      shard: { index: 1, total: 2 },
+      changed: '1 of 3 stories affected since main (abc1234)',
+      capture: config.capture,
+      configSource: 'diopsis.config.mjs',
+      storybookDir: 'storybook-static',
+      snapshotDir: '__screenshots__',
+      skipped: matrix.skipped,
+      unwatched: matrix.unwatched,
+      loosened: [],
+    });
+    // The shard line counts this job's share of the narrowed plan; the changed line says
+    // why that plan is smaller than the matrix — one header, both facts. Three stories
+    // over two shards give this job two of them.
+    assert.match(out, /  shard     1 of 2 · 2 stories, 4 captures\n/);
+    assert.match(out, /  changed   1 of 3 stories affected since main \(abc1234\)\n/);
   });
 });
 
