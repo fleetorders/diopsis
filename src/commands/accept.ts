@@ -16,6 +16,21 @@ export interface AcceptOptions {
 }
 
 /**
+ * A path under `base`, resolved — or undefined when the path escapes it. The summary may
+ * come from a downloaded run artifact, so every path it carries is data about the run
+ * rather than a path to follow: an `artifacts.actual` that climbs out of the output
+ * directory, or a `snapshotPath` that climbs out of the snapshot directory, must not turn
+ * the accept into a copy or a write outside the run.
+ */
+function containedPath(base: string, relative: string): string | undefined {
+  const resolved = path.resolve(base, relative);
+  const within = path.relative(base, resolved);
+  return within === '' || within.startsWith('..') || path.isAbsolute(within)
+    ? undefined
+    : resolved;
+}
+
+/**
  * Adopt a run's output as the new baseline.
  *
  * Accepting is a file copy followed by a commit — there is no review state to keep anywhere
@@ -68,11 +83,41 @@ export async function acceptCommand(options: AcceptOptions): Promise<number> {
     return reportUnknownIds(unknownIds);
   }
 
+  // Every source and destination is resolved and contained before anything is copied: a
+  // summary naming a path outside the run or the snapshot directory refuses the whole
+  // accept — nothing is copied at all — with the entry that escaped named.
+  const copies: Array<{ from: string; to: string }> = [];
+  const escapes: string[] = [];
+  for (const capture of wanted) {
+    const from = containedPath(outputDir, capture.artifacts.actual!);
+    const to = containedPath(snapshotDir, capture.snapshotPath);
+    if (from !== undefined && to !== undefined) {
+      copies.push({ from, to });
+      continue;
+    }
+    if (from === undefined) {
+      escapes.push(
+        `${capture.storyId}: run image "${capture.artifacts.actual}" is not inside ${config.outputDir}`,
+      );
+    }
+    if (to === undefined) {
+      escapes.push(
+        `${capture.storyId}: baseline path "${capture.snapshotPath}" is not inside ${config.snapshotDir}`,
+      );
+    }
+  }
+  if (escapes.length > 0) {
+    process.stderr.write(
+      'Cannot accept — the summary names a path outside where it belongs:\n' +
+        escapes.map((line) => `  ${line}`).join('\n') +
+        '\nNothing was copied.\n',
+    );
+    return 1;
+  }
+
   // Nothing is copied until every source is known to exist: a partial accept out of an
   // incomplete run artifact would leave the baseline set half-updated.
-  const missing = wanted
-    .map((capture) => path.resolve(outputDir, capture.artifacts.actual!))
-    .filter((from) => !existsSync(from));
+  const missing = copies.map((copy) => copy.from).filter((from) => !existsSync(from));
   if (missing.length > 0) {
     process.stderr.write(
       `Cannot accept — ${missing.length} run ${missing.length === 1 ? 'image is' : 'images are'} missing:\n` +
@@ -87,9 +132,7 @@ export async function acceptCommand(options: AcceptOptions): Promise<number> {
   }
 
   const written: string[] = [];
-  for (const capture of wanted) {
-    const from = path.resolve(outputDir, capture.artifacts.actual!);
-    const to = path.join(snapshotDir, capture.snapshotPath);
+  for (const { from, to } of copies) {
     await mkdir(path.dirname(to), { recursive: true });
     await copyFile(from, to);
     written.push(to);

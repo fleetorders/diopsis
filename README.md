@@ -49,7 +49,7 @@ change, then each one with the changed region outlined, largest change first:
   <img src="https://raw.githubusercontent.com/fleetorders/diopsis/main/media/diopsis-report.png" width="920" alt="The Diopsis report: filter chips and a page-wide comparison switch above an overview of five changed captures, then a changed card with the region that moved outlined over the diff">
 </div>
 
-Needs Node 18.3+, a built static Storybook, and `@playwright/test` as a peer dependency; runs on
+Needs Node 18.11+, a built static Storybook, and `@playwright/test` as a peer dependency; runs on
 macOS, Windows and Linux, but baselines CI will agree with are generated in Linux via Docker.
 Chromium only — no cross-browser matrix, no interaction testing, no accessibility audit, and no
 hosted service of any kind.
@@ -70,7 +70,7 @@ From here `npx diopsis run` verifies every story against what you committed.
 
 `@playwright/test` is a **peer** dependency deliberately: browsers are downloaded once, and
 there is never a second copy on a different version. Diopsis itself has zero runtime
-dependencies. Node 18.3 or newer; a TypeScript config file needs Node 22.18+, where Node can
+dependencies. Node 18.11 or newer; a TypeScript config file needs Node 22.18+, where Node can
 strip types on its own — below that, `diopsis init` writes `diopsis.config.mjs` instead,
 the same object without the annotations.
 

@@ -54,6 +54,20 @@ await writeFile(path.join(work, 'ticker.html'), page(`
 await writeFile(path.join(work, 'fast-ticker.html'), page(`
   const tick = () => setTimeout(tick, 16); setTimeout(tick, 16);
   document.getElementById('out').textContent = 'ticking fast';`));
+// Re-arming through a scheduler that runs outside any timer callback — a microtask, a
+// message port — is what the depth guard cannot see (it only recognises a timer callback),
+// so the probe counts every tick of these; the network-quiet horizon is what bounds them.
+await writeFile(path.join(work, 'microtask-ticker.html'), page(`
+  let n = 0;
+  const tick = () => { n += 1; queueMicrotask(() => setTimeout(tick, 100)); };
+  setTimeout(tick, 100);
+  document.getElementById('out').textContent = 'microtask ticking';`));
+await writeFile(path.join(work, 'messagechannel-ticker.html'), page(`
+  let n = 0;
+  const channel = new MessageChannel();
+  channel.port1.onmessage = () => { n += 1; setTimeout(() => channel.port2.postMessage(1), 100); };
+  setTimeout(() => channel.port2.postMessage(1), 100);
+  document.getElementById('out').textContent = 'messageport ticking';`));
 // A cancelled timer is no longer pending.
 await writeFile(path.join(work, 'cleared.html'), page(`
   const t = setTimeout(() => {}, 400); clearTimeout(t);
@@ -173,6 +187,12 @@ try {
 
   const fast = await cost('fast-ticker.html');
   check('a 16 ms self-rearming timer does not hold the wait open', fast < 1000, `+${fast} ms`);
+
+  const microtask = await cost('microtask-ticker.html');
+  check('a timer re-armed from a microtask does not hold the wait open', microtask < 1000, `+${microtask} ms`);
+
+  const messageport = await cost('messagechannel-ticker.html');
+  check('a timer re-armed from a message port does not hold the wait open', messageport < 1000, `+${messageport} ms`);
 
   const cleared = await cost('cleared.html');
   check('a cleared timer is not waited for', cleared < 300, `+${cleared} ms`);

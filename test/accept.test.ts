@@ -252,3 +252,40 @@ describe('acceptCommand with modes', () => {
     assert.match(out, /skipped a--one @320 \[rtl\]: render-failed/);
   });
 });
+
+describe('acceptCommand refusing paths outside the run', () => {
+  it('copies nothing when a run image resolves outside the output directory', async () => {
+    // A downloaded summary is data, not trust: an artifacts.actual that climbs out of the
+    // run's directory must not turn the accept into a copy of whatever file it names.
+    const root = await project([capture({ artifacts: { actual: '../secret.png' } })], []);
+    await writeFile(path.join(root, 'secret.png'), 'not a run artifact');
+
+    const { code, err } = await runAccept(root);
+    assert.equal(code, 1);
+    assert.match(err, /a--one/);
+    assert.match(err, /run image "\.\.\/secret\.png" is not inside \.diopsis/);
+    assert.equal(existsSync(path.join(root, '__screenshots__')), false);
+  });
+
+  it('refuses the whole accept when one snapshot path escapes, naming it', async () => {
+    const root = await project(
+      [
+        capture({}),
+        capture({
+          storyId: 'e--scape',
+          snapshotPath: '../outside-baseline.png',
+          artifacts: { actual: 'test-results/e--scape-320.png' },
+        }),
+      ],
+      ['test-results/a--one-320-actual.png', 'test-results/e--scape-320.png'],
+    );
+
+    const { code, err } = await runAccept(root);
+    assert.equal(code, 1);
+    assert.match(err, /e--scape: baseline path "\.\.\/outside-baseline\.png" is not inside __screenshots__/);
+    // The refusal is total: the honest capture beside the escape is not copied either, and
+    // the file the escape aimed at was never written.
+    assert.equal(existsSync(path.join(root, '__screenshots__')), false);
+    assert.equal(existsSync(path.join(root, 'outside-baseline.png')), false);
+  });
+});

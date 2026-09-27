@@ -295,3 +295,52 @@ describe('diffCommand', () => {
     assert.match(err, /Unknown base "nope"/);
   });
 });
+
+/**
+ * A monorepo package: the repository root is two levels up, and the command runs from the
+ * package. Git reports paths relative to the repository root and reads revision paths from
+ * it too, so both ends of the comparison must be made package-relative here.
+ */
+async function monorepoPackage(snapshotDir: string): Promise<string> {
+  const root = await mkdtemp(path.join(tmpdir(), 'diopsis-monorepo-'));
+  temporaries.push(root);
+  git(root, 'init', '-b', 'main');
+  git(root, 'config', 'user.email', 'diff-test@diopsis.invalid');
+  git(root, 'config', 'user.name', 'Diff test');
+
+  const pkg = path.join(root, 'packages', 'web');
+  const file = path.join(pkg, snapshotDir, 'a--one', '320w-linux-x64.png');
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, encodePng(320, 200, filled(320, 200, [128, 128, 128])));
+  await writeFile(
+    path.join(pkg, 'diopsis.config.mjs'),
+    `export default { snapshotDir: '${snapshotDir}' };`,
+  );
+  git(root, 'add', 'packages');
+  git(root, 'commit', '-m', 'baselines on main');
+  // Deliberately uncommitted, so the diff reads the working tree against main.
+  await writeFile(file, encodePng(320, 200, blocked(320, 200, 8, 8, 12, 6)));
+  return pkg;
+}
+
+describe('diffCommand from a subdirectory', () => {
+  it('reads and compares baselines relative to the package, not the repository root', async () => {
+    const pkg = await monorepoPackage('__screenshots__');
+    const { value: code, out } = await withCapturedStdout(() => diffCommand({ root: pkg }));
+    assert.equal(code, 0);
+    assert.match(out, /~ a--one @320 +72 px differ/);
+
+    const summary = await summaryAt(pkg);
+    const changed = summary.captures.find((capture) => capture.storyId === 'a--one');
+    assert.equal(changed?.status, 'changed');
+    assert.equal(changed?.diffPixels, 12 * 6);
+  });
+
+  it("treats a './'-prefixed snapshot directory as the same directory", async () => {
+    const pkg = await monorepoPackage('./__screenshots__');
+    const { value: code, out } = await withCapturedStdout(() => diffCommand({ root: pkg }));
+    assert.equal(code, 0);
+    assert.match(out, /~ a--one @320/);
+    assert.ok(existsSync(path.join(pkg, '.diopsis', 'diff', 'report.html')));
+  });
+});

@@ -524,19 +524,27 @@ function allowance(compare: Partial<CompareOptions>, area: number): number {
  * threshold, ratio or differing-pixel count. Per-story tolerance exists for the odd story
  * that cannot be deterministic, so the run header and `doctor` surface every use of it: a
  * widened tolerance nobody can see becomes the suite's quiet default.
+ *
+ * Count limits are judged at the capture's own frame. A page capture is compared at its
+ * viewport, where a pixel count and a ratio become comparable once an image size is fixed.
+ * A component capture compares a clip far smaller than its viewport — often by an order of
+ * magnitude — so the viewport's area would measure the override against pixels that are not
+ * in the image and a count dozens of times looser on the clip can look tighter than the
+ * config. For those the knobs are compared directly, an unset limit reading as unbounded.
  */
 export function loosenedStoryIds(captures: Capture[], compare: CompareOptions): string[] {
   const ids = new Set<string>();
   for (const capture of captures) {
     const override = capture.compare;
     if (!override) continue;
-    // Count limits are compared by what they let through at this capture's viewport, because
-    // a pixel count and a ratio only become comparable once an image size is fixed.
-    const area = capture.width * capture.height;
     const effective = effectiveCompare(compare, override);
+    const area = capture.width * capture.height;
     const looser =
       effective.threshold > compare.threshold ||
-      allowance(effective, area) > allowance(compare, area);
+      (capture.scope === 'component'
+        ? (effective.maxDiffPixelRatio ?? Infinity) > (compare.maxDiffPixelRatio ?? Infinity) ||
+          (effective.maxDiffPixels ?? Infinity) > (compare.maxDiffPixels ?? Infinity)
+        : allowance(effective, area) > allowance(compare, area));
     if (looser) ids.add(capture.storyId);
   }
   return [...ids].sort();

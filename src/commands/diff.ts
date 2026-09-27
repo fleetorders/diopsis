@@ -90,7 +90,18 @@ function baselineChanges(root: string, snapshotDir: string, mergeBase: string): 
   const inside = (file: string): string =>
     file.startsWith(prefix) ? file.slice(prefix.length) : file;
 
-  const diff = gitBytes(root, ['diff', '--name-status', '-M', '-z', mergeBase, '--', snapshotDir]);
+  // `--relative` makes the reported paths relative to this directory rather than the
+  // repository root, so a monorepo package reads its own baselines' paths as written.
+  const diff = gitBytes(root, [
+    'diff',
+    '--relative',
+    '--name-status',
+    '-M',
+    '-z',
+    mergeBase,
+    '--',
+    snapshotDir,
+  ]);
   if (diff.status !== 0) {
     throw new Error(
       `git diff against ${mergeBase.slice(0, 7)} failed: ${diff.stderr.split('\n')[0] ?? ''}`,
@@ -154,11 +165,15 @@ async function writeArtifact(
   return relative;
 }
 
-/** A baseline's bytes as they were at the merge base, read binary-safe out of git. */
+/**
+ * A baseline's bytes as they were at the merge base, read binary-safe out of git. The
+ * leading "./" makes the path resolve from this directory — without it, a revision path is
+ * read from the repository root and every lookup from a monorepo package misses.
+ */
 function baselineAt(context: DiffContext, change: BaselineChange): Uint8Array {
   const shown = gitBytes(context.root, [
     'show',
-    `${context.mergeBase}:${context.snapshotDir}/${change.path}`,
+    `${context.mergeBase}:./${context.snapshotDir}/${change.path}`,
   ]);
   if (shown.status !== 0) {
     throw new Error(
@@ -245,8 +260,9 @@ async function entryFor(
  */
 export async function diffCommand(options: DiffOptions): Promise<number> {
   const { config, filepath } = await loadConfig(options.root);
-  // A trailing separator in the configured directory would survive into every git path.
-  const snapshotDir = config.snapshotDir.replace(/\/+$/, '');
+  // A trailing separator or a redundant "./" in the configured directory would survive into
+  // every git path, so the configured value is normalised before any command reads it.
+  const snapshotDir = path.posix.normalize(config.snapshotDir).replace(/\/+$/, '');
 
   if (!isGitRepo(options.root)) {
     process.stderr.write('Not a git repository — diopsis diff reads the baseline history from git.\n');

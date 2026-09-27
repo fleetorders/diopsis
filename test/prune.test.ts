@@ -17,6 +17,10 @@ const fixture = path.join(
 
 const token = `${process.platform}-${process.arch}`;
 
+// A token that is never this machine's own: a hard-coded one collides with it wherever the
+// suite happens to run on that platform, and the cross-platform cases stop testing crossing.
+const other = token === 'linux-x64' ? 'darwin-arm64' : 'linux-x64';
+
 const temporaries: string[] = [];
 
 async function project(): Promise<string> {
@@ -78,19 +82,19 @@ describe('pruneCommand dry run', () => {
 
   it('keeps another platform\'s baseline for a story the matrix still writes', async () => {
     const root = await project();
-    await baseline(root, `button--primary/320w-linux-x64.png`, 'other platform');
+    await baseline(root, `button--primary/320w-${other}.png`, 'other platform');
     const { out } = await capture(() => pruneCommand({ root }));
-    assert.doesNotMatch(out, /linux-x64/);
-    assert.ok(existsSync(path.join(root, '__screenshots__', 'button--primary/320w-linux-x64.png')));
+    assert.doesNotMatch(out, new RegExp(other));
+    assert.ok(existsSync(path.join(root, '__screenshots__', `button--primary/320w-${other}.png`)));
   });
 
   it('prunes a story the index lost on every platform it was captured for', async () => {
     const root = await project();
     await baseline(root, `gone--story/320w-${token}.png`, 'one');
-    await baseline(root, 'gone--story/320w-linux-x64.png', 'two');
+    await baseline(root, `gone--story/320w-${other}.png`, 'two');
     const { out } = await capture(() => pruneCommand({ root }));
     assert.match(out, /2 orphaned baselines/);
-    assert.match(out, /gone--story\/320w-linux-x64\.png/);
+    assert.match(out, new RegExp(`gone--story/320w-${other}\\.png`));
   });
 
   it('says so plainly when nothing is orphaned', async () => {
@@ -104,10 +108,10 @@ describe('pruneCommand dry run', () => {
   it('limits the list to one platform token', async () => {
     const root = await project();
     await baseline(root, `gone--story/320w-${token}.png`, 'one');
-    await baseline(root, 'gone--story/320w-linux-x64.png', 'two');
-    const { out } = await capture(() => pruneCommand({ root, platform: 'linux-x64' }));
-    assert.match(out, /platform  linux-x64/);
-    assert.match(out, /320w-linux-x64\.png/);
+    await baseline(root, `gone--story/320w-${other}.png`, 'two');
+    const { out } = await capture(() => pruneCommand({ root, platform: other }));
+    assert.match(out, new RegExp(`platform  ${other}`));
+    assert.match(out, new RegExp(`320w-${other}\\.png`));
     assert.doesNotMatch(out, new RegExp(`gone--story/320w-${token}\\.png`));
   });
 

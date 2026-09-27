@@ -2,7 +2,13 @@ import { existsSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { defaultConfig, findConfigFile, loadConfig, supportsTypeStripping } from '../config.ts';
+import {
+  defaultConfig,
+  findConfigFile,
+  loadConfig,
+  supportsTypeStripping,
+  type DiopsisConfig,
+} from '../config.ts';
 import { resolveMatrix } from '../matrix.ts';
 import { readStoryIndex } from '../story-index.ts';
 
@@ -28,27 +34,39 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+/** The values the config template writes; `--force` passes the replaced config's own. */
+type TemplateConfig = Pick<
+  DiopsisConfig,
+  'storybookDir' | 'snapshotDir' | 'outputDir' | 'viewports' | 'viewportHeight' | 'image'
+>;
+
 /**
  * The TypeScript form types itself through an `import type`, which Node's type stripping
  * erases along with the annotation. Nothing is imported at runtime, so the config still loads
  * when the package cannot be resolved from here — under `npx`, or before `npm install` has run.
  */
-function configSource(typescript: boolean): string {
+function configSource(typescript: boolean, config: TemplateConfig): string {
   const header = typescript
     ? "import type { UserConfig } from 'diopsis';\n\nexport default {"
     : "/** @type {import('diopsis').UserConfig} */\nexport default {";
   const footer = typescript ? '} satisfies UserConfig;' : '};';
+  const viewports = Object.entries(config.viewports)
+    .map(([name, widths]) => `${name}: [${widths.join(', ')}]`)
+    .join(', ');
 
   return `${header}
-  storybookDir: '${defaultConfig.storybookDir}',
-  snapshotDir: '${defaultConfig.snapshotDir}',
+  storybookDir: '${config.storybookDir}',
+  snapshotDir: '${config.snapshotDir}',
+  outputDir: '${config.outputDir}',
 
   // Every width multiplies the whole story set. Two widths cost half of what four do,
   // in runtime, repository weight and flake surface alike.
-  viewports: { default: [320, 1280] },
+  viewports: { ${viewports} },
+
+  viewportHeight: ${config.viewportHeight},
 
   // One image name, read by both baseline generation and the CI job.
-  image: '${defaultConfig.image}',
+  image: '${config.image}',
 
   stabilize: {
     freezeClock: '${defaultConfig.stabilize.freezeClock as string}',
@@ -113,12 +131,12 @@ export async function initCommand(options: InitOptions): Promise<number> {
     return 1;
   }
 
-  // With --force, the config being replaced still decides the scaffolding around it: its
-  // snapshotDir and outputDir are what .gitattributes and .gitignore must keep guarding,
-  // and its widths and image are what the cost table and the CI recipe describe — a
-  // re-run must not quietly repoint git settings at the default directories. A config
-  // that cannot be loaded falls back to the defaults, said in one line rather than
-  // silently.
+  // With --force, the config being replaced still decides everything downstream of it:
+  // its snapshotDir and outputDir are what .gitattributes and .gitignore must keep
+  // guarding, its widths and image are what the cost table and the CI recipe describe,
+  // and its own values are what the rewritten config carries — a re-run must not quietly
+  // repoint git settings, or the config itself, at the default layout. A config that
+  // cannot be loaded falls back to the defaults, said in one line rather than silently.
   let config = defaultConfig;
   const notes: string[] = [];
   if (existing) {
@@ -126,15 +144,20 @@ export async function initCommand(options: InitOptions): Promise<number> {
       config = (await loadConfig(options.root)).config;
     } catch {
       notes.push(
-        `Could not load ${path.basename(existing)}; the git settings, cost table and CI ` +
-          'recipe below use the defaults.',
+        `Could not load ${path.basename(existing)}; the git settings, cost table, CI ` +
+          'recipe and the rewritten config use the defaults.',
       );
     }
   }
 
   const typescript = supportsTypeStripping();
-  const configName = typescript ? 'diopsis.config.ts' : 'diopsis.config.mjs';
-  await writeFile(path.join(options.root, configName), configSource(typescript), 'utf8');
+  // A replaced config is rewritten where it lives, in the form it already had: writing the
+  // default name beside it would leave two config files, whichever discovery finds first
+  // winning, and a TypeScript form written into a .mjs would not even parse.
+  const target =
+    existing ?? path.join(options.root, typescript ? 'diopsis.config.ts' : 'diopsis.config.mjs');
+  await writeFile(target, configSource(/\.(ts|mts)$/.test(target), config), 'utf8');
+  const configName = path.basename(target);
 
   const wroteAttributes = await appendLines(
     path.join(options.root, '.gitattributes'),
@@ -156,7 +179,8 @@ export async function initCommand(options: InitOptions): Promise<number> {
     '',
   ];
 
-  if (!typescript) {
+  // Said only when the runtime dictated the form: a replaced config keeps the one it had.
+  if (!typescript && !existing) {
     lines.push(
       `Node ${process.versions.node} cannot read a TypeScript config, so the JavaScript form`,
       'was written instead. On Node 22.18 or newer, diopsis.config.ts works with no extra setup.',

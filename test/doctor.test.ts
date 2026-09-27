@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { cp, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -14,6 +15,7 @@ import {
   type Check,
 } from '../src/commands/doctor.ts';
 import { ciRecipe, gitattributesLines, initCommand } from '../src/commands/init.ts';
+import { CONFIG_FILENAMES } from '../src/config.ts';
 
 const fixture = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -391,6 +393,40 @@ describe('initCommand --force with an existing config', () => {
     const attributes = await readFile(path.join(root, '.gitattributes'), 'utf8');
     assert.match(attributes, /__screenshots__/);
     assert.match(out, /320, 1280[^\n]*\(configured\)/);
+  });
+
+  it("writes the replaced config's own values, not the defaults", async () => {
+    const root = await project();
+    await writeFile(
+      path.join(root, 'diopsis.config.mjs'),
+      'export default { storybookDir: \'built-storybook\', snapshotDir: \'__baselines__\', ' +
+        "outputDir: '.visual', viewportHeight: 1200, " +
+        'viewports: { default: [375, 1280], mobile: [320, 480] } };',
+    );
+    assert.equal(await initCommand({ root, force: true }), 0);
+
+    const rewritten = await readFile(path.join(root, 'diopsis.config.mjs'), 'utf8');
+    // The written config agrees with the git settings and the CI recipe the same run
+    // wrote; a default template here would contradict both on the next load.
+    assert.match(rewritten, /storybookDir: 'built-storybook'/);
+    assert.match(rewritten, /snapshotDir: '__baselines__'/);
+    assert.match(rewritten, /outputDir: '\.visual'/);
+    assert.match(rewritten, /viewportHeight: 1200/);
+    assert.match(rewritten, /viewports: \{ default: \[375, 1280\], mobile: \[320, 480\] \}/);
+    assert.doesNotMatch(rewritten, /__screenshots__/);
+    // It is the template that carries them — the replaced file itself matched every value
+    // assertion above, so the scaffold lines are what prove a rewrite happened.
+    assert.match(rewritten, /stabilize: \{/);
+  });
+
+  it('rewrites the existing file rather than adding a second config beside it', async () => {
+    const root = await project();
+    await writeFile(path.join(root, 'diopsis.config.mjs'), 'export default {};');
+    assert.equal(await initCommand({ root, force: true }), 0);
+    // Exactly one config file — the one that was already there, its extension kept: a
+    // second one beside it would leave the loader's discovery order deciding the setup.
+    const present = CONFIG_FILENAMES.filter((name) => existsSync(path.join(root, name)));
+    assert.deepEqual(present, ['diopsis.config.mjs']);
   });
 });
 

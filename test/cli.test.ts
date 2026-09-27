@@ -99,4 +99,18 @@ describe('main', () => {
     // The exit code carries the verdict, so a scripted doctor needs no text parsing.
     assert.equal(payload.ok, code === 0);
   });
+
+  it('states the Node floor as 18.11 in the engines field and the README', async () => {
+    // The flag handling reads the argument parser's token stream and its option defaults,
+    // which arrived in Node 18.7 and 18.11 respectively — so 18.11 is the oldest release
+    // the compiled CLI runs on, and the two surfaces must not drift apart.
+    const manifest = JSON.parse(
+      await readFile(new URL('../package.json', import.meta.url), 'utf8'),
+    ) as { engines?: { node?: string } };
+    assert.equal(manifest.engines?.node, '>=18.11');
+    const readme = await readFile(new URL('../README.md', import.meta.url), 'utf8');
+    assert.doesNotMatch(readme, /Node 18\.\d\D/);
+    assert.match(readme, /Node 18\.11/);
+  });
 });
+

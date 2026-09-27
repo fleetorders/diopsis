@@ -255,6 +255,20 @@ describe('loosenedStoryIds', () => {
     assert.equal(matrix.captures.length, 2);
     assert.deepEqual(loosenedStoryIds(matrix.captures, compare), ['a--loose']);
   });
+
+  it('judges a component capture by its own knobs, not the viewport area', () => {
+    // A component clip is far smaller than its viewport, so at the viewport's area a
+    // max-diff-pixels of 200 sits under the configured ratio's allowance and reads as a
+    // tightening — while on the clip itself the ratio is gone and 200 pixels is dozens of
+    // times what the config would let through.
+    const matrix = resolveMatrix(
+      [story('c--small', ['diopsis:component', 'diopsis:max-diff-pixels=200'])],
+      oneWidth,
+      'linux-x64',
+    );
+    assert.equal(matrix.captures[0]?.scope, 'component');
+    assert.deepEqual(loosenedStoryIds(matrix.captures, compare), ['c--small']);
+  });
 });
 
 describe('scopeForStory', () => {

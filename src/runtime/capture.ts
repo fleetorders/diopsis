@@ -85,7 +85,12 @@ export async function preparePage(page: Page, options: StabilizeOptions): Promis
  * `TIMER_HORIZON_MS` that page code has scheduled, because each of those may be about to start
  * one. Idle means neither is pending and nothing changed for `NETWORK_QUIET_MS`. A timer
  * scheduled from inside another timer's callback is not counted, so a ticking widget cannot hold
- * the wait open until the deadline.
+ * the wait open until the deadline. A timer scheduled outside any timer callback still is — a
+ * framework's scheduler runs its effects from a microtask or a message port, where the depth
+ * guard cannot tell a re-arming tick from a fresh one — so re-arming that way is bounded by the
+ * network instead: once no request has been in flight or settled for `TIMER_HORIZON_MS`
+ * continuously, every timer pending when the quiet began has fired without starting one, and
+ * pending timers alone no longer hold the wait.
  */
 export const NETWORK_QUIET_MS = 50;
 export const TIMER_HORIZON_MS = 500;
@@ -160,6 +165,11 @@ export async function trackRequests(page: Page): Promise<RequestTracker> {
       const giveUp = Date.now() + timeout;
       while (Date.now() < giveUp) {
         if (inflight === 0 && Date.now() - lastChange >= quietMs) {
+          // A whole horizon of network quiet means every tracked timer pending when the
+          // quiet began has fired without starting a request — so the ones still pending
+          // are a re-arming loop the depth guard cannot see (a framework schedules outside
+          // any timer callback), and they no longer hold the wait.
+          if (Date.now() - lastChange >= TIMER_HORIZON_MS) return;
           const timers = await page
             .evaluate(() => {
               const probe = (window as unknown as Record<string, unknown>)['__diopsisTimers'];
