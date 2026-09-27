@@ -19,6 +19,8 @@ export interface StabilizeOptions {
   waitForImages: boolean;
   /** Wait for common loading-state markers to disappear. */
   waitForLoadingStates: boolean;
+  /** Wait for the story's play function, when it has one, to finish before capturing. */
+  waitForPlay: boolean;
   /** Ceiling, in ms, for the whole stabilization sequence. */
   settleTimeout: number;
 }
@@ -97,6 +99,7 @@ export const defaultConfig: DiopsisConfig = {
     waitForFonts: true,
     waitForImages: true,
     waitForLoadingStates: true,
+    waitForPlay: true,
     settleTimeout: 15_000,
   },
   mask: ['[data-diopsis-ignore]'],
@@ -194,6 +197,11 @@ export function validateConfig(config: DiopsisConfig): string[] {
   const settleTimeout = config.stabilize.settleTimeout;
   if (typeof settleTimeout !== 'number' || !Number.isFinite(settleTimeout) || settleTimeout <= 0) {
     problems.push(`stabilize.settleTimeout must be a positive number (got ${show(settleTimeout)})`);
+  }
+  if (typeof config.stabilize.waitForPlay !== 'boolean') {
+    problems.push(
+      `stabilize.waitForPlay must be true or false (got ${show(config.stabilize.waitForPlay)})`,
+    );
   }
   if (
     config.workers !== undefined &&

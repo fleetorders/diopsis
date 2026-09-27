@@ -20,7 +20,9 @@ export class StoryRenderError extends Error {
   detail: string;
 
   constructor(message: string, detail: string) {
-    super(message);
+    // The detail is the story's own error; it goes into the message because the message is
+    // what reaches the summary and the terminal — a separate field never left this process.
+    super(detail ? `${message}: ${detail}` : message);
     this.name = 'StoryRenderError';
     this.detail = detail;
   }
@@ -171,6 +173,83 @@ function deadline(timeout: number): { left(): number } {
 }
 
 /**
+ * Render phases that mean the story, its play function included when it has one, is done.
+ * Storybook 10 ends every render in `finished`, earlier versions in `completed`; `played` is
+ * not final, because the story's cleanup hooks still run after it.
+ */
+const PLAY_DONE_PHASES = ['completed', 'finished', 'errored', 'aborted'] as const;
+
+/**
+ * Installed before any page script runs. Storybook assigns its event channel to a global, so a
+ * property trap sees the channel the moment it exists and subscribes before the story renders.
+ * A failed play function is reported as an event rather than a phase in current Storybook: the
+ * `storyFinished` status is `error`. That status is also `error` when an addon report failed —
+ * an accessibility check, say — which is not a broken story, so a finish explained by a failed
+ * report is not counted.
+ */
+function playProbe(): void {
+  const w = window as unknown as Record<string, unknown>;
+  if (Object.getOwnPropertyDescriptor(w, '__STORYBOOK_ADDONS_CHANNEL__')) return;
+  const state: { failed: boolean; detail: string } = { failed: false, detail: '' };
+  w['__diopsisPlay'] = state;
+  const fail = (detail: unknown): void => {
+    state.failed = true;
+    if (!state.detail && detail) state.detail = String(detail);
+  };
+  const messageOf = (value: unknown): string => {
+    const first = Array.isArray(value) ? value[0] : value;
+    if (first && typeof first === 'object' && 'message' in first) {
+      return String((first as { message: unknown }).message);
+    }
+    return first === undefined ? '' : String(first);
+  };
+  let channel: unknown;
+  Object.defineProperty(w, '__STORYBOOK_ADDONS_CHANNEL__', {
+    configurable: true,
+    get: () => channel,
+    set: (next: unknown) => {
+      channel = next;
+      const on = (next as { on?: (event: string, fn: (payload: unknown) => void) => void })?.on;
+      if (typeof on !== 'function') return;
+      const listen = on.bind(next);
+      listen('playFunctionThrewException', (error) => fail(messageOf(error)));
+      listen('unhandledErrorsWhilePlaying', (errors) => fail(messageOf(errors)));
+      listen('storyFinished', (payload) => {
+        const finished = payload as { status?: string; reporters?: Array<{ status?: string }> };
+        const reportFailed = (finished?.reporters ?? []).some((r) => r?.status === 'failed');
+        if (finished?.status === 'error' && !reportFailed) fail('');
+      });
+    },
+  });
+}
+
+/** Pages that already carry the play probe. */
+const playProbed = new WeakSet<Page>();
+
+/** Install the play probe before navigation, once per page. */
+export async function probePlay(page: Page): Promise<void> {
+  if (playProbed.has(page)) return;
+  await page.addInitScript(playProbe);
+  playProbed.add(page);
+}
+
+/**
+ * What a failed play function says on the page, if anything: Storybook's error display names
+ * the failure in `#error-message` and `#error-stack`; that text is the detail worth
+ * reporting. When neither is showing, the phase itself is all the page knows.
+ */
+async function playFailureDetail(page: Page): Promise<string> {
+  const parts: string[] = [];
+  for (const selector of ['#error-message', '#error-stack']) {
+    const display = page.locator(selector);
+    if (!(await display.isVisible().catch(() => false))) continue;
+    const text = (await display.innerText().catch(() => '')).trim();
+    if (text) parts.push(text);
+  }
+  return parts.length > 0 ? parts.join('\n') : 'the story reported an errored render phase';
+}
+
+/**
  * Wait until the story is actually painted.
  *
  * "The root exists" is not enough — the root exists while the skeleton is on screen, and a
@@ -204,6 +283,51 @@ export async function stabilize(
     RENDER_ROOTS,
     { timeout: budget.left() || 1 },
   );
+
+  if (options.waitForPlay) {
+    // A play function runs after the story has rendered, so every wait above can pass while
+    // an interaction is still being applied; a capture taken there photographs it half-done.
+    // Storybook's preview exposes the render phase. A preview without one, an older
+    // Storybook, skips the wait rather than paying for a phase that will never appear.
+    const phaseTracked = await page
+      .evaluate(() => {
+        const preview = (window as unknown as Record<string, unknown>)['__STORYBOOK_PREVIEW__'] as
+          | { currentRender?: { phase?: unknown } }
+          | undefined;
+        return typeof preview?.currentRender?.phase === 'string';
+      })
+      .catch(() => false);
+    if (phaseTracked) {
+      // Still playing at the deadline gives up like the other waits, not a run failure.
+      const phase = await page
+        .waitForFunction(
+          (done: readonly string[]) => {
+            const preview = (window as unknown as Record<string, unknown>)[
+              '__STORYBOOK_PREVIEW__'
+            ] as { currentRender?: { phase?: unknown } } | undefined;
+            const phase = preview?.currentRender?.phase;
+            return typeof phase === 'string' && done.includes(phase) ? phase : null;
+          },
+          PLAY_DONE_PHASES,
+          { timeout: budget.left() || 1 },
+        )
+        .then((handle) => handle.jsonValue())
+        .catch(() => undefined);
+      const reported = await page
+        .evaluate(() => (window as unknown as Record<string, unknown>)['__diopsisPlay'] as
+          | { failed: boolean; detail: string }
+          | undefined)
+        .catch(() => undefined);
+      if (phase === 'errored' || reported?.failed) {
+        const shown = await playFailureDetail(page);
+        const detail =
+          reported?.detail && shown === 'the story reported an errored render phase'
+            ? reported.detail
+            : shown;
+        throw new StoryRenderError('Story play function failed', detail);
+      }
+    }
+  }
 
   if (options.waitForNetworkIdle) {
     // A story holding a long-poll open should slow a run, not fail it: both waits give up at
@@ -377,6 +501,7 @@ export async function openStory(
 ): Promise<void> {
   await isolate(page);
   await preparePage(page, options);
+  if (options.waitForPlay) await probePlay(page);
   const requests = options.waitForNetworkIdle ? await trackRequests(page) : undefined;
   try {
     await page.goto(url, { waitUntil: 'domcontentloaded' });

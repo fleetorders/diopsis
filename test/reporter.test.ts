@@ -205,3 +205,20 @@ describe('DiopsisReporter per-story tolerance', () => {
     );
   });
 });
+
+describe('error text', () => {
+  it('keeps the message once and drops stack frames', async () => {
+    const { errorTextOf } = await import('../src/reporter.ts');
+    const text = errorTextOf({
+      status: 'failed',
+      errors: [
+        {
+          message: 'StoryRenderError: Story play function failed: play broke',
+          stack:
+            'StoryRenderError: Story play function failed: play broke\n    at stabilize (/x/capture.js:1:1)',
+        },
+      ],
+    });
+    assert.equal(text, 'StoryRenderError: Story play function failed: play broke');
+  });
+});

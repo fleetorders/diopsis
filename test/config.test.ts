@@ -44,6 +44,7 @@ describe('resolveConfig', () => {
     assert.equal(stabilize.waitForFonts, true);
     assert.equal(stabilize.waitForImages, true);
     assert.equal(stabilize.waitForLoadingStates, true);
+    assert.equal(stabilize.waitForPlay, true);
     assert.equal(typeof stabilize.freezeClock, 'string');
   });
 
@@ -266,6 +267,13 @@ describe('validateConfig', () => {
       validateConfig(configWith({ stabilize: { freezeClock: '2026-01-15T12:00:00Z' } })),
       [],
     );
+  });
+
+  it('accepts waitForPlay as a boolean and nothing else', () => {
+    assert.deepEqual(validateConfig(configWith({ stabilize: { waitForPlay: false } })), []);
+    const problems = validateConfig(configWith({ stabilize: { waitForPlay: 'yes' } }));
+    assert.equal(problems.length, 1);
+    assert.match(problems[0] ?? '', /stabilize\.waitForPlay must be true or false \(got "yes"\)/);
   });
 });
 

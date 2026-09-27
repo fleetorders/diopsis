@@ -69,10 +69,20 @@ export function stripAnsi(value: string): string {
   return value.replace(ANSI, '');
 }
 
-function errorTextOf(result: TestResult): string {
-  const parts = result.errors.map((error) => `${error.message ?? ''}\n${error.stack ?? ''}`);
+export function errorTextOf(result: Pick<TestResult, 'status' | 'errors'>): string {
+  // A stack begins with the message it belongs to; printing both repeated every error.
+  const parts = result.errors.map((error) =>
+    error.stack && error.message && error.stack.includes(error.message)
+      ? error.stack
+      : `${error.message ?? ''}\n${error.stack ?? ''}`,
+  );
   if (result.status === 'timedOut') parts.push('Test timed out.');
-  return stripAnsi(parts.join('\n'));
+  // Stack frames name this machine's paths and Diopsis's internals; neither helps a reader
+  // decide what happened to their story, and both would be pasted into reviews.
+  return stripAnsi(parts.join('\n'))
+    .split('\n')
+    .filter((line) => !/^\s+at /.test(line))
+    .join('\n');
 }
 
 /** The spec records baseline existence as an annotation; Playwright's wording is not ours. */
