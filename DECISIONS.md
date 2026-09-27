@@ -940,3 +940,24 @@ whose name ends in a state word would read as that state in a baseline path; mod
 names are chosen by the project, and the writer's order is the one the parser assumes.
 
 **Scope:** repo.
+
+## D-040 — 2026-09-27 — The report embeds each image once, and references the rest
+
+**Decision:** The report embeds identical images once — identity by size, then SHA-256 — and
+every capture that uses them points at the one copy. Embedding follows review order, worst
+first, up to the budget; past it, images are referenced by their path relative to the report
+instead of being left out. A referenced image that cannot load, because the report was opened
+without the files beside it, turns into a note naming where the image is.
+
+**Why:** a run with several hundred changes is the run that most needs its images, and it was
+the one that lost them: at 400 changed captures, 282 had no image at all once the budget was
+spent. The artifacts sit next to the report in the output directory and in the CI artifact, so a
+relative reference costs nothing and keeps every capture reviewable. Identical images are common
+— a new story's baseline written from its render, one baseline shared across modes — and a
+benchmark whose captures shared their images went from 28 MB to 0.5 MB.
+
+**Consequences:** the first captures in review order are always self-contained; later ones need
+the files beside the report. The report still opens and works on its own, with a note in place of
+each image it cannot reach.
+
+**Scope:** repo.

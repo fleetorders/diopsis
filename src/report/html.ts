@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -13,9 +14,36 @@ function pngSizeOf(bytes: Buffer): { width: number; height: number } | undefined
 }
 
 interface EmbeddedCapture extends CaptureResult {
+  /**
+   * Each value is a `#n` reference into the payload's `assets` — identical images are
+   * embedded once and shared — or a path to the file beside the report, for an image the
+   * budget could not hold.
+   */
   images: { expected?: string; actual?: string; diff?: string };
-  /** Set when artifacts exist on disk but stayed out to keep the report inside its budget. */
-  truncated?: true;
+}
+
+/**
+ * The order the report presents captures in: stories that need review first, then by the
+ * story's largest change, then by id, with each story's captures in the order the run took
+ * them. The client rebuilds this ordering from the same fields; embedding follows it so
+ * that when the budget runs out, the captures a reviewer reaches first are the
+ * self-contained ones.
+ */
+function reviewOrder(captures: CaptureResult[]): CaptureResult[] {
+  const byStory = new Map<string, CaptureResult[]>();
+  for (const capture of captures) {
+    const list = byStory.get(capture.storyId);
+    if (list) list.push(capture);
+    else byStory.set(capture.storyId, [capture]);
+  }
+  const reviewRank = (cs: CaptureResult[]) => (cs.some((c) => needsReview(c.status)) ? 0 : 1);
+  const worstChange = (cs: CaptureResult[]) => cs.reduce((m, c) => Math.max(m, c.diffPixels ?? 0), 0);
+  return [...byStory.entries()]
+    .sort((a, b) =>
+      reviewRank(a[1]) - reviewRank(b[1]) ||
+      worstChange(b[1]) - worstChange(a[1]) ||
+      a[0].localeCompare(b[0]))
+    .flatMap(([, cs]) => cs);
 }
 
 /**
@@ -23,22 +51,29 @@ interface EmbeddedCapture extends CaptureResult {
  *
  * Only captures that need review carry images: an unchanged capture has nothing to look at,
  * and embedding the whole matrix would make the report too heavy to open from a CI artifact —
- * which is the one place it has to work.
+ * which is the one place it has to work. Byte-identical images are embedded once and pointed
+ * at by reference, and an image the budget cannot hold is referenced from the file beside
+ * the report rather than dropped: the artifacts are written next to it in the same directory,
+ * so review keeps its images exactly when there are too many of them to inline.
  */
 async function embed(
   summary: RunSummary,
   outputDir: string,
   budget: number,
-): Promise<{ captures: EmbeddedCapture[]; truncated: number }> {
+): Promise<{ captures: EmbeddedCapture[]; truncated: number; assets: string[] }> {
   let spent = 0;
   let truncatedCaptures = 0;
-  const captures: EmbeddedCapture[] = [];
+  /** Content key to asset reference: byte-identical images share one embedding. */
+  const byContent = new Map<string, string>();
+  const assets: string[] = [];
+  /** Decisions made in review order, read back out in the summary's own order below. */
+  const decided = new Map<
+    CaptureResult,
+    { images: EmbeddedCapture['images']; size?: { width: number; height: number } }
+  >();
 
-  for (const capture of summary.captures) {
-    if (!needsReview(capture.status)) {
-      captures.push({ ...capture, images: {} });
-      continue;
-    }
+  for (const capture of reviewOrder(summary.captures)) {
+    if (!needsReview(capture.status)) continue;
 
     const images: EmbeddedCapture['images'] = {};
     // The summary carries the size once the reporter has read it; the header read below is
@@ -61,28 +96,45 @@ async function embed(
       } catch {
         continue;
       }
+      // The file is read whatever happens to its bytes next — embedded or referenced — so
+      // the pixel size is known either way and nothing downstream depends on what the
+      // budget allowed.
+      if (kind === 'actual' && !size) size = pngSizeOf(bytes);
+      // Size first, then the digest: files of different sizes differ without a hash ever
+      // being computed, and identical bytes — duplicate stories, a baseline shared across
+      // a story's modes — are embedded once and counted against the budget once.
+      const content = bytes.length + ':' + createHash('sha256').update(bytes).digest('hex');
+      const shared = byContent.get(content);
+      if (shared !== undefined) {
+        images[kind] = shared;
+        continue;
+      }
       // The cost is accounted before embedding, in the base64 form the report actually
       // carries: counting only after an image is in would let one large image push the file
       // far past a budget every later image is then refused for.
       const cost = 'data:image/png;base64,'.length + Math.ceil(bytes.length / 3) * 4;
       if (spent + cost > budget) {
+        images[kind] = relative;
         truncated = true;
         continue;
       }
-      if (kind === 'actual' && !size) size = pngSizeOf(bytes);
-      images[kind] = `data:image/png;base64,${bytes.toString('base64')}`;
+      const reference = '#' + assets.length;
+      assets.push(`data:image/png;base64,${bytes.toString('base64')}`);
+      byContent.set(content, reference);
       spent += cost;
+      images[kind] = reference;
     }
-    captures.push({
-      ...capture,
-      images,
-      ...(size ? { size } : {}),
-      ...(truncated ? { truncated: true } : {}),
-    });
+    decided.set(capture, { images, ...(size ? { size } : {}) });
     if (truncated) truncatedCaptures += 1;
   }
 
-  return { captures, truncated: truncatedCaptures };
+  const captures: EmbeddedCapture[] = summary.captures.map((capture) => {
+    const done = decided.get(capture);
+    if (!done) return { ...capture, images: {} };
+    return { ...capture, images: done.images, ...(done.size ? { size: done.size } : {}) };
+  });
+
+  return { captures, truncated: truncatedCaptures, assets };
 }
 
 function escapeHtml(value: string): string {
@@ -107,8 +159,8 @@ export async function renderReport(
   /** Budget override, so the truncation path can be exercised with a value small enough to bite. */
   budget: number = EMBED_BUDGET_BYTES,
 ): Promise<string> {
-  const { captures, truncated } = await embed(summary, outputDir, budget);
-  const payload = { ...summary, captures, truncated };
+  const { captures, truncated, assets } = await embed(summary, outputDir, budget);
+  const payload = { ...summary, captures, truncated, assets };
 
   return `<!doctype html>
 <html lang="en">
@@ -367,6 +419,18 @@ ${CLIENT_SCRIPT}
 /** Client behaviour. Kept as one string so the report stays a single file with no assets. */
 const CLIENT_SCRIPT = String.raw`
 const data = JSON.parse(document.getElementById('data').textContent);
+/* Identical images are embedded once, in "assets", and a capture points at its bytes by
+   reference. Resolving them here leaves every later consumer holding one of exactly two
+   things — inlined bytes, or a path to the file beside the report — with no third form to
+   special-case anywhere. */
+const assets = data.assets || [];
+for (const c of data.captures) {
+  if (!c.images) continue;
+  for (const k of ['expected', 'actual', 'diff']) {
+    const v = c.images[k];
+    if (typeof v === 'string' && v[0] === '#') c.images[k] = assets[Number(v.slice(1))];
+  }
+}
 const REVIEW = new Set(['changed', 'new', 'removed', 'render-failed', 'failed']);
 const LABEL = { changed: 'Changed', new: 'New', removed: 'Removed',
   'render-failed': 'Render failed', failed: 'Failed', unchanged: 'Unchanged' };
@@ -549,9 +613,9 @@ function copyCompact(text, label) {
   return btn;
 }
 
-/* Past the embed budget the artifacts exist as files but never made it into the report.
-   "No image artifacts" would be false — the line says why they are absent and where they
-   are, relative to the report itself. */
+/* What replaces an image the report does not carry: one the budget left out is a file
+   beside the report, so "No image artifacts" would be false — the line says why the image
+   is absent and where the files are, relative to the report itself. */
 function truncatedNote(capture, parent) {
   const p = document.createElement('p');
   p.className = 'note';
@@ -569,6 +633,17 @@ function truncatedNote(capture, parent) {
 function stage(capture) {
   const el = document.createElement('div');
   const img = capture.images || {};
+  /* A referenced image — one the budget left to the file beside the report — fails to load
+     when the report is opened without its files. The stage it was to fill steps aside for
+     the pointer to those files, once per capture; everything else on the page carries on. */
+  let filesMissing = false;
+  function onMissing(event) {
+    const box = event.target.closest('.stage');
+    if (box) box.remove();
+    if (filesMissing) return;
+    filesMissing = true;
+    truncatedNote(capture, el);
+  }
   // A new capture has no baseline to compare against: the "expected" a run leaves behind is
   // the baseline written from this very render, so a two-column presentation would show one
   // image twice and read as a difference that does not exist. One column, labelled as new —
@@ -609,11 +684,8 @@ function stage(capture) {
   if (!modes.length && img.actual) modes.push('Actual');
   if (!modes.length) {
     // An unchanged capture is meant to have no images; saying so on every row of a full
-    // matrix reads as a fault report. Only an absence that needs explaining gets a line —
-    // and images left unembedded are files that exist, so the line points at them rather
-    // than claiming they are missing.
-    if (capture.truncated) truncatedNote(capture, el);
-    else if (REVIEW.has(capture.status)) {
+    // matrix reads as a fault report. Only an absence that needs explaining gets a line.
+    if (REVIEW.has(capture.status)) {
       el.className = 'note';
       el.textContent = 'No image artifacts for this capture.';
     }
@@ -633,6 +705,8 @@ function stage(capture) {
     i.decoding = 'async';
     i.alt = alt;
     i.src = src;
+    // Inlined bytes are already here; a reference can fail to be, and says so above.
+    if (!src.startsWith('data:')) i.addEventListener('error', onMissing);
     return i;
   }
   // Fit is for "did anything move", actual size is for "by how much" — a downscaled diff can
@@ -804,9 +878,6 @@ function stage(capture) {
   }
   draw();
   el.appendChild(body);
-  // Some of the capture's images may have fit the budget while the rest did not; what was
-  // shown still deserves the pointer to the files next to it.
-  if (capture.truncated) truncatedNote(capture, el);
 
   return {
     el,
@@ -1216,7 +1287,10 @@ function buildAll() {
   if (data.truncated) {
     const n = document.createElement('p');
     n.className = 'note';
-    n.textContent = data.truncated + ' capture(s) had images omitted to keep this file openable.';
+    // A report that reads images from its own directory should say so: moved away from
+    // them, those captures fall back to the pointer, and the rest still works.
+    n.textContent = data.truncated +
+      ' capture(s) show images from the files beside this report, to keep it openable.';
     listEl.appendChild(n);
   }
 }
@@ -1260,6 +1334,16 @@ function buildOverview() {
         c.storyTitle + ' › ' + c.storyName + ' at ' + c.width + 'px' +
         (c.mode ? ' in ' + c.mode : '') + (c.state ? ', ' + c.state : '');
       i.src = src;
+      // A referenced thumbnail fails with the same missing files; the tile becomes the text
+      // tile it would have been had no image been available.
+      if (!src.startsWith('data:')) i.addEventListener('error', () => {
+        thumb.classList.remove('crop');
+        thumb.classList.add('text');
+        const st = document.createElement('span');
+        st.className = 'badge s-' + c.status;
+        st.textContent = LABEL[c.status];
+        i.replaceWith(st);
+      }, { once: true });
       // A change with known regions is shown at the change: the tile crops to the largest
       // region and scales it by width to the tile, answering "where" without a second
       // embedded image. Every offset is a percentage of the tile's width — margins resolve
