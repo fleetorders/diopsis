@@ -11,7 +11,7 @@ import {
 } from '../baselines.ts';
 import { oxipngInstalled } from '../compress.ts';
 import { findConfigFile, formatBytes, loadConfig, parseSize, supportsTypeStripping } from '../config.ts';
-import { gitIgnores, isGitRepo } from '../git.ts';
+import { gitIgnoreRule, gitIgnores, isGitRepo } from '../git.ts';
 import { loosenedStoryIds, platformToken, resolveMatrix } from '../matrix.ts';
 import { readStoryIndex } from '../story-index.ts';
 
@@ -470,8 +470,14 @@ export async function runChecks(options: DoctorOptions): Promise<Check[]> {
   const inRepo = isGitRepo(options.root);
   const byGit = (dir: string): boolean | undefined =>
     inRepo ? gitIgnores(options.root, path.join(dir, 'probe.png')) : undefined;
+  // The baselines' probe asks for the rule itself, not only the verdict: the file, the
+  // line and the pattern turn "ignored" into an address a fix can go to, and a rule that
+  // lives in a parent directory's file names that file as one.
+  const baselineRule = inRepo
+    ? gitIgnoreRule(options.root, path.join(snapshotDir, 'probe.png'))
+    : undefined;
   const ignoresBaselines =
-    byGit(snapshotDir) ??
+    (baselineRule === undefined ? undefined : baselineRule !== false) ??
     ignore
       .split('\n')
       .some((line) => line.trim() === `${config.snapshotDir}/` || line.trim() === config.snapshotDir);
@@ -479,7 +485,11 @@ export async function runChecks(options: DoctorOptions): Promise<Check[]> {
     checks.push({
       level: 'fail',
       title: `.gitignore excludes ${config.snapshotDir}`,
-      detail: 'The baselines are the point — ignored, every run compares against nothing.',
+      detail: baselineRule
+        ? 'The baselines are the point — ignored by ' +
+          `${baselineRule.source} line ${baselineRule.line} (\`${baselineRule.pattern}\`), ` +
+          'every run compares against nothing.'
+        : 'The baselines are the point — ignored, every run compares against nothing.',
     });
   }
   const ignoresOutput =

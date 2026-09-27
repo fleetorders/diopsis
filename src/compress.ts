@@ -35,16 +35,32 @@ export function oxipngInstalled(env: NodeJS.ProcessEnv = process.env): boolean {
   return probe.status === 0;
 }
 
+/** Longest one batch may take — far past any normal batch, short of a hang. */
+const TOOL_TIMEOUT_MS = 5 * 60_000;
+
 /** One invocation: spawned directly, never through a shell, so a file name is an argument and nothing else. */
 function runTool(executable: string, args: string[]): Promise<{ code: number | null; detail: string }> {
   return new Promise((resolve) => {
-    const child = spawn(executable, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    // A batch that hangs is failed and killed, like one that errors: the baselines it held
+    // are left as they were, and update or accept still finishes.
+    const child = spawn(executable, args, {
+      stdio: ['ignore', 'ignore', 'pipe'],
+      timeout: TOOL_TIMEOUT_MS,
+      killSignal: 'SIGKILL',
+    });
     let stderr = '';
     child.stderr?.on('data', (chunk) => {
       stderr += String(chunk);
     });
     child.on('error', (error) => resolve({ code: null, detail: error.message }));
-    child.on('close', (code) => resolve({ code, detail: stderr.trim().split('\n')[0] ?? '' }));
+    child.on('close', (code, signal) =>
+      resolve({
+        code,
+        detail: signal
+          ? `stopped by ${signal} (limit ${TOOL_TIMEOUT_MS / 60_000} minutes)`
+          : (stderr.trim().split('\n')[0] ?? ''),
+      }),
+    );
   });
 }
 

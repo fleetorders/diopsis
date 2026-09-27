@@ -6,8 +6,8 @@ import { consideredFiles, readPreviewStats, resolveAffected } from '../affected.
 import { baselineWeight } from '../baselines.ts';
 import { resolveAxePath } from '../accessibility.ts';
 import { recompressBaselines, writeRecompressReport } from '../compress.ts';
-import { formatBytes, loadConfig, parseSize } from '../config.ts';
-import { gitLines, isGitRepo, refExists } from '../git.ts';
+import { formatBytes, loadConfig, parseSize, type DiopsisConfig } from '../config.ts';
+import { gitLines, gitPrefix, isGitRepo, refExists } from '../git.ts';
 import {
   loosenedStoryIds,
   platformToken,
@@ -226,7 +226,9 @@ export function changedFilesSince(root: string, requested?: string): ChangedSet 
   for (const args of [
     ['diff', '--name-only', '-M', '--diff-filter=ACMR', mergeBase],
     ['diff', '--name-only', '-M', '--diff-filter=ACMR', '--cached', mergeBase],
-    ['ls-files', '--others', '--exclude-standard'],
+    // From the whole repository, named from its top like the diffs above: a project in a
+    // subdirectory still depends on untracked files beside it.
+    ['ls-files', '--others', '--exclude-standard', '--full-name', ':/'],
   ]) {
     const listed = gitLines(root, args);
     if (listed === undefined) {
@@ -235,6 +237,17 @@ export function changedFilesSince(root: string, requested?: string): ChangedSet 
     for (const file of listed) files.add(file);
   }
   return { base, mergeBase, files: [...files].sort() };
+}
+
+/**
+ * Baselines and run output never reach a story's rendering, but they change on every branch
+ * that accepts something — counted as unknown files, they forced a full run on exactly the
+ * branches that most need a fast one. Project-relative globs.
+ */
+export function ownIgnores(config: Pick<DiopsisConfig, 'snapshotDir' | 'outputDir'>): string[] {
+  const own = (dir: string): string =>
+    `${path.posix.normalize(dir.split(path.sep).join('/')).replace(/^\.\/|\/$/g, '')}/**`;
+  return [own(config.snapshotDir), own(config.outputDir)];
 }
 
 /** The three things the `changed` header line has to say. */
@@ -386,16 +399,14 @@ export async function runCommand(options: RunOptions): Promise<number> {
       typeof options.changed === 'string' ? options.changed : undefined,
     );
     const stats = await readPreviewStats(storybookDir);
-    // Baselines and run output never reach a story's rendering, but they change on every
-    // branch that accepts something — counted as unknown files, they forced a full run on
-    // exactly the branches that most need a fast one.
-    const own = (dir: string): string =>
-      `${path.posix.normalize(dir.split(path.sep).join('/')).replace(/^\.\/|\/$/g, '')}/**`;
-    const ignore = [own(config.snapshotDir), own(config.outputDir)];
+    const ignore = ownIgnores(config);
+    // Git lists paths from the top of the repository; the project may sit below it.
+    const prefix = gitPrefix(options.root);
     const result = resolveAffected({
       changed: changeSet.files,
       stories,
       ...(stats ? { stats } : {}),
+      projectDir: prefix,
       options: { ignore },
     });
     affected = {
@@ -404,7 +415,10 @@ export async function runCommand(options: RunOptions): Promise<number> {
       // The count is of the files the decision considered, not the raw diff: a run's own
       // output is ignored below but grows with every shard that finishes, and shards of
       // one run must report the same decision to be mergeable.
-      changedFiles: consideredFiles(changeSet.files, ignore).length,
+      changedFiles: consideredFiles(
+        changeSet.files,
+        ignore.map((pattern) => (prefix ? `${prefix}/${pattern}` : pattern)),
+      ).length,
       ...(result.kind === 'full' ? { full: result.reason } : {}),
     };
 
@@ -595,7 +609,9 @@ export async function runCommand(options: RunOptions): Promise<number> {
         snapshotDir: config.snapshotDir,
         snapshotDirAbs: path.resolve(options.root, config.snapshotDir),
         mode,
-        ...(options.shard ? { shard: options.shard } : {}),
+        ...(options.shard
+          ? { shard: options.shard, acceptFrom: displayPath(options.root, outputDir) }
+          : {}),
         retries: options.update ? 0 : config.stabilize.retries,
         platform: process.platform,
         arch: process.arch,

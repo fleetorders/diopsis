@@ -15,7 +15,7 @@ import {
   type Check,
 } from '../src/commands/doctor.ts';
 import { ciRecipe, gitattributesLines, initCommand } from '../src/commands/init.ts';
-import { CONFIG_FILENAMES } from '../src/config.ts';
+import { CONFIG_FILENAMES, loadConfig } from '../src/config.ts';
 
 const fixture = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -146,6 +146,8 @@ describe('runChecks', () => {
     await writeFile(path.join(root, '.gitignore'), '__screenshots__/\n');
     const check = find(await runChecks({ root }), /excludes __screenshots__/);
     assert.equal(check?.level, 'fail');
+    // Outside a repository there is no rule for git to name; the failure stands without one.
+    assert.doesNotMatch(check?.detail ?? '', /line \d/);
   });
 
   it('warns when the baselines are not protected from auto-merge', async () => {
@@ -298,6 +300,32 @@ describe('runChecks against git’s own ignore rules', () => {
     assert.equal(check?.level, 'fail');
   });
 
+  it('names the file, line and pattern of the rule that ignores the baselines', async () => {
+    const root = await project();
+    spawnSync('git', ['init'], { cwd: root, stdio: 'ignore' });
+    // The rule is the file's third line: the address has to carry the number, not only
+    // the file's name.
+    await writeFile(path.join(root, '.gitignore'), 'node_modules\ndist\n/__screenshots__/\n');
+    const check = find(await runChecks({ root }), /excludes __screenshots__/);
+    assert.equal(check?.level, 'fail');
+    assert.match(check?.detail ?? '', /ignored by \.gitignore line 3 \(`\/__screenshots__\/`\)/);
+  });
+
+  it('names a parent directory rule when the repository ignores the directory the project sits in', async () => {
+    // The repository lives at the temporary directory's root and ignores /sandbox/; the
+    // project inside it has no .gitignore of its own, so the rule that bites is the one
+    // two directories up, and the check has to say so.
+    const outer = await mkdtemp(path.join(tmpdir(), 'diopsis-outer-'));
+    temporaries.push(outer);
+    spawnSync('git', ['init'], { cwd: outer, stdio: 'ignore' });
+    await writeFile(path.join(outer, '.gitignore'), '/sandbox/\n');
+    const root = path.join(outer, 'sandbox', 'proj');
+    await cp(fixture, path.join(root, 'storybook-static'), { recursive: true });
+    const check = find(await runChecks({ root }), /excludes __screenshots__/);
+    assert.equal(check?.level, 'fail');
+    assert.match(check?.detail ?? '', /ignored by \.\.\/\.\.\/\.gitignore line 1 \(`\/sandbox\/`\)/);
+  });
+
   it('keeps the exact-line check outside a repository, where git cannot be asked', async () => {
     const root = await project();
     await writeFile(path.join(root, '.gitignore'), '/__screenshots__/\n');
@@ -422,16 +450,27 @@ describe('initCommand --force with an existing config', () => {
     assert.doesNotMatch(out, /320, 1280[^\n]*\(configured\)/);
   });
 
-  it('falls back to the defaults, said in one line, when the config cannot load', async () => {
+  it('refuses, and leaves the file alone, when the config cannot load', async () => {
     const root = await project();
-    await writeFile(path.join(root, 'diopsis.config.mjs'), 'export default 42;');
-    const { code, out } = await captureStdout(() => initCommand({ root, force: true }));
-    assert.equal(code, 0);
-    assert.match(out, /Could not load diopsis\.config\.mjs/);
+    const file = path.join(root, 'diopsis.config.mjs');
+    await writeFile(file, 'export default 42;');
+    assert.equal(await initCommand({ root, force: true }), 1);
+    assert.equal(await readFile(file, 'utf8'), 'export default 42;');
+    assert.equal(existsSync(path.join(root, '.gitattributes')), false);
+  });
 
-    const attributes = await readFile(path.join(root, '.gitattributes'), 'utf8');
-    assert.match(attributes, /__screenshots__/);
-    assert.match(out, /320, 1280[^\n]*\(configured\)/);
+  it('rewrites a config that loads back to the same values', async () => {
+    const root = await project();
+    await writeFile(
+      path.join(root, 'diopsis.config.mjs'),
+      "export default { compare: { threshold: 0.4, maxDiffPixels: 12 }, accessibility: 'fail', " +
+        "stabilize: { retries: 3, freezeClock: '2025-05-05T00:00:00Z' }, mask: ['.clock'], " +
+        "modes: { dark: { theme: 'dark' } }, budget: { captures: 500 }, timeout: 45000, " +
+        "compress: 'auto', capture: 'component', workers: 2 };",
+    );
+    const before = (await loadConfig(root)).config;
+    assert.equal(await initCommand({ root, force: true }), 0);
+    assert.deepEqual((await loadConfig(root)).config, before);
   });
 
   it("writes the replaced config's own values, not the defaults", async () => {

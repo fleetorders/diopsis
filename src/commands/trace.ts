@@ -3,7 +3,9 @@ import path from 'node:path';
 
 import { readPreviewStats, traceFile } from '../affected.ts';
 import { loadConfig } from '../config.ts';
+import { gitPrefix } from '../git.ts';
 import { readStoryIndex } from '../story-index.ts';
+import { ownIgnores } from './run.ts';
 
 export interface TraceOptions {
   root: string;
@@ -31,6 +33,10 @@ export async function traceCommand(options: TraceOptions): Promise<number> {
 
   const stories = await readStoryIndex(storybookDir);
   const stats = await readPreviewStats(storybookDir);
+  // Resolved exactly as `run --changed` resolves: the same ignores, and the same place of
+  // the project inside its repository.
+  const ignore = ownIgnores(config);
+  const prefix = gitPrefix(options.root);
 
   const lines: string[] = [];
   for (const given of options.files) {
@@ -42,12 +48,18 @@ export async function traceCommand(options: TraceOptions): Promise<number> {
     lines.push(`${given}:`);
 
     const outcome = traceFile({
-      file,
+      file: prefix ? `${prefix}/${file}` : file,
       stories,
       ...(stats ? { stats } : {}),
+      projectDir: prefix,
+      options: { ignore },
     });
     if (outcome.kind === 'full') {
       lines.push(`  full run — ${outcome.reason}`);
+      continue;
+    }
+    if (outcome.kind === 'ignored') {
+      lines.push(`  ignored by a run (${outcome.pattern}) — it never reaches a story`);
       continue;
     }
     if (outcome.kind === 'none') {

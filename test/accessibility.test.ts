@@ -355,6 +355,17 @@ describe('acceptCommand with accessibility findings', () => {
     assert.ok(existsSync(acceptedFile(root)));
   });
 
+  it('refuses, and leaves the file alone, when the accepted findings are not valid JSON', async () => {
+    // A merge conflict left in the committed file: rebuilding it from nothing would drop
+    // every other story's accepted findings.
+    const broken = '{\n<<<<<<< HEAD\n  "b--two": {}\n}\n';
+    const root = await project([capture({ accessibility: marked({ 'image-alt': ['img.a'] }) })], broken);
+    const { code, out } = await runAccept(root);
+    assert.equal(code, 1);
+    assert.match(out, /accessibility\.json is not valid JSON/);
+    assert.equal(await readFile(acceptedFile(root), 'utf8'), broken);
+  });
+
   it('leaves the file alone when the run never audited', async () => {
     const root = await project(
       [capture({ status: 'changed', artifacts: { actual: 'test-results/a--one-320-actual.png' } })],

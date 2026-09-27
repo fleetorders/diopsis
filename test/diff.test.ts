@@ -344,3 +344,57 @@ describe('diffCommand from a subdirectory', () => {
     assert.ok(existsSync(path.join(pkg, '.diopsis', 'diff', 'report.html')));
   });
 });
+/**
+ * Interaction states in a diff: the terminal lines name the state as the run's own lines
+ * do, and a baseline that cannot be read still keeps the mode and state its path carried —
+ * a failure remains a capture of the story it belongs to, not an anonymous row.
+ */
+describe('diffCommand with interaction states', () => {
+  it('names the state on the terminal line and keeps it on a failed entry', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'diopsis-diff-state-'));
+    temporaries.push(root);
+    const shots = path.join(root, '__screenshots__');
+    const platform = 'linux-x64';
+    // The state rides the name after the mode, as the writer lays it down: `320w-hover`
+    // for the plain capture of a state, `320w-dark-hover` for the mode's twin.
+    const write = async (story: string, mode: boolean, bytes: Uint8Array | Buffer): Promise<void> => {
+      await mkdir(path.join(shots, story), { recursive: true });
+      await writeFile(
+        path.join(shots, story, `320w${mode ? '-dark' : ''}-hover-${platform}.png`),
+        bytes,
+      );
+    };
+
+    git(root, 'init', '-b', 'main');
+    git(root, 'config', 'user.email', 'diff-test@diopsis.invalid');
+    git(root, 'config', 'user.name', 'Diff test');
+    await write('a--plain', false, encodePng(320, 200, filled(320, 200, [128, 128, 128])));
+    await write('a--plain', true, encodePng(320, 200, filled(320, 200, [80, 80, 80])));
+    await write('b--broken', true, encodePng(320, 200, filled(320, 200, [60, 60, 60])));
+    git(root, 'add', '__screenshots__');
+    git(root, 'commit', '-m', 'stateful baselines on main');
+
+    // Both of a--plain's hover baselines change; b--broken's is corrupted in the working
+    // tree, so its entry is built by the failure fallback rather than the comparison.
+    await write('a--plain', false, encodePng(320, 200, blocked(320, 200, 12, 12, 25, 10)));
+    await write('a--plain', true, encodePng(320, 200, blocked(320, 200, 5, 5, 20, 8)));
+    await writeFile(path.join(shots, 'b--broken', `320w-dark-hover-${platform}.png`), 'not a png');
+
+    const { value: code, out } = await withCapturedStdout(() => diffCommand({ root }));
+    assert.equal(code, 0);
+    assert.match(out, /~ a--plain @320 \{hover\} +250 px differ/);
+    assert.match(out, /~ a--plain @320 \[dark\] \{hover\} +160 px differ/);
+    assert.match(out, /! b--broken @320 \[dark\] \{hover\} +failed/);
+
+    const summary = await summaryAt(root);
+    const failed = summary.captures.find((capture) => capture.storyId === 'b--broken');
+    assert.equal(failed?.status, 'failed');
+    assert.equal(failed?.mode, 'dark');
+    assert.equal(failed?.state, 'hover');
+    const dark = summary.captures.find(
+      (capture) => capture.storyId === 'a--plain' && capture.mode === 'dark',
+    );
+    assert.equal(dark?.status, 'changed');
+    assert.equal(dark?.state, 'hover');
+  });
+});

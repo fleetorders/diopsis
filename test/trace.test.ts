@@ -130,6 +130,15 @@ describe('traceCommand', () => {
     assert.match(out, /src\/nope\.ts:\n  full run — .*not in the module graph/);
   });
 
+  it('says a run ignores its own output, as run --changed does', async () => {
+    const root = await traceRoot();
+    const { out } = await withCapturedStdout(() =>
+      traceCommand({ root, files: ['.diopsis/summary.json', '__screenshots__/a/320w.png'] }),
+    );
+    assert.match(out, /\.diopsis\/summary\.json:\n  ignored by a run \(\.diopsis\/\*\*\)/);
+    assert.match(out, /__screenshots__\/a\/320w\.png:\n  ignored by a run \(__screenshots__\/\*\*\)/);
+  });
+
   it('reports the missing stats file as the full-run reason it is', async () => {
     const root = await traceRoot(false);
     const { value: code, out } = await withCapturedStdout(() =>

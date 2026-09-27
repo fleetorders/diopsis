@@ -70,6 +70,12 @@ await writeFile(path.join(work, 'messagechannel-ticker.html'), page(`
   channel.port1.onmessage = () => { n += 1; setTimeout(() => channel.port2.postMessage(1), 100); };
   setTimeout(() => channel.port2.postMessage(1), 100);
   document.getElementById('out').textContent = 'messageport ticking';`));
+// A one-off reveal scheduled late in the quiet, outside any timer callback, and firing after
+// the horizon has passed: the horizon releases re-arming loops, never a timer seen once.
+await writeFile(path.join(work, 'late-reveal.html'), page(`
+  setTimeout(() => queueMicrotask(() => setTimeout(() => {
+    document.getElementById('out').textContent = 'revealed';
+  }, 450)), 200);`));
 // A cancelled timer is no longer pending.
 await writeFile(path.join(work, 'cleared.html'), page(`
   const t = setTimeout(() => {}, 400); clearTimeout(t);
@@ -212,6 +218,9 @@ try {
 
   const messageport = await cost('messagechannel-ticker.html');
   check('a timer re-armed from a message port does not hold the wait open', messageport < 1000, `+${messageport} ms`);
+
+  const reveal = await open('late-reveal.html');
+  check('a timer first scheduled late in the quiet is waited for', reveal.text === 'revealed', reveal.text);
 
   const cleared = await cost('cleared.html');
   check('a cleared timer is not waited for', cleared < 300, `+${cleared} ms`);

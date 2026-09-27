@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 
+import { acceptCommand } from '../src/commands/accept.ts';
 import { mergeCommand } from '../src/commands/merge.ts';
 import {
   changedStoriesOf,
@@ -424,5 +425,59 @@ describe('mergeCommand', () => {
     const { code } = await runMerge(root, ['artifacts/deep', 'artifacts/shard-2-of-2']);
     assert.equal(code, 0);
     assert.equal((await mergedSummary(root)).captures.length, 2);
+  });
+
+  it('refuses a shard summary whose captures are not captures, naming it', async () => {
+    const root = await project([
+      { shard: { index: 1, total: 2 }, captures: [capture({})] },
+      { shard: { index: 2, total: 2 }, captures: [capture({ storyId: 'b--two', snapshotPath: 'b--two/320w-linux-x64.png' })] },
+    ]);
+    const second = path.join(root, '.diopsis', 'shard-2-of-2', 'summary.json');
+    const summary = JSON.parse(await readFile(second, 'utf8')) as RunSummary;
+    await writeFile(second, JSON.stringify({ ...summary, captures: [null], affected: {} }));
+    const { code, err } = await runMerge(root);
+    assert.equal(code, 2);
+    assert.match(err, /shard-2-of-2\/summary\.json is not a run summary — capture 1/);
+  });
+
+  it('refuses an affected set without a merge base instead of crashing', async () => {
+    const root = await project([
+      { shard: { index: 1, total: 1 }, captures: [capture({})], summary: { affected: {} as RunSummary['affected'] } },
+    ]);
+    const { code, err } = await runMerge(root);
+    assert.equal(code, 2);
+    assert.match(err, /names no merge base/);
+  });
+});
+
+describe('accepting a merged run', () => {
+  it('adopts images that live in the shard directories beside the merged one', async () => {
+    const root = await project([
+      {
+        shard: { index: 1, total: 2 },
+        captures: [capture({ status: 'changed', artifacts: { actual: 'test-results/a-actual.png' } })],
+      },
+      {
+        shard: { index: 2, total: 2 },
+        captures: [capture({ storyId: 'c--three', status: 'new', snapshotPath: 'c--three/320w-linux-x64.png', artifacts: { actual: 'test-results/c-actual.png' } })],
+      },
+    ]);
+    assert.equal((await runMerge(root)).code, 1);
+
+    const writeOut = process.stdout.write;
+    const writeErr = process.stderr.write;
+    const said: string[] = [];
+    process.stdout.write = ((chunk: unknown) => said.push(String(chunk)) > 0) as typeof writeOut;
+    process.stderr.write = ((chunk: unknown) => said.push(String(chunk)) > 0) as typeof writeErr;
+    let code: number;
+    try {
+      code = await acceptCommand({ root, from: '.diopsis/merged', noStage: true });
+    } finally {
+      process.stdout.write = writeOut;
+      process.stderr.write = writeErr;
+    }
+    assert.equal(code, 0, said.join(''));
+    assert.ok(existsSync(path.join(root, '__screenshots__', 'a--one', '320w-linux-x64.png')));
+    assert.ok(existsSync(path.join(root, '__screenshots__', 'c--three', '320w-linux-x64.png')));
   });
 });

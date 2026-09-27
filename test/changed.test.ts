@@ -58,9 +58,11 @@ async function withCapturedStdout<T>(
  * stats file whose graph contains every story file (the sanity check demands it) plus one
  * module no story imports — a change there must leave the whole matrix carried.
  */
-async function repoWithBuild(): Promise<{ root: string; mergeBase: string }> {
-  const root = await mkdtemp(path.join(tmpdir(), 'diopsis-changed-'));
-  temporaries.push(root);
+async function repoWithBuild(subdir = ''): Promise<{ root: string; mergeBase: string }> {
+  const top = await mkdtemp(path.join(tmpdir(), 'diopsis-changed-'));
+  temporaries.push(top);
+  // The project may sit in a directory of a larger repository; git runs from the top.
+  const root = path.join(top, subdir);
   const build = path.join(root, 'storybook-static');
   await mkdir(build, { recursive: true });
 
@@ -110,12 +112,12 @@ async function repoWithBuild(): Promise<{ root: string; mergeBase: string }> {
     await writeFile(path.join(root, file), 'export {};\n');
   }
 
-  git(root, 'init', '-b', 'main');
-  git(root, 'config', 'user.email', 'changed-test@diopsis.invalid');
-  git(root, 'config', 'user.name', 'Changed test');
-  git(root, 'add', '.');
-  git(root, 'commit', '-m', 'build and sources');
-  const mergeBase = git(root, 'rev-parse', 'HEAD');
+  git(top, 'init', '-b', 'main');
+  git(top, 'config', 'user.email', 'changed-test@diopsis.invalid');
+  git(top, 'config', 'user.name', 'Changed test');
+  git(top, 'add', '.');
+  git(top, 'commit', '-m', 'build and sources');
+  const mergeBase = git(top, 'rev-parse', 'HEAD');
 
   // Deliberately uncommitted: the module no story imports.
   await writeFile(path.join(root, 'src/lib/theme.ts'), 'export const theme = "dark";\n');
@@ -342,5 +344,28 @@ describe('runCommand --changed and baselines', () => {
     assert.equal(code, 0);
     assert.match(out, /  changed   nothing affected since main\n/);
     assert.doesNotMatch(out, /full run/);
+  });
+});
+
+describe('runCommand --changed in a directory of a larger repository', () => {
+  it('matches git’s top-level paths to the project’s graph, output ignored', async () => {
+    const { root } = await repoWithBuild('packages/app');
+    // Run output inside the project is untracked; it must be ignored under its real path.
+    await mkdir(path.join(root, '.diopsis'), { recursive: true });
+    await writeFile(path.join(root, '.diopsis', 'summary.json'), '{}');
+    const { value: code, out } = await withCapturedStdout(() => runCommand({ root, changed: true }));
+
+    assert.equal(code, 0);
+    assert.match(out, /  changed   nothing affected since main\n/);
+    assert.doesNotMatch(out, /full run/);
+  });
+
+  it('still sees an untracked file outside the project', async () => {
+    const { root } = await repoWithBuild('packages/app');
+    await writeFile(path.join(root, '..', 'shared.ts'), 'export {};\n');
+    assert.deepEqual(changedFilesSince(root).files, [
+      'packages/app/src/lib/theme.ts',
+      'packages/shared.ts',
+    ]);
   });
 });

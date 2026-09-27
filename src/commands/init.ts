@@ -34,52 +34,86 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-/** The values the config template writes; `--force` passes the replaced config's own. */
-type TemplateConfig = Pick<
-  DiopsisConfig,
-  'storybookDir' | 'snapshotDir' | 'outputDir' | 'viewports' | 'viewportHeight' | 'image'
->;
+/** Top-level fields the template writes in its own commented layout. */
+const TEMPLATE_FIELDS = new Set<string>([
+  'storybookDir', 'snapshotDir', 'outputDir', 'viewports', 'viewportHeight', 'image',
+  'stabilize', 'mask', 'compare',
+]);
+
+/** A config value as source, quoted like the template: every field a config holds is plain data. */
+function literal(value: unknown): string {
+  if (typeof value === 'string') return `'${value.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+  if (Array.isArray(value)) return `[${value.map(literal).join(', ')}]`;
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value).filter(([, entry]) => entry !== undefined);
+    const key = (name: string) => (/^[A-Za-z_$][\w$]*$/.test(name) ? name : literal(name));
+    return `{ ${entries.map(([name, entry]) => `${key(name)}: ${literal(entry)}`).join(', ')} }`;
+  }
+  return String(value);
+}
+
+/** The entries of `values` that differ from `defaults`, as `key: value` source lines. */
+function differing(values: object, defaults: object, skip: Set<string> = new Set()): string[] {
+  const base = defaults as Record<string, unknown>;
+  return Object.entries(values)
+    .filter(([key, value]) => !skip.has(key) && value !== undefined)
+    .filter(([key, value]) => literal(value) !== literal(base[key]))
+    .map(([key, value]) => `${key}: ${literal(value)}`);
+}
 
 /**
  * The TypeScript form types itself through an `import type`, which Node's type stripping
  * erases along with the annotation. Nothing is imported at runtime, so the config still loads
  * when the package cannot be resolved from here — under `npx`, or before `npm install` has run.
  */
-function configSource(typescript: boolean, config: TemplateConfig): string {
+function configSource(typescript: boolean, config: DiopsisConfig): string {
   const header = typescript
     ? "import type { UserConfig } from 'diopsis';\n\nexport default {"
     : "/** @type {import('diopsis').UserConfig} */\nexport default {";
   const footer = typescript ? '} satisfies UserConfig;' : '};';
-  const viewports = Object.entries(config.viewports)
-    .map(([name, widths]) => `${name}: [${widths.join(', ')}]`)
-    .join(', ');
+  // The template's own stabilize and compare keys always, then whatever else the config
+  // set; any other field is written only when it is not the default, so a fresh config stays
+  // short and a replaced one keeps every value it had.
+  const shown = ['freezeClock', 'waitForNetworkIdle', 'disableAnimations'] as const;
+  const stabilize = [
+    ...shown.map((key) => `${key}: ${literal(config.stabilize[key])}`),
+    ...differing(config.stabilize, defaultConfig.stabilize, new Set(shown)),
+  ];
+  const compare = [
+    `threshold: ${config.compare.threshold}`,
+    `maxDiffPixelRatio: ${config.compare.maxDiffPixelRatio}`,
+    ...differing(
+      config.compare,
+      defaultConfig.compare,
+      new Set(['threshold', 'maxDiffPixelRatio']),
+    ),
+  ];
+  const rest = differing(config, defaultConfig, TEMPLATE_FIELDS);
 
   return `${header}
-  storybookDir: '${config.storybookDir}',
-  snapshotDir: '${config.snapshotDir}',
-  outputDir: '${config.outputDir}',
+  storybookDir: ${literal(config.storybookDir)},
+  snapshotDir: ${literal(config.snapshotDir)},
+  outputDir: ${literal(config.outputDir)},
 
   // Every width multiplies the whole story set. Two widths cost half of what four do,
   // in runtime, repository weight and flake surface alike.
-  viewports: { ${viewports} },
+  viewports: ${literal(config.viewports)},
 
   viewportHeight: ${config.viewportHeight},
 
   // One image name, read by both baseline generation and the CI job.
-  image: '${config.image}',
+  image: ${literal(config.image)},
 
   stabilize: {
-    freezeClock: '${defaultConfig.stabilize.freezeClock as string}',
-    waitForNetworkIdle: true,
-    disableAnimations: true,
+${stabilize.map((line) => `    ${line},`).join('\n')}
   },
 
   // Regions excluded from comparison. Prefer deleting the annotation over masking:
   // the clock is frozen, so anything that only hid a date no longer needs to.
-  mask: ['[data-diopsis-ignore]'],
+  mask: ${literal(config.mask)},
 
-  compare: { threshold: ${defaultConfig.compare.threshold}, maxDiffPixelRatio: ${defaultConfig.compare.maxDiffPixelRatio} },
-${footer}
+  compare: { ${compare.join(', ')} },
+${rest.map((line) => `  ${line},\n`).join('')}${footer}
 `;
 }
 
@@ -136,19 +170,22 @@ export async function initCommand(options: InitOptions): Promise<number> {
   // With --force, the config being replaced still decides everything downstream of it:
   // its snapshotDir and outputDir are what .gitattributes and .gitignore must keep
   // guarding, its widths and image are what the cost table and the CI recipe describe,
-  // and its own values are what the rewritten config carries — a re-run must not quietly
-  // repoint git settings, or the config itself, at the default layout. A config that
-  // cannot be loaded falls back to the defaults, said in one line rather than silently.
+  // and every value it sets is what the rewritten config carries — a re-run must not
+  // quietly repoint git settings, or reset the config itself, to the defaults. A config
+  // that cannot be loaded is refused rather than replaced: rewriting it from the defaults
+  // would destroy the one copy of settings that may be a small fix away from loading.
   let config = defaultConfig;
-  const notes: string[] = [];
   if (existing) {
     try {
       config = (await loadConfig(options.root)).config;
-    } catch {
-      notes.push(
-        `Could not load ${path.basename(existing)}; the git settings, cost table, CI ` +
-          'recipe and the rewritten config use the defaults.',
+    } catch (error) {
+      process.stderr.write(
+        `${error instanceof Error ? error.message : String(error)}\n` +
+          `init --force rewrites a config from its own values, so it will not replace one ` +
+          `it cannot read. Fix ${path.basename(existing)}, or delete it to start from the ` +
+          'defaults.\n',
       );
+      return 1;
     }
   }
 
@@ -175,7 +212,6 @@ export async function initCommand(options: InitOptions): Promise<number> {
   const lines: string[] = [
     '',
     `Wrote ${configName}`,
-    ...notes,
     ...(wroteAttributes ? ['Wrote .gitattributes entries for the baselines'] : []),
     ...(wroteIgnore ? [`Wrote .gitignore entry for ${config.outputDir}/`] : []),
     '',

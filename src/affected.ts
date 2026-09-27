@@ -43,9 +43,9 @@ export interface AffectedOptions {
   configDir?: string;
   /** Storybook's static directories, project-relative: any change inside one is global. */
   staticDirs?: string[];
-  /** File names that reshape every capture, repo-root-relative. Default: Diopsis's own. */
+  /** File names that reshape every capture, project-relative. Default: Diopsis's own. */
   configFiles?: string[];
-  /** Globs removed from the changed set before classification. */
+  /** Globs removed from the changed set before classification, project-relative. */
   ignore?: string[];
 }
 
@@ -158,8 +158,10 @@ function resolveAffectedOptions(
   return {
     configDir: joinPosix(projectDir, options?.configDir ?? '.storybook'),
     staticDirs: (options?.staticDirs ?? []).map((dir) => joinPosix(projectDir, dir)),
-    configFiles: options?.configFiles ?? [...CONFIG_FILENAMES],
-    ignore: options?.ignore ?? [],
+    configFiles: (options?.configFiles ?? [...CONFIG_FILENAMES]).map((file) =>
+      joinPosix(projectDir, file),
+    ),
+    ignore: (options?.ignore ?? []).map((pattern) => joinPosix(projectDir, pattern)),
   };
 }
 
@@ -374,6 +376,8 @@ export interface TraceChain {
 export type TraceOutcome =
   | { kind: 'full'; reason: string }
   | { kind: 'none' }
+  /** The file matches an ignore glob: a run drops it from the changed set before deciding. */
+  | { kind: 'ignored'; pattern: string }
   | { kind: 'chains'; chains: TraceChain[]; more: boolean };
 
 /** How many chains `trace` walks per file before the listing is cut short. */
@@ -394,6 +398,9 @@ export function traceFile(input: {
   const projectDir = cleanDir(input.projectDir ?? '');
   const options = resolveAffectedOptions(input.options, projectDir);
   const file = normaliseModuleName(input.file).path;
+
+  const pattern = options.ignore.find((glob) => matchesGlob(file, glob));
+  if (pattern !== undefined) return { kind: 'ignored', pattern };
 
   const trigger = fullRunReasonFor(file, options);
   if (trigger) return { kind: 'full', reason: trigger };

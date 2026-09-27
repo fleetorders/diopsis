@@ -321,6 +321,7 @@ export async function diffCommand(options: DiffOptions): Promise<number> {
         storyId: parsed.storyId,
         width: parsed.width,
         ...(parsed.mode ? { mode: parsed.mode } : {}),
+        ...(parsed.state ? { state: parsed.state } : {}),
         status: 'failed',
         snapshotPath: change.path,
         error: error instanceof Error ? error.message : String(error),
@@ -401,7 +402,8 @@ export async function diffCommand(options: DiffOptions): Promise<number> {
           : `${capture.diffPixels.toLocaleString('en-US')} px differ`;
       lines.push(
         `  ${mark} ${capture.storyId} @${capture.width}` +
-          `${capture.mode ? ` [${capture.mode}]` : ''}  ${detail}`,
+          `${capture.mode ? ` [${capture.mode}]` : ''}` +
+          `${capture.state ? ` {${capture.state}}` : ''}  ${detail}`,
       );
       if (capture.error) {
         for (const line of capture.error.split('\n').slice(0, 2)) {
