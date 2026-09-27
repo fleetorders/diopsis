@@ -7,6 +7,7 @@ import {
   ACCEPTED_A11Y_FILENAME,
   adoptFindings,
   formatAcceptedA11y,
+  readAcceptedA11y,
   type AcceptedAccessibility,
 } from '../accessibility.ts';
 import { recompressBaselines, writeRecompressReport } from '../compress.ts';
@@ -101,11 +102,16 @@ export async function acceptCommand(options: AcceptOptions): Promise<number> {
   let acceptedExisting: AcceptedAccessibility = {};
   let acceptedText = '';
   if (summary.captures.some((capture) => capture.accessibility)) {
+    // An absent file is a first accept; an unreadable one is refused, because rebuilding
+    // it from nothing would drop every other story's accepted findings in the rewrite.
     try {
-      acceptedText = await readFile(acceptedPath, 'utf8');
-      acceptedExisting = JSON.parse(acceptedText) as AcceptedAccessibility;
-    } catch {
-      // Nothing accepted yet — the file is absent on a first accept.
+      acceptedExisting = await readAcceptedA11y(acceptedPath);
+      if (existsSync(acceptedPath)) acceptedText = await readFile(acceptedPath, 'utf8');
+    } catch (error) {
+      process.stderr.write(
+        `Cannot accept — ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+      return 1;
     }
   }
   const adopted = adoptFindings(acceptedExisting, summary.captures, inScope);
@@ -122,10 +128,23 @@ export async function acceptCommand(options: AcceptOptions): Promise<number> {
   // Every source and destination is resolved and contained before anything is copied: a
   // summary naming a path outside the run or the snapshot directory refuses the whole
   // accept — nothing is copied at all — with the entry that escaped named.
+  // A merged run's images stay in the shard directories it was merged from, wherever those
+  // were, so each image is contained by one of them. Only a directory named like a shard
+  // counts: the list is data from the summary, and must not widen the base to anything.
+  const merged = summary.acceptFrom !== undefined && summary.shard === undefined;
+  const runBases = merged
+    ? (Array.isArray(summary.shardDirs) ? summary.shardDirs : [])
+        .filter((dir): dir is string => typeof dir === 'string')
+        .map((dir) => path.resolve(outputDir, dir))
+        .filter((dir) => /^shard-\d+-of-\d+$/.test(path.basename(dir)))
+    : [outputDir];
   const copies: Array<{ from: string; to: string }> = [];
   const escapes: string[] = [];
   for (const capture of wanted) {
-    const from = containedPath(outputDir, capture.artifacts.actual!);
+    const actual = path.resolve(outputDir, capture.artifacts.actual!);
+    const from = runBases
+      .map((base) => containedPath(base, path.relative(base, actual)))
+      .find((contained) => contained !== undefined);
     const to = containedPath(snapshotDir, capture.snapshotPath);
     if (from !== undefined && to !== undefined) {
       copies.push({ from, to });
@@ -133,7 +152,8 @@ export async function acceptCommand(options: AcceptOptions): Promise<number> {
     }
     if (from === undefined) {
       escapes.push(
-        `${capture.storyId}: run image "${capture.artifacts.actual}" is not inside ${readFrom}`,
+        `${capture.storyId}: run image "${capture.artifacts.actual}" is not inside ` +
+          (merged ? `a shard directory ${readFrom} was merged from` : readFrom),
       );
     }
     if (to === undefined) {

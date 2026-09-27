@@ -1086,3 +1086,27 @@ restore paths mean recompression leaves either smaller-but-identical pixels or t
 bytes, never a corrupted baseline.
 
 **Scope:** repo.
+
+## D-044 — 2026-09-27 — A timer loop is released by the network quiet; a first timer is not
+
+**Decision:** This adds to D-023. A timer re-armed from a microtask or a message port, rather
+than from inside a timer callback, is not recognised by the timer-inside-timer rule, so it
+could hold every capture open until `settleTimeout`. Once no request has been in flight or
+settled for 500 ms, pending timers stop holding the wait only when their callback's source
+text has already been scheduled at least once before on that page. A callback scheduled for
+the first time still holds the wait, however late in the quiet it was scheduled, and a first
+callback that has just fired still earns the 50 ms grace for a request it may have started.
+
+**Why:** the first form of this rule released every pending timer after 500 ms of network
+quiet. That also released a one-off reveal or debounce timer scheduled late in the quiet, so
+the capture was taken before the change it was about to make. The source text tells the two
+cases apart without knowing any framework: a loop schedules the same code again and again,
+while a one-off reveal schedules its code once.
+
+**Consequences:** two callbacks with identical source text count as one, so a helper that
+wraps `setTimeout` for unrelated one-off work can be treated as a loop after its second use.
+Only the time after 500 ms of network quiet is affected, and `settleTimeout` still bounds the
+wait. `scripts/stabilize-check.mjs` covers a late one-off reveal, beside the tickers re-armed
+from a microtask and from a message port.
+
+**Scope:** repo.

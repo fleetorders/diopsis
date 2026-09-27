@@ -48,6 +48,8 @@ export interface DiopsisReporterOptions {
   mode: 'run' | 'update';
   /** The shard this run captures, when it was started with `--shard`; kept in the summary. */
   shard?: { index: number; total: number };
+  /** Where `accept` reads this run from, when not the output directory — a shard's own. */
+  acceptFrom?: string;
   /**
    * Retries the run was generated with. Region computation starts only on the attempt that
    * can decide a capture — the one no retry can replace — so a superseded attempt's diff is
@@ -355,6 +357,7 @@ export default class DiopsisReporter implements Reporter {
       arch: this.options.arch,
       mode: this.options.mode,
       ...(this.options.shard ? { shard: this.options.shard } : {}),
+      ...(this.options.acceptFrom ? { acceptFrom: this.options.acceptFrom } : {}),
       ...(interrupted ? { interrupted: true } : {}),
       snapshotDir: this.options.snapshotDir,
       totals: {

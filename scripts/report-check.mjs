@@ -162,7 +162,7 @@ await page.goto(url);
 // the very same element after two filter changes — hiding rows must not rebuild them.
 await page.locator('#story-card--default img').first().evaluate((i) => { i.taggedByCheck = true; });
 await page.fill('#q', 'long');
-await page.waitForTimeout(150);
+await page.waitForFunction(() => flat.length === 1 && flat[0].capture.storyId === 'card--long');
 check('search narrows the list', (await page.locator('details.story:visible').count()) === 1);
 check('chip counts follow the search', (await page.locator('.chip[data-key=all] .n').textContent()) === '1');
 check('a filtered subset offers its own accept', (await page.locator('#acceptvisible button').count()) === 1);
@@ -178,7 +178,7 @@ await page.locator('#acceptvisible button').click();
 check('the filtered accept is one command on one line',
   (await page.evaluate(() => window.__copied)) === 'npx diopsis accept card--long');
 await page.fill('#q', '');
-await page.waitForTimeout(150);
+await page.waitForFunction(() => flat.length === 6);
 check('no filtered accept when nothing is filtered', (await page.locator('#acceptvisible button').count()) === 0);
 check('no reviewed-accept button before any tick',
   (await page.locator('#acceptreviewed button').count()) === 0);
@@ -195,7 +195,8 @@ check('j places a cursor', (await page.locator('.capture.current').count()) === 
 await page.keyboard.press('j');
 check('the cursor stays single', (await page.locator('.capture.current').count()) === 1);
 await page.keyboard.press('3');
-await page.waitForTimeout(150);
+await page.waitForFunction(() =>
+  document.querySelector('.capture.current .modes button[aria-pressed=true]')?.textContent === 'Swipe');
 check('a number key switches comparison mode',
   (await page.locator('.capture.current .modes button[aria-pressed=true]').textContent()) === 'Swipe');
 check('the swipe control is named for assistive tech',
@@ -209,7 +210,12 @@ check('an arrow drives the swipe',
 // D-020). This names the story holding the mismatched pair rather than trusting wherever the
 // cursor happened to stop.
 await page.locator('#story-card--default').getByRole('button', { name: 'Swipe' }).first().click();
-await page.waitForTimeout(150);
+await page.waitForFunction(() => {
+  const wrap = document.querySelector('#story-card--default .swipe');
+  if (!wrap) return false;
+  const imgs = wrap.querySelectorAll('img');
+  return imgs.length === 2 && [...imgs].every((i) => i.complete && i.naturalWidth > 0);
+});
 const geometry = await page.locator('#story-card--default .swipe').evaluate((wrap) => {
   const [base, top] = wrap.querySelectorAll('img');
   return {
@@ -300,10 +306,11 @@ check('a capture shown again keeps the page-wide mode',
 // through its tile, so what follows holds whatever the steps above left showing or filtered.
 await page.locator('.tile[data-key="card--default@640"]').click();
 await page.keyboard.press('r');
-await page.waitForTimeout(100);
+await page.waitForFunction(() => document.getElementById('progress').textContent.startsWith('1 of'));
 check('r ticks a capture off', (await page.locator('#progress').textContent()).startsWith('1 of'));
 await page.reload();
-await page.waitForTimeout(250);
+// The rebuilt page has to read its ticks back before it can claim they survived it.
+await page.waitForFunction(() => document.getElementById('progress').textContent.startsWith('1 of'));
 check('triage survives a reload', (await page.locator('#progress').textContent()).startsWith('1 of'));
 
 // The bridge from ticks to a command: what was reviewed becomes one accept call, holding
@@ -324,11 +331,13 @@ check('the reviewed accept copies one command',
 // A render-failure is reviewable but not adoptable: its tick counts as reviewed progress
 // and still joins no command.
 await page.locator('#story-header--sticky .mark').click();
-await page.waitForTimeout(100);
+await page.waitForFunction(() =>
+  document.querySelector('#acceptreviewed button')?.textContent === 'Copy accept for 1 reviewed story');
 check('a ticked render-failure joins no accept command',
   (await page.locator('#acceptreviewed button').textContent()) === 'Copy accept for 1 reviewed story');
 await page.locator('#story-card--long .mark').click();
-await page.waitForTimeout(100);
+await page.waitForFunction(() =>
+  document.querySelector('#acceptreviewed button')?.textContent === 'Copy accept for 2 reviewed stories');
 check('ticks across stories collect into one label',
   (await page.locator('#acceptreviewed button').textContent()) === 'Copy accept for 2 reviewed stories');
 await page.locator('#acceptreviewed button').click();
@@ -343,23 +352,28 @@ check('a capture opens to actual size', (await page.locator('.stage.actual').cou
 // pixel stays under the eye in each. The region story's renders are wider than their panes,
 // which is what gives the scroll something to carry.
 await page.locator('#story-region--blocks').getByRole('button', { name: 'Side by side' }).click();
-await page.waitForTimeout(150);
+await page.waitForFunction(() =>
+  document.querySelectorAll('#story-region--blocks .pair .stage').length === 2);
 const panes = page.locator('#story-region--blocks .pair .stage');
 check('side by side is two panes', (await panes.count()) === 2);
 await panes.nth(0).click();
-await page.waitForTimeout(150);
+await page.waitForFunction(() =>
+  document.querySelectorAll('#story-region--blocks .pair .stage.actual').length === 2);
 check('clicking either pane toggles actual size for both',
   (await page.locator('#story-region--blocks .pair .stage.actual').count()) === 2);
 await panes.nth(0).evaluate((s) => { s.scrollLeft = 400; });
-await page.waitForTimeout(150);
+await page.waitForFunction(() =>
+  [...document.querySelectorAll('#story-region--blocks .pair .stage')].every((s) => s.scrollLeft === 400));
 check('scrolling one pane carries the other to the same offset',
   (await panes.evaluateAll((els) => els.map((s) => s.scrollLeft).join('|'))) === '400|400');
 await panes.nth(1).evaluate((s) => { s.scrollLeft = 200; });
-await page.waitForTimeout(150);
+await page.waitForFunction(() =>
+  [...document.querySelectorAll('#story-region--blocks .pair .stage')].every((s) => s.scrollLeft === 200));
 check('the scroll sync runs from either pane',
   (await panes.evaluateAll((els) => els.map((s) => s.scrollLeft).join('|'))) === '200|200');
 await panes.nth(1).click();
-await page.waitForTimeout(150);
+await page.waitForFunction(() =>
+  document.querySelectorAll('#story-region--blocks .pair .stage.actual').length === 0);
 check('clicking the other pane stands both down from actual size',
   (await page.locator('#story-region--blocks .pair .stage.actual').count()) === 0);
 
@@ -404,11 +418,14 @@ check('tiles follow the list order',
 
 // Clicking through: the story was closed first, so the check knows the tile is what opened it.
 await page.locator('#story-card--long > summary').click();
-await page.waitForTimeout(100);
+await page.waitForFunction(() => !document.getElementById('story-card--long').open);
 check('the story starts closed',
   (await page.locator('#story-card--long').getAttribute('open')) === null);
 await page.locator('.tile[data-key="card--long@380"]').click();
-await page.waitForTimeout(150);
+await page.waitForFunction(() => {
+  const story = document.getElementById('story-card--long');
+  return story.open && flat[cursor] && flat[cursor].capture.storyId === 'card--long';
+});
 const landed = page.locator('.capture.current');
 check('a tile opens its story',
   (await page.locator('#story-card--long').getAttribute('open')) !== null);
@@ -422,24 +439,27 @@ check('a tile lands the cursor on its capture',
 check('a reviewed capture is dimmed in the sheet',
   (await page.locator('.tile[data-key="card--default@640"]').getAttribute('class')).includes('done'));
 await page.locator('#story-card--sliver .mark').click();
-await page.waitForTimeout(100);
+await page.waitForFunction(() =>
+  document.querySelector('.tile[data-key="card--sliver@380"]')?.classList.contains('done'));
 check('ticking in the list dims the tile at once',
   (await page.locator('.tile[data-key="card--sliver@380"]').getAttribute('class')).includes('done'));
 
 // The sheet follows the filter and the search; with nothing left to review it steps aside.
 await page.fill('#q', 'header');
-await page.waitForTimeout(150);
+await page.waitForFunction(() =>
+  document.querySelectorAll('.tile:not([hidden])').length === 1 &&
+  document.getElementById('ov-toggle').textContent === 'Overview · 1');
 check('the search narrows the sheet with the list',
   (await page.locator('.tile:not([hidden])').count()) === 1 &&
   (await page.locator('#ov-toggle').textContent()) === 'Overview · 1');
 await page.fill('#q', '');
-await page.waitForTimeout(150);
+await page.waitForFunction(() => document.querySelectorAll('.tile:not([hidden])').length === 6);
 await page.locator('.chip[data-key=unchanged]').click();
-await page.waitForTimeout(150);
+await page.waitForFunction(() => document.querySelector('.overview')?.hidden === true);
 check('a filter with nothing to review hides the overview',
   (await page.locator('.overview[hidden]').count()) === 1);
 await page.locator('.chip[data-key=review]').click();
-await page.waitForTimeout(150);
+await page.waitForFunction(() => document.querySelectorAll('.tile:not([hidden])').length === 6);
 
 // The flake guard. An unstable capture passed, so it is not a change and not reviewable:
 // kept out of the review count and off the contact sheet, but offered under its own filter
@@ -451,7 +471,7 @@ check('the needs-review count leaves unstable captures out',
 check('the contact sheet keeps unstable captures out',
   (await page.locator('.tile[data-key="widget--flicker@380"]').count()) === 0);
 await page.locator('.chip[data-key=unstable]').click();
-await page.waitForTimeout(150);
+await page.waitForFunction(() => flat.length === 1 && flat[0].capture.unstable === true);
 check('the unstable filter shows the unstable capture alone',
   (await page.locator('details.story:visible').count()) === 1);
 const unstableRow = await page.locator('#story-widget--flicker .capture .w').textContent();
@@ -466,7 +486,7 @@ check('an unstable capture offers nothing to accept',
   (await page.locator('#story-widget--flicker .accept').count()) === 0 &&
   !(await page.locator('#story-widget--flicker').textContent()).includes('diopsis accept'));
 await page.locator('.chip[data-key=review]').click();
-await page.waitForTimeout(150);
+await page.waitForFunction(() => flat.length === 6);
 
 // Collapse: the key, the header toggle, and the choice outliving a reload.
 await page.locator('body').click({ position: { x: 5, y: 300 } });
@@ -482,7 +502,7 @@ await page.locator('#ov-toggle').click();
 check('the header toggle collapses the overview',
   (await page.locator('#ov-sheet[hidden]').count()) === 1);
 await page.reload();
-await page.waitForTimeout(250);
+await page.waitForFunction(() => document.getElementById('ov-sheet')?.hidden === true);
 check('the collapsed choice survives a reload',
   (await page.locator('#ov-sheet[hidden]').count()) === 1);
 await page.keyboard.press('o');
@@ -491,7 +511,7 @@ check('the overview opens again after the reload',
 
 // Noise that used to be printed on every row of a full matrix.
 await page.locator('.chip[data-key=all]').click();
-await page.waitForTimeout(200);
+await page.waitForFunction(() => document.querySelectorAll('details.story:not([hidden])').length === 8);
 check('an unchanged capture reports no missing artifacts',
   !(await page.locator('#story-card--default').textContent()).includes('No image artifacts'));
 // The control: the same note must still fire where an absence genuinely needs explaining.
@@ -563,7 +583,9 @@ const flashAt = (i) => page.waitForFunction((want) => {
 await page.locator('.tile[data-key="region--blocks@1600"]').click();
 await page.locator('body').click({ position: { x: 5, y: 300 } });
 await page.keyboard.press('2');
-await page.waitForTimeout(150);
+await page.waitForFunction(() =>
+  document.querySelector('#story-region--blocks .capture.current .modes button[aria-pressed=true]')
+    ?.textContent === 'Side by side');
 check('the boxes belong to the overlay, not the capture',
   (await page.locator('#story-region--blocks .stage .region').count()) === 0 &&
   (await page.locator('#story-region--blocks .capture.current .modes button[aria-pressed=true]')
@@ -580,7 +602,8 @@ check('n again reaches the next region',
 await page.keyboard.press('N');
 await flashAt(0);
 check('N goes back to the previous region', (await flashState()).at === 0);
-await page.waitForTimeout(950);
+// The emphasis is on a timer of its own: the wait ends when the box has handed itself back.
+await page.waitForFunction(() => !document.querySelector('#story-region--blocks .region.flash'));
 check('the emphasis hands the box back after a moment',
   (await page.locator('#story-region--blocks .region.flash').count()) === 0);
 
@@ -600,7 +623,8 @@ await page.close();
 // of the whole image — by width-scaled CSS, so no second image is embedded.
 page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
 await page.goto(url);
-await page.waitForTimeout(250);
+await page.waitForFunction(() => [...document.querySelectorAll('.tile img')]
+  .every((i) => i.complete && i.naturalWidth > 0));
 const cropped = await page.locator('.tile[data-key="region--blocks@1600"] .thumb').evaluate((t) => {
   const img = t.querySelector('img');
   return { tile: t.clientWidth, img: img.clientWidth };
@@ -629,7 +653,8 @@ page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
 page.on('pageerror', (e) => crashes.push(String(e)));
 page.on('console', (m) => { if (m.type() === 'error') crashes.push(m.text()); });
 await page.goto('file://' + path.join(work, 'broken.html'));
-await page.waitForTimeout(250);
+await page.waitForFunction(() =>
+  (document.getElementById('meta')?.textContent ?? '').includes('captures across'));
 check('a run with an undecodable diff still renders the report',
   (await page.locator('#meta').textContent()).includes('captures across'));
 check('an undecodable diff reports no regions',
@@ -641,7 +666,8 @@ await page.close();
 // A link into the report lands even when the active filter excludes its target.
 page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
 await page.goto(url + '#story-footer--default');
-await page.waitForTimeout(250);
+await page.waitForFunction(() => document.getElementById('story-footer--default') &&
+  !document.getElementById('story-footer--default').hidden);
 check('a deep link widens the filter to reach its story',
   (await page.locator('#story-footer--default:visible').count()) === 1);
 check('a deep link opens the story it names',
@@ -660,7 +686,7 @@ const fewSummary = {
 await writeFile(path.join(work, 'few.html'), await renderReport(fewSummary, work));
 page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
 await page.goto('file://' + path.join(work, 'few.html'));
-await page.waitForTimeout(250);
+await page.waitForFunction(() => document.getElementById('ov-sheet')?.hidden === true);
 check('a small run starts with the overview collapsed',
   (await page.locator('#ov-sheet[hidden]').count()) === 1);
 check('the collapsed header still counts its tiles',
@@ -694,7 +720,7 @@ page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
 page.on('pageerror', (e) => crashes.push(String(e)));
 page.on('console', (m) => { if (m.type() === 'error') crashes.push(m.text()); });
 await page.goto('file://' + path.join(work, 'modes.html'));
-await page.waitForTimeout(250);
+await page.waitForFunction(() => document.querySelectorAll('#modefilters .chip').length === 4);
 
 // The run opens on "Needs review", so the counts on the mode chips are of what a click
 // would show from here — composed with the status filter, like the status chips' own
@@ -712,14 +738,15 @@ check('a tile names the mode after the width',
     .startsWith('640px [dark]'));
 
 await page.locator('.chip[data-key=all]').click();
-await page.waitForTimeout(150);
+await page.waitForFunction(() => flat.length === 5);
 await page.locator('.chip[data-key="mode:base"]').click();
-await page.waitForTimeout(150);
+await page.waitForFunction(() =>
+  flat.map((e) => keyOf(e.capture)).join() === 'card--default@640,card--long@380');
 check('Base narrows the list to the base captures',
   (await page.evaluate(() => flat.map((e) => keyOf(e.capture)).join())) ===
   'card--default@640,card--long@380');
 await page.locator('.chip[data-key=changed]').click();
-await page.waitForTimeout(150);
+await page.waitForFunction(() => flat.length === 1 && !flat[0].capture.mode);
 check('the mode filter composes with the status filter',
   (await page.evaluate(() => flat.length)) === 1 &&
   (await page.evaluate(() => !flat[0].capture.mode)) === true);
@@ -727,12 +754,13 @@ check('the mode chip counts reflect the status filter',
   (await page.locator('.chip[data-key="mode:dark"] .n').textContent()) === '1');
 await page.locator('.chip[data-key="mode:dark"]').click();
 await page.fill('#q', 'long');
-await page.waitForTimeout(150);
+await page.waitForFunction(() => flat.length === 0);
 check('the mode filter composes with the search',
   (await page.evaluate(() => flat.length)) === 0);
 await page.fill('#q', '');
 await page.locator('.chip[data-key=all]').click();
-await page.waitForTimeout(150);
+await page.waitForFunction(() =>
+  flat.map((e) => keyOf(e.capture)).join() === 'card--default@640[dark],header--sticky@1280[dark]');
 check('a mode chip narrows to that mode’s captures',
   (await page.evaluate(() => flat.map((e) => keyOf(e.capture)).join())) ===
   'card--default@640[dark],header--sticky@1280[dark]');
@@ -741,9 +769,11 @@ check('a mode chip narrows to that mode’s captures',
 // not tick off its twin. The status filter is widened again first, so the row is there.
 await page.locator('.chip[data-key=all]').click();
 await page.locator('.chip[data-key="mode:all"]').click();
-await page.waitForTimeout(150);
+await page.waitForFunction(() => flat.length === 5);
 await page.locator('#story-card--default .capture').nth(0).locator('.mark').click();
-await page.waitForTimeout(100);
+await page.waitForFunction(() =>
+  document.querySelector('.tile[data-key="card--default@640"]').classList.contains('done') &&
+  !document.querySelector('.tile[data-key="card--default@640[dark]"]').classList.contains('done'));
 check('ticking the base capture leaves its mode twin unticked',
   (await page.locator('.tile[data-key="card--default@640"]').getAttribute('class')).includes('done') &&
   !(await page.locator('.tile[data-key="card--default@640[dark]"]').getAttribute('class')).includes('done'));
@@ -756,7 +786,9 @@ check('the warning title says what accepting a story does',
   (await page.locator('#acceptreviewed button').getAttribute('title')) ===
     'accepting a story adopts all of its changed captures');
 await page.locator('#story-card--default .capture').nth(1).locator('.mark').click();
-await page.waitForTimeout(100);
+await page.waitForFunction(() =>
+  document.querySelector('#acceptreviewed button')?.textContent === 'Copy accept for 1 reviewed story' &&
+  !document.querySelector('#acceptreviewed button').title);
 check('ticking the rest of the story clears the warning',
   (await page.locator('#acceptreviewed button').textContent()) === 'Copy accept for 1 reviewed story' &&
   (await page.locator('#acceptreviewed button').getAttribute('title')) === null);
@@ -797,7 +829,7 @@ page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
 page.on('pageerror', (e) => crashes.push(String(e)));
 page.on('console', (m) => { if (m.type() === 'error') crashes.push(m.text()); });
 await page.goto('file://' + path.join(work, 'states.html'));
-await page.waitForTimeout(250);
+await page.waitForFunction(() => document.querySelectorAll('#modefilters .chip').length === 7);
 
 // The run opens on "Needs review", which hides the unchanged plain capture, so every chip
 // count below is of what a click would show from there.
@@ -815,14 +847,16 @@ check('a tile names the mode and the state after the width',
     .startsWith('640px [dark] {hover}'));
 
 await page.locator('.chip[data-key=all]').click();
-await page.waitForTimeout(150);
+await page.waitForFunction(() => flat.length === 5);
 await page.locator('.chip[data-key="state:plain"]').click();
-await page.waitForTimeout(150);
+await page.waitForFunction(() =>
+  flat.map((e) => keyOf(e.capture)).join() ===
+  'card--default@640,card--long@380,header--sticky@1280[dark]');
 check('Plain narrows the list to the captures no state asked for',
   (await page.evaluate(() => flat.map((e) => keyOf(e.capture)).join())) ===
   'card--default@640,card--long@380,header--sticky@1280[dark]');
 await page.locator('.chip[data-key=changed]').click();
-await page.waitForTimeout(150);
+await page.waitForFunction(() => flat.length === 1 && !flat[0].capture.state);
 check('the state filter composes with the status filter',
   (await page.evaluate(() => flat.length)) === 1 &&
   (await page.evaluate(() => !flat[0].capture.state)) === true);
@@ -832,11 +866,21 @@ check('the state chip counts reflect the status filter',
 // counts carry the state filter exactly as the state counts carry the status one.
 check('the mode chip counts reflect the state filter',
   (await page.locator('.chip[data-key="mode:dark"] .n').textContent()) === '0');
+// A run with captures, every one hidden by the chips: the empty line names the filters as
+// the reason — never "every capture matched its baseline".
+await page.locator('.chip[data-key="mode:dark"]').click();
+await page.waitForFunction(() => flat.length === 0 && !document.querySelector('.empty').hidden);
+check('filters that hide every capture say the filters did it',
+  (await page.locator('.empty').textContent()) === 'No captures match the current filters.');
+await page.locator('.chip[data-key="mode:all"]').click();
+await page.waitForFunction(() => flat.length === 1);
 
 await page.locator('.chip[data-key=all]').click();
 await page.locator('.chip[data-key="state:all"]').click();
 await page.locator('.chip[data-key="mode:dark"]').click();
-await page.waitForTimeout(150);
+await page.waitForFunction(() =>
+  flat.map((e) => keyOf(e.capture)).join() ===
+  'card--default@640[dark]{hover},header--sticky@1280[dark]');
 check('the mode filter composes with the state filter',
   (await page.evaluate(() => flat.map((e) => keyOf(e.capture)).join())) ===
   'card--default@640[dark]{hover},header--sticky@1280[dark]');
@@ -844,9 +888,11 @@ check('the mode filter composes with the state filter',
 // A state capture shares its story and width with the plain capture; ticking one off must
 // not tick off its twin, so the key names the state too.
 await page.locator('.chip[data-key="mode:all"]').click();
-await page.waitForTimeout(150);
+await page.waitForFunction(() => flat.length === 5);
 await page.locator('#story-card--default .capture').nth(0).locator('.mark').click();
-await page.waitForTimeout(100);
+await page.waitForFunction(() =>
+  document.querySelector('.tile[data-key="card--default@640"]').classList.contains('done') &&
+  !document.querySelector('.tile[data-key="card--default@640[dark]{hover}"]').classList.contains('done'));
 check('ticking the plain capture leaves its state twin unticked',
   (await page.locator('.tile[data-key="card--default@640"]').getAttribute('class')).includes('done') &&
   !(await page.locator('.tile[data-key="card--default@640[dark]{hover}"]').getAttribute('class'))
@@ -865,7 +911,8 @@ const a11yFindings = (rules) => {
       id,
       impact: id === 'image-alt' ? 'serious' : 'critical',
       help: id === 'image-alt' ? 'Images must have alternate text' : 'Buttons must have discernible text',
-      helpUrl: 'https://example.com/rules/' + id,
+      // The summary may be a downloaded artifact: a script address must never become a link.
+      helpUrl: id === 'image-alt' ? 'https://example.com/rules/' + id : 'javascript:void 0',
       targets,
     };
   });
@@ -894,13 +941,13 @@ page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
 page.on('pageerror', (e) => crashes.push(String(e)));
 page.on('console', (m) => { if (m.type() === 'error') crashes.push(m.text()); });
 await page.goto('file://' + path.join(work, 'a11y.html'));
-await page.waitForTimeout(250);
+await page.waitForFunction(() => document.querySelector('.chip[data-key=a11y]') !== null);
 
 check('a run with findings offers the Accessibility chip',
   (await page.locator('.chip[data-key=a11y]').count()) === 1 &&
   (await page.locator('.chip[data-key=a11y]').textContent()) === 'Accessibility1');
 await page.locator('.chip[data-key=a11y]').click();
-await page.waitForTimeout(150);
+await page.waitForFunction(() => flat.map((e) => keyOf(e.capture)).join() === 'card--default@640');
 check('the Accessibility view shows the one audited capture with findings',
   (await page.evaluate(() => flat.map((e) => keyOf(e.capture)).join())) === 'card--default@640');
 const rules = page.locator('#story-card--default .a11y .a11y-rule');
@@ -911,6 +958,9 @@ check('each rule is listed with its id and impact as text',
 check('the help text links to the rule',
   (await page.locator('#story-card--default .a11y a').first().getAttribute('href')) ===
     'https://example.com/rules/image-alt');
+check('a help address that is not a web address stays plain text',
+  (await rules.nth(1).locator('a').count()) === 0 &&
+  (await rules.nth(1).textContent()).includes('Buttons must have discernible text'));
 check('every target is listed, and only the new ones are marked',
   (await page.locator('#story-card--default .a11y .a11y-targets li').count()) === 3 &&
   (await page.locator('#story-card--default .a11y-new').count()) === 2 &&
@@ -924,7 +974,7 @@ page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
 page.on('pageerror', (e) => crashes.push(String(e)));
 page.on('console', (m) => { if (m.type() === 'error') crashes.push(m.text()); });
 await page.goto(url);
-await page.waitForTimeout(150);
+await page.waitForFunction(() => document.querySelector('#filters .chip[data-key=all]') !== null);
 check('a run without findings shows no Accessibility chip',
   (await page.locator('.chip[data-key=a11y]').count()) === 0);
 await page.close();
@@ -934,7 +984,7 @@ page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
 page.on('pageerror', (e) => crashes.push(String(e)));
 page.on('console', (m) => { if (m.type() === 'error') crashes.push(m.text()); });
 await page.goto(url);
-await page.waitForTimeout(150);
+await page.waitForFunction(() => document.querySelector('#filters .chip[data-key=all]') !== null);
 check('a run without modes shows no mode chips',
   (await page.locator('#modefilters .chip').count()) === 0);
 await page.close();
@@ -947,7 +997,7 @@ const diffCaptures = [
     a: { expected: 'shots/a-base.png', actual: 'shots/a-act.png', diff: 'shots/a-diff.png' } }),
   capture({ t: 'Card', n: 'Gone', id: 'card--gone', w: 380, s: 'removed',
     a: { expected: 'shots/b-base.png' } }),
-  capture({ t: 'Header', n: 'Default', id: 'header--default', w: 1280, s: 'unchanged' }),
+  capture({ t: 'Header', n: 'Default', id: 'header--default', w: 1280, s: 'unchanged', mode: 'dark' }),
 ];
 const diffSummary = {
   ...summary,
@@ -963,7 +1013,8 @@ page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
 page.on('pageerror', (e) => crashes.push(String(e)));
 page.on('console', (m) => { if (m.type() === 'error') crashes.push(m.text()); });
 await page.goto('file://' + path.join(work, 'diff.html'));
-await page.waitForTimeout(250);
+await page.waitForFunction(() =>
+  (document.getElementById('meta')?.textContent ?? '').includes('diff against'));
 
 check('the meta names what the diff is against',
   (await page.locator('#meta').textContent()).includes('diff against origin/main (e0f1e2d)'));
@@ -988,6 +1039,25 @@ check('a diff report offers nothing to accept',
   !(await page.locator('main').textContent()).includes('diopsis accept'));
 check('a changed capture in a diff keeps its full comparison',
   (await page.locator('#story-card--default .modes button').count()) === 4);
+// The unchanged capture carries a mode, so composing the status and mode chips empties the
+// diff: the empty line has to blame the filters — a diff with changes is not "no baseline
+// changes against this base".
+await page.locator('.chip[data-key=unchanged]').click();
+await page.waitForFunction(() => flat.length === 1);
+await page.locator('.chip[data-key="mode:base"]').click();
+await page.waitForFunction(() => flat.length === 0 && !document.querySelector('.empty').hidden);
+check('a diff emptied by filters says the filters did it',
+  (await page.locator('.empty').textContent()) === 'No captures match the current filters.');
+await page.locator('.chip[data-key=review]').click();
+await page.waitForFunction(() => flat.length === 2);
+// Ticks still count in a diff — it is a review aid — but no command comes of them: accept
+// adopts a run's renders, and a diff has none to adopt.
+await page.locator('#story-card--default .mark').click();
+await page.waitForFunction(() => document.getElementById('progress').textContent.startsWith('1 of'));
+check('ticking in a diff still counts progress',
+  (await page.locator('#progress').textContent()).startsWith('1 of 2'));
+check('a diff report offers no reviewed-accept command',
+  (await page.locator('#acceptreviewed button').count()) === 0);
 await page.close();
 
 // A merged run: shards written by separate jobs, one review. Every artifact path in the
@@ -1040,11 +1110,16 @@ page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
 page.on('pageerror', (e) => crashes.push(String(e)));
 page.on('console', (m) => { if (m.type() === 'error') crashes.push(m.text()); });
 await page.goto('file://' + path.join(mergeRoot, '.diopsis', 'merged', 'report.html'));
-await page.waitForTimeout(250);
+await page.waitForFunction(() => document.querySelectorAll('details.story').length === 4);
 // Capture views build when their story opens; open them all so every image the run carried
 // is on the page and loadable through the shard directories the paths point into.
 await page.locator('details.story').evaluateAll((els) => els.forEach((el) => { el.open = true; }));
-await page.waitForTimeout(250);
+// The sheet's tiles sit in the collapsed overview, where a lazy image never finishes
+// loading: known dimensions are the proof the bytes came through, complete is not.
+await page.waitForFunction(() => {
+  const imgs = [...document.querySelectorAll('img')];
+  return imgs.length === 6 && imgs.every((i) => i.naturalWidth > 0);
+});
 check('the merged report renders every image, from both shards',
   await page.evaluate(() => {
     const imgs = [...document.querySelectorAll('img')];
@@ -1059,7 +1134,10 @@ check('each tile carries its own capture’s width',
 // The overlay shows the diff alone; switching to the side-by-side view pulls the baseline
 // and the render through their rewritten paths too.
 await page.locator('#story-card--default').getByRole('button', { name: 'Side by side' }).click();
-await page.waitForTimeout(150);
+await page.waitForFunction(() => {
+  const imgs = document.querySelectorAll('#story-card--default .capture img');
+  return imgs.length === 2 && [...imgs].every((i) => i.complete && i.naturalWidth === 640);
+});
 check('a changed capture shows both its renders, at its shard’s width',
   JSON.stringify(await page.locator('#story-card--default .capture img')
     .evaluateAll((els) => els.map((i) => i.naturalWidth))) === JSON.stringify([640, 640]));
@@ -1190,7 +1268,8 @@ page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
 page.on('pageerror', (e) => crashes.push(String(e)));
 page.on('console', (m) => { if (m.type() === 'error') crashes.push(m.text()); });
 await page.goto('file://' + path.join(work, 'ghost.html'));
-await page.waitForTimeout(250);
+await page.waitForFunction(() =>
+  (document.getElementById('story-ghost--vanished')?.textContent ?? '').includes('No image artifacts'));
 check('a capture whose artifacts never existed says so',
   (await page.locator('#story-ghost--vanished').textContent()).includes('No image artifacts'));
 const ghostBar = await page.locator('#story-ghost--vanished .w').textContent();

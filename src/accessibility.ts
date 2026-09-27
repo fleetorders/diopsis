@@ -128,8 +128,13 @@ export async function readAcceptedA11y(file: string): Promise<AcceptedAccessibil
   let text: string;
   try {
     text = await readFile(file, 'utf8');
-  } catch {
-    return {};
+  } catch (error) {
+    // Only an absent file is an empty set; one that exists and cannot be read is refused.
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {};
+    throw new Error(
+      `${path.basename(file)} could not be read ` +
+        `(${error instanceof Error ? error.message : String(error)}).`,
+    );
   }
   try {
     const parsed: unknown = JSON.parse(text);

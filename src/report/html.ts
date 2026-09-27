@@ -718,10 +718,14 @@ function a11yList(a11y) {
       impact.textContent = v.impact;
       head.appendChild(impact);
     }
-    const help = document.createElement('a');
-    help.href = v.helpUrl;
-    help.target = '_blank';
-    help.rel = 'noreferrer';
+    // The summary may be a downloaded artifact: only a web address becomes a link.
+    const linked = /^https?:\/\//i.test(v.helpUrl || '');
+    const help = document.createElement(linked ? 'a' : 'span');
+    if (linked) {
+      help.href = v.helpUrl;
+      help.target = '_blank';
+      help.rel = 'noreferrer';
+    }
     help.textContent = v.help;
     head.appendChild(help);
     rule.appendChild(head);
@@ -1104,6 +1108,8 @@ const acceptCmd = (args) => 'npx diopsis accept' +
    changed captures too, so the label says how many stories that concerns rather than letting
    a partial review look complete. */
 function drawAcceptReviewed() {
+  // Accepting adopts a run's renders; a diff reviews the baseline history and has none.
+  if (data.mode === 'diff') return;
   acceptReviewedEl.innerHTML = '';
   const ticked = data.captures.filter(c => reviewed.has(keyOf(c)) && ADOPTABLE.has(c.status));
   if (!ticked.length) return;
@@ -1237,11 +1243,15 @@ function applyFilter() {
   const empty = flat.length === 0 && !carriedShown;
   listEl.hidden = empty;
   emptyEl.hidden = !empty;
+  // What the line says depends on why nothing shows: filters that hid a run's captures
+  // own the emptiness — only a run with no captures at all ever matched its baseline.
   emptyEl.textContent = query
     ? 'No story matches "' + query + '".'
-    : data.mode === 'diff'
-      ? 'No baseline changes against this base.'
-      : 'Nothing here. Every capture matched its baseline.';
+    : data.captures.length
+      ? 'No captures match the current filters.'
+      : data.mode === 'diff'
+        ? 'No baseline changes against this base.'
+        : 'Nothing here. Every capture matched its baseline.';
   drawAcceptVisible(empty ? [] : storyEls.filter(s => !s.el.hidden).map(s => s.id));
 }
 

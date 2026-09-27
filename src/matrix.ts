@@ -575,8 +575,14 @@ export function parseShard(text: string): ShardSpec | undefined {
   if (!match) return undefined;
   const index = Number.parseInt(match[1] ?? '', 10);
   const total = Number.parseInt(match[2] ?? '', 10);
-  return index >= 1 && index <= total ? { index, total } : undefined;
+  return index >= 1 && index <= total && total <= MAX_SHARDS ? { index, total } : undefined;
 }
+
+/**
+ * More shards than any CI would start. The split and the merge both lay out one slot per
+ * shard, so an unbounded count is an allocation the size of a typo.
+ */
+export const MAX_SHARDS = 1024;
 
 /**
  * This shard's part of a capture plan.

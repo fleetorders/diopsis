@@ -20,6 +20,9 @@ describe('parseShard', () => {
     assert.deepEqual(parseShard('2/4'), { index: 2, total: 4 });
     assert.deepEqual(parseShard('4/4'), { index: 4, total: 4 });
     assert.deepEqual(parseShard('1/1'), { index: 1, total: 1 });
+    assert.deepEqual(parseShard('1/1024'), { index: 1, total: 1024 });
+    // An allocation the size of a typo is refused, not attempted.
+    assert.equal(parseShard('1/2000000000'), undefined);
     assert.deepEqual(parseShard(' 2/4 '), { index: 2, total: 4 });
   });
 

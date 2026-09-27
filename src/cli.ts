@@ -12,7 +12,7 @@ import { pruneCommand } from './commands/prune.ts';
 import { reportCommand } from './commands/report.ts';
 import { runCommand } from './commands/run.ts';
 import { traceCommand } from './commands/trace.ts';
-import { parseShard, type ShardSpec } from './matrix.ts';
+import { MAX_SHARDS, parseShard, type ShardSpec } from './matrix.ts';
 
 const USAGE = `diopsis — visual regression for Storybook
 
@@ -197,7 +197,7 @@ export async function main(argv: string[]): Promise<number> {
         shard = parseShard(values.shard);
         if (!shard) {
           process.stderr.write(
-            `--shard takes <i>/<n> with 1 ≤ i ≤ n, e.g. --shard 2/4 ` +
+            `--shard takes <i>/<n> with 1 ≤ i ≤ n ≤ ${MAX_SHARDS}, e.g. --shard 2/4 ` +
               `(got "${values.shard}").\n\n${USAGE}`,
           );
           return 1;

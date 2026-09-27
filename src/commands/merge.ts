@@ -3,7 +3,7 @@ import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { loadConfig } from '../config.ts';
-import { platformToken } from '../matrix.ts';
+import { parseShard, platformToken } from '../matrix.ts';
 import { renderReport } from '../report/html.ts';
 import {
   changedStoriesOf,
@@ -37,10 +37,7 @@ interface FoundShard {
 function parseShardDir(name: string): { index: number; total: number } | undefined {
   const match = SHARD_DIR.exec(name);
   if (!match) return undefined;
-  return {
-    index: Number.parseInt(match[1] ?? '', 10),
-    total: Number.parseInt(match[2] ?? '', 10),
-  };
+  return parseShard(`${match[1]}/${match[2]}`);
 }
 
 /**
@@ -119,6 +116,42 @@ export async function mergeCommand(options: MergeOptions): Promise<number> {
     }
     if (!Array.isArray(summary.captures)) {
       return fail(`${say(dir)}/summary.json is not a run summary — it lists no captures.`);
+    }
+    // Every later step reads these fields; a hand-assembled summary missing one is refused
+    // here with its name, rather than failing somewhere below with a stack trace.
+    const malformed = summary.captures.findIndex(
+      (capture) =>
+        !capture ||
+        typeof capture !== 'object' ||
+        typeof capture.storyId !== 'string' ||
+        typeof capture.status !== 'string' ||
+        typeof capture.snapshotPath !== 'string' ||
+        !capture.artifacts ||
+        typeof capture.artifacts !== 'object' ||
+        (['expected', 'actual', 'diff'] as const).some(
+          (kind) =>
+            capture.artifacts[kind] !== undefined && typeof capture.artifacts[kind] !== 'string',
+        ),
+    );
+    if (malformed !== -1) {
+      return fail(
+        `${say(dir)}/summary.json is not a run summary — capture ${malformed + 1} lacks a ` +
+          'story id, a status, a baseline path or its artifacts.',
+      );
+    }
+    const affected = summary.affected;
+    if (affected !== undefined && typeof affected?.mergeBase !== 'string') {
+      return fail(`${say(dir)}/summary.json is not a run summary — its affected set names no merge base.`);
+    }
+    if (
+      affected !== undefined &&
+      (typeof affected.base !== 'string' ||
+        !Number.isInteger(affected.changedFiles) ||
+        affected.changedFiles < 0)
+    ) {
+      return fail(
+        `${say(dir)}/summary.json is not a run summary — its affected set lacks a base or a changed-file count.`,
+      );
     }
     // The directory a shard writes is part of its identity: the index the merge groups by
     // is read from it, and a summary that disagrees names a directory moved or renamed by
@@ -294,6 +327,7 @@ export async function mergeCommand(options: MergeOptions): Promise<number> {
     // A merged run is accepted from where it was merged; the plain output directory holds
     // either nothing or some other run.
     acceptFrom: `${config.outputDir.replace(/\/+$/, '')}/merged`,
+    shardDirs: shards.map((shard) => displayPath(mergedDir, shard.dir)),
     snapshotDir: first.summary.snapshotDir,
     totals: {
       ...totalsFor(captures),

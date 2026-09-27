@@ -90,8 +90,9 @@ export async function preparePage(page: Page, options: StabilizeOptions): Promis
  * framework's scheduler runs its effects from a microtask or a message port, where the depth
  * guard cannot tell a re-arming tick from a fresh one — so re-arming that way is bounded by the
  * network instead: once no request has been in flight or settled for `TIMER_HORIZON_MS`
- * continuously, every timer pending when the quiet began has fired without starting one, and
- * pending timers alone no longer hold the wait.
+ * continuously, a pending timer whose callback source has already been scheduled before no
+ * longer holds the wait. A callback scheduled for the first time still does, whenever it was
+ * scheduled — a reveal or debounce set late in the quiet is a change the capture must show.
  */
 export const NETWORK_QUIET_MS = 50;
 export const TIMER_HORIZON_MS = 500;
@@ -100,9 +101,13 @@ export const TIMER_HORIZON_MS = 500;
 function timerProbe(horizon: number): void {
   const w = window as unknown as Record<string, unknown>;
   if (w['__diopsisTimers']) return;
-  const pending = new Set<unknown>();
+  // Pending counted timers, each with its callback's source: a source scheduled more than
+  // once is a loop re-arming itself, however it gets back to setTimeout.
+  const pending = new Map<unknown, string>();
+  const scheduled = new Map<string, number>();
   let depth = 0;
   let lastFired = performance.now();
+  let lastFreshFired = lastFired;
   const set = window.setTimeout.bind(window);
   const clear = window.clearTimeout.bind(window);
   const patched = function (handler: unknown, delay?: number, ...args: unknown[]): unknown {
@@ -110,10 +115,12 @@ function timerProbe(horizon: number): void {
     const track = depth === 0 && (Number(delay) || 0) <= horizon;
     let id: unknown;
     const run = function (this: unknown): unknown {
+      const source = pending.get(id);
       pending.delete(id);
       // Only a counted timer can be about to start a request the wait cares about; letting a
       // re-arming one refresh this would keep an animation-paced loop busy until the deadline.
       if (track) lastFired = performance.now();
+      if (source !== undefined && (scheduled.get(source) ?? 0) < 2) lastFreshFired = lastFired;
       depth += 1;
       try {
         return (handler as (...a: unknown[]) => unknown).apply(this, args);
@@ -122,7 +129,11 @@ function timerProbe(horizon: number): void {
       }
     };
     id = set(run, delay);
-    if (track) pending.add(id);
+    if (track) {
+      const source = String(handler);
+      scheduled.set(source, (scheduled.get(source) ?? 0) + 1);
+      pending.set(id, source);
+    }
     return id;
   };
   window.setTimeout = patched as typeof window.setTimeout;
@@ -130,7 +141,12 @@ function timerProbe(horizon: number): void {
     pending.delete(id);
     clear(id);
   }) as typeof window.clearTimeout;
-  w['__diopsisTimers'] = () => ({ pending: pending.size, sinceFired: performance.now() - lastFired });
+  w['__diopsisTimers'] = () => {
+    let fresh = 0;
+    for (const source of pending.values()) if ((scheduled.get(source) ?? 0) < 2) fresh += 1;
+    const now = performance.now();
+    return { pending: pending.size, fresh, sinceFired: now - lastFired, sinceFresh: now - lastFreshFired };
+  };
 }
 
 export interface RequestTracker {
@@ -166,21 +182,24 @@ export async function trackRequests(page: Page): Promise<RequestTracker> {
       const giveUp = Date.now() + timeout;
       while (Date.now() < giveUp) {
         if (inflight === 0 && Date.now() - lastChange >= quietMs) {
-          // A whole horizon of network quiet means every tracked timer pending when the
-          // quiet began has fired without starting a request — so the ones still pending
-          // are a re-arming loop the depth guard cannot see (a framework schedules outside
-          // any timer callback), and they no longer hold the wait.
-          if (Date.now() - lastChange >= TIMER_HORIZON_MS) return;
           const timers = await page
             .evaluate(() => {
               const probe = (window as unknown as Record<string, unknown>)['__diopsisTimers'];
               return typeof probe === 'function'
-                ? (probe as () => { pending: number; sinceFired: number })()
-                : { pending: 0, sinceFired: Infinity };
+                ? (probe as () => Record<'pending' | 'fresh' | 'sinceFired' | 'sinceFresh', number>)()
+                : { pending: 0, fresh: 0, sinceFired: Infinity, sinceFresh: Infinity };
             })
-            .catch(() => ({ pending: 0, sinceFired: Infinity }));
+            .catch(() => ({ pending: 0, fresh: 0, sinceFired: Infinity, sinceFresh: Infinity }));
+          // A whole horizon of network quiet with only re-armed timers pending is a loop the
+          // depth guard cannot see (a framework schedules outside any timer callback), and
+          // it no longer holds the wait; a timer scheduled for the first time still does.
+          const quietHorizon = Date.now() - lastChange >= TIMER_HORIZON_MS;
+          const holding = quietHorizon ? timers.fresh : timers.pending;
           // A timer that just fired may have started a request the page has not reported yet.
-          if (timers.pending === 0 && timers.sinceFired >= quietMs && inflight === 0) return;
+          const sinceFired = quietHorizon ? timers.sinceFresh : timers.sinceFired;
+          if (holding === 0 && sinceFired >= quietMs && inflight === 0) {
+            return;
+          }
         }
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
