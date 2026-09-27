@@ -13,6 +13,7 @@ import { recompressBaselines, writeRecompressReport } from '../compress.ts';
 import { loadConfig } from '../config.ts';
 import { gitEnv, isGitRepo } from '../git.ts';
 import { needsReview, type CaptureResult, type RunSummary } from '../report/summary.ts';
+import { displayPath } from '../paths.ts';
 
 export interface AcceptOptions {
   root: string;
@@ -62,7 +63,7 @@ export async function acceptCommand(options: AcceptOptions): Promise<number> {
     summary = JSON.parse(await readFile(summaryPath, 'utf8')) as RunSummary;
   } catch {
     process.stderr.write(
-      `No run to accept: ${path.relative(options.root, summaryPath)} is missing. ` +
+      `No run to accept: ${displayPath(options.root, summaryPath)} is missing. ` +
         'Run `diopsis run` first, or unpack the run artifact from CI here.\n',
     );
     return 1;
@@ -159,7 +160,7 @@ export async function acceptCommand(options: AcceptOptions): Promise<number> {
         // Forward slashes on every platform: the list is read, pasted and compared against
         // the artifact's contents, which never depend on the machine that printed it.
         missing
-          .map((from) => `  ${path.relative(options.root, from).split(path.sep).join('/')}`)
+          .map((from) => `  ${displayPath(options.root, from)}`)
           .join('\n') +
         `\nA run artifact must include its test-results images.\n`,
     );

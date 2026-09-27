@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import { formatBytes } from './config.ts';
 import { decodePng } from './png.ts';
+import { displayPath } from './paths.ts';
 
 /**
  * Lossless baseline recompression (DECISIONS.md D-043).
@@ -65,7 +66,7 @@ export type RecompressOutcome =
 
 /** `root`-relative with forward slashes — the one way a path is shown anywhere in the output. */
 function shown(root: string, file: string): string {
-  return path.relative(root, file).split(path.sep).join('/');
+  return displayPath(root, file);
 }
 
 /**

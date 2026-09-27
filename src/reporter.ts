@@ -34,6 +34,7 @@ import {
   type RunSummary,
 } from './report/summary.ts';
 import type { PlannedCapture, RunPlan } from './runner/generate.ts';
+import { displayPath } from './paths.ts';
 
 export interface DiopsisReporterOptions {
   /** Absolute path of the run plan written by the generator. */
@@ -77,7 +78,7 @@ export function artifactsOf(
   const artifacts: CaptureArtifacts = {};
   for (const attachment of attachments) {
     if (!attachment.path || attachment.contentType !== 'image/png') continue;
-    const relative = path.relative(outputDir, attachment.path);
+    const relative = displayPath(outputDir, attachment.path);
     const base = path.basename(attachment.path);
     if (base.endsWith('-expected.png')) artifacts.expected = relative;
     else if (base.endsWith('-diff.png')) artifacts.diff = relative;
@@ -208,7 +209,7 @@ export default class DiopsisReporter implements Reporter {
     if (!artifacts.expected) {
       const baseline = path.join(this.options.snapshotDirAbs, snapshotPath);
       if (existsSync(baseline)) {
-        artifacts.expected = path.relative(this.options.outputDir, baseline);
+        artifacts.expected = displayPath(this.options.outputDir, baseline);
       }
     }
     return artifacts;
@@ -377,7 +378,7 @@ export default class DiopsisReporter implements Reporter {
     // Relative to where the command was run: an absolute path is noise to a reader and
     // machine-specific to anyone the output is pasted to.
     const show = (target: string): string =>
-      (path.relative(process.cwd(), target) || target).split(path.sep).join('/');
+      displayPath(process.cwd(), target);
 
     const counts = [
       `${totals.unchanged} unchanged`,

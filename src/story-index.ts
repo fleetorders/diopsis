@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { displayPath } from './paths.ts';
 
 export interface StoryEntry {
   id: string;
@@ -92,7 +93,7 @@ export async function readStoryIndex(storybookDir: string): Promise<StoryEntry[]
       // A truncated or hand-edited index surfaces as a bare parse error; naming the file
       // and the remedy saves the user from guessing which candidate file it was.
       throw new Error(
-        `${path.relative(process.cwd(), file)} is not valid JSON ` +
+        `${displayPath(process.cwd(), file)} is not valid JSON ` +
           `(${error instanceof Error ? error.message : String(error)}). Rebuild the Storybook.`,
       );
     }

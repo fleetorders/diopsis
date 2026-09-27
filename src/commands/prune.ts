@@ -13,6 +13,7 @@ import { formatBytes, loadConfig } from '../config.ts';
 import { gitEnv, isGitRepo } from '../git.ts';
 import { platformToken, resolveMatrix } from '../matrix.ts';
 import { readStoryIndex } from '../story-index.ts';
+import { displayPath } from '../paths.ts';
 
 export interface PruneOptions {
   root: string;
@@ -24,7 +25,7 @@ export interface PruneOptions {
 
 /** The path as the reader and git see it: relative to the project root, forward slashes. */
 function shown(root: string, file: string): string {
-  return path.relative(root, file).split(path.sep).join('/');
+  return displayPath(root, file);
 }
 
 /**

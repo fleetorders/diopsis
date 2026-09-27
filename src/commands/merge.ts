@@ -14,6 +14,7 @@ import {
   type CarriedCapture,
   type RunSummary,
 } from '../report/summary.ts';
+import { displayPath } from '../paths.ts';
 
 export interface MergeOptions {
   root: string;
@@ -91,7 +92,7 @@ export async function mergeCommand(options: MergeOptions): Promise<number> {
   for (const root of roots) for (const dir of await findShardDirs(root)) found.add(dir);
   const dirs = [...found].sort();
 
-  const say = (dir: string): string => path.relative(options.root, dir) || dir;
+  const say = (dir: string): string => displayPath(options.root, dir);
   const fail = (message: string): number => {
     process.stderr.write(`${message}\n`);
     return 2;
@@ -100,7 +101,7 @@ export async function mergeCommand(options: MergeOptions): Promise<number> {
   if (dirs.length === 0) {
     return fail(
       'No shard runs under ' +
-        roots.map((root) => path.relative(options.root, root) || root).join(', ') +
+        roots.map((root) => displayPath(options.root, root)).join(', ') +
         '. A sharded run writes shard-<i>-of-<n>/ beside its report; merge reads those back.',
     );
   }
@@ -233,7 +234,7 @@ export async function mergeCommand(options: MergeOptions): Promise<number> {
   // Artifacts are recorded relative to the summary that lists them; from the merged
   // directory they are reached back through the shard they live in.
   const rewrite = (shardDir: string, relative: string): string =>
-    path.relative(mergedDir, path.resolve(shardDir, relative));
+    displayPath(mergedDir, path.resolve(shardDir, relative));
 
   const captures: CaptureResult[] = shards
     .flatMap((shard) =>
@@ -311,7 +312,7 @@ export async function mergeCommand(options: MergeOptions): Promise<number> {
   await writeFile(reportPath, await renderReport(summary, mergedDir), 'utf8');
 
   const { totals: merged } = summary;
-  const show = (target: string): string => path.relative(options.root, target) || target;
+  const show = (target: string): string => displayPath(options.root, target);
 
   const counts = [
     `${merged.unchanged} unchanged`,

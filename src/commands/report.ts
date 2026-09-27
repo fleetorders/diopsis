@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 
 import { loadConfig } from '../config.ts';
+import { displayPath } from '../paths.ts';
 
 export interface ReportOptions {
   root: string;
@@ -31,7 +32,7 @@ export async function reportCommand(options: ReportOptions): Promise<number> {
 
   if (!existsSync(reportPath)) {
     process.stderr.write(
-      `No report at ${path.relative(options.root, reportPath)}. Run \`diopsis run\` first.\n`,
+      `No report at ${displayPath(options.root, reportPath)}. Run \`diopsis run\` first.\n`,
     );
     return 1;
   }

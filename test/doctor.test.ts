@@ -182,7 +182,7 @@ describe('runChecks', () => {
     }
   });
 
-  it('stays quiet about compression when the tool answers, and when it is off', async () => {
+  it('stays quiet about compression when the tool answers, and when it is off', { skip: process.platform === 'win32' && 'the stand-in tool is a POSIX shell script' }, async () => {
     const root = await project();
     await writeFile(path.join(root, 'diopsis.config.mjs'), 'export default { compress: "auto" };');
     process.env.DIOPSIS_OXIPNG = await fakeOxipng();

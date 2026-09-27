@@ -300,7 +300,7 @@ describe('acceptCommand refusing paths outside the run', () => {
     assert.equal(existsSync(path.join(root, 'outside-baseline.png')), false);
   });
 
-  it('recompresses accepted baselines when compress is auto', async () => {
+  it('recompresses accepted baselines when compress is auto', { skip: process.platform === 'win32' && 'the stand-in tool is a POSIX shell script' }, async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'diopsis-accept-'));
     temporaries.push(dir);
     await writeFile(path.join(dir, 'diopsis.config.mjs'), 'export default { compress: "auto" };');

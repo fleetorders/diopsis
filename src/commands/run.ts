@@ -23,6 +23,7 @@ import { distRoot, generateProject, projectDir } from '../runner/generate.ts';
 import { runPlaywright } from '../runner/execute.ts';
 import { serveStatic } from '../server.ts';
 import { readStoryIndex, type StoryEntry } from '../story-index.ts';
+import { displayPath } from '../paths.ts';
 
 export interface RunOptions {
   root: string;
@@ -311,7 +312,7 @@ async function writeEmptyShard(input: {
   await writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`, 'utf8');
   await writeFile(reportPath, await renderReport(summary, input.outputDir), 'utf8');
 
-  const show = (target: string): string => path.relative(input.root, target) || target;
+  const show = (target: string): string => displayPath(input.root, target);
   process.stdout.write(
     [
       '  shard empty — the plan gave this shard no stories',
@@ -440,7 +441,7 @@ export async function runCommand(options: RunOptions): Promise<number> {
         ...(options.shard ? { shard: options.shard } : {}),
         ...(changedText ? { changed: changedText } : {}),
         capture: config.capture,
-        configSource: filepath ? path.relative(options.root, filepath) : 'defaults (no config file)',
+        configSource: filepath ? displayPath(options.root, filepath) : 'defaults (no config file)',
         storybookDir: config.storybookDir,
         snapshotDir: config.snapshotDir,
         skipped: matrix.skipped,
@@ -479,7 +480,7 @@ export async function runCommand(options: RunOptions): Promise<number> {
     await writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`, 'utf8');
     await writeFile(reportPath, await renderReport(summary, outputDir), 'utf8');
 
-    const show = (target: string): string => path.relative(options.root, target) || target;
+    const show = (target: string): string => displayPath(options.root, target);
     process.stdout.write(`\n  report   ${show(reportPath)}\n  summary  ${show(summaryPath)}\n`);
     return 0;
   }
@@ -533,7 +534,7 @@ export async function runCommand(options: RunOptions): Promise<number> {
       ...(options.shard ? { shard: options.shard } : {}),
       ...(changedText ? { changed: changedText } : {}),
       capture: config.capture,
-      configSource: filepath ? path.relative(options.root, filepath) : 'defaults (no config file)',
+      configSource: filepath ? displayPath(options.root, filepath) : 'defaults (no config file)',
       storybookDir: config.storybookDir,
       snapshotDir: config.snapshotDir,
       skipped: matrix.skipped,

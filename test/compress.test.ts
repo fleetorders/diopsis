@@ -114,7 +114,7 @@ describe('recompressBaselines', () => {
     assert.ok((await readFile(written.file)).equals(Buffer.from(written.bytes)));
   });
 
-  it('restores the original bytes when the tool changes pixels, and warns naming the file', async () => {
+  it('restores the original bytes when the tool changes pixels, and warns naming the file', { skip: process.platform === 'win32' && 'the stand-in tool is a POSIX shell script' }, async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'diopsis-compress-'));
     temporaries.push(dir);
     const written = await baseline(dir, 'b--two/320w-darwin-arm64.png', encodePng(4, 3, shade(4, 3, 120)));
@@ -138,7 +138,7 @@ done`,
     assert.ok((await readFile(written.file)).equals(Buffer.from(written.bytes)));
   });
 
-  it('keeps recompressed bytes that decode to the same pixels, and reports what they saved', async () => {
+  it('keeps recompressed bytes that decode to the same pixels, and reports what they saved', { skip: process.platform === 'win32' && 'the stand-in tool is a POSIX shell script' }, async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'diopsis-compress-'));
     temporaries.push(dir);
     const clean = encodePng(4, 3, shade(4, 3, 120));
@@ -163,7 +163,7 @@ done`,
     assert.match(out, /Recompressed 1 baseline with oxipng — [0-9.]+ [KMG]?B → [0-9.]+ [KMG]?B/);
   });
 
-  it('hands the tool at most 100 files per invocation', async () => {
+  it('hands the tool at most 100 files per invocation', { skip: process.platform === 'win32' && 'the stand-in tool is a POSIX shell script' }, async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'diopsis-compress-'));
     temporaries.push(dir);
     const files: string[] = [];

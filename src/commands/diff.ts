@@ -16,6 +16,7 @@ import {
   type RunSummary,
 } from '../report/summary.ts';
 import { openWithDesktop } from './report.ts';
+import { displayPath } from '../paths.ts';
 
 export interface DiffOptions {
   root: string;
@@ -362,7 +363,7 @@ export async function diffCommand(options: DiffOptions): Promise<number> {
   // Forward slashes on every platform, like the rest of Diopsis's output: these lines are
   // pasted into reviews and read the same whichever machine printed them.
   const show = (target: string): string =>
-    (path.relative(options.root, target) || target).split(path.sep).join('/');
+    displayPath(options.root, target);
   const lines = [
     `Diopsis · diff against ${base} (${mergeBase.slice(0, 7)})`,
     `  config    ${filepath ? show(filepath) : 'defaults (no config file)'}`,
