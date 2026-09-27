@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import { consideredFiles, readPreviewStats, resolveAffected } from '../affected.ts';
 import { baselineWeight } from '../baselines.ts';
+import { resolveAxePath } from '../accessibility.ts';
 import { formatBytes, loadConfig, parseSize } from '../config.ts';
 import { gitLines, isGitRepo, refExists } from '../git.ts';
 import {
@@ -347,6 +348,18 @@ export async function runCommand(options: RunOptions): Promise<number> {
     return 1;
   }
 
+  // The audit's library is the tested project's own, resolved before anything runs so a
+  // missing install costs one line and no browser (DECISIONS.md D-041).
+  let axePath: string | undefined;
+  if (config.accessibility !== 'off') {
+    try {
+      axePath = resolveAxePath(options.root);
+    } catch (error) {
+      process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+      return 1;
+    }
+  }
+
   const stories = await readStoryIndex(storybookDir);
   const matrix = resolveMatrix(stories, config);
 
@@ -570,6 +583,7 @@ export async function runCommand(options: RunOptions): Promise<number> {
       baseUrl: server.url,
       outputDir,
       reporterPath: path.join(distRoot(), 'reporter.js'),
+      ...(axePath ? { axePath } : {}),
       // The retries the reporter sees are the retries the generated project runs with, so
       // it starts region work only on the attempt that can decide a capture.
       ...(options.update ? { mode: 'update' as const } : {}),

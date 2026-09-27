@@ -2,6 +2,8 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import type { AccessibilityMode } from './accessibility.ts';
+
 /**
  * Stabilization defaults. Every one of these is on by default: a guarantee that has to be
  * switched on is a guarantee most suites never get (DECISIONS.md §3).
@@ -84,6 +86,12 @@ export interface DiopsisConfig {
   budget?: { weight?: string | number; captures?: number };
   /** `'all'` in v1; `'auto'` (change-aware capture) lands in v2 — DECISIONS.md §4. */
   affected: 'all' | 'auto';
+  /**
+   * Audits each story's render with the tested project's axe-core and reports the
+   * findings beside the pixels. `'off'` never audits; `'report'` never touches the exit
+   * code; `'fail'` fails a run with new findings like a change (DECISIONS.md D-042).
+   */
+  accessibility: AccessibilityMode;
   /** Per-capture timeout in ms. */
   timeout: number;
   /**
@@ -125,6 +133,7 @@ export const defaultConfig: DiopsisConfig = {
   mask: ['[data-diopsis-ignore]'],
   compare: { threshold: 0.2, maxDiffPixelRatio: 0.001 },
   affected: 'all',
+  accessibility: 'off',
   timeout: 30_000,
   outputDir: '.diopsis',
 };
@@ -331,6 +340,11 @@ export function validateConfig(config: DiopsisConfig): string[] {
   }
   if (config.affected !== 'all' && config.affected !== 'auto') {
     problems.push(`affected must be "all" or "auto" (got ${show(config.affected)})`);
+  }
+  if (!['off', 'report', 'fail'].includes(config.accessibility)) {
+    problems.push(
+      `accessibility must be "off", "report" or "fail" (got ${show(config.accessibility)})`,
+    );
   }
   const freezeClock = config.stabilize.freezeClock;
   if (

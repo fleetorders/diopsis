@@ -217,3 +217,38 @@ describe('interrupted runs', () => {
     );
   });
 });
+
+describe('accessibility findings in the summary', () => {
+  it('classifies a capture the audit failed as changed — the response is accept', () => {
+    // The comparison passed and the findings failed the test; the story needs a review
+    // exactly like a pixel change, so it lands in the status whose response is accept.
+    const verdict = classify({
+      passed: false,
+      errorText: 'Error: New accessibility findings: 2 in card--default (image-alt, button-name)',
+    });
+    assert.equal(verdict.status, 'changed');
+  });
+
+  it('totals new findings across the run, and only when the run audited', () => {
+    const findings = { violations: [], new: 2 };
+    const totals = totalsFor([
+      capture({ accessibility: findings }),
+      capture({ width: 1280 }),
+      capture({ storyId: 'b--two', accessibility: { violations: [], new: 1 } }),
+    ]);
+    assert.equal(totals.a11yNew, 3);
+    // A zero on a run that never looked is not a clean bill of health — the audit being
+    // off is reported by the key's absence, not by a zero.
+    assert.equal('a11yNew' in totalsFor([capture({})]), false);
+  });
+
+  it('counts a story failed on findings among the changed stories', () => {
+    assert.deepEqual(
+      changedStoriesOf([
+        capture({ status: 'changed', error: 'New accessibility findings: 1 in a--one (image-alt)', accessibility: { violations: [], new: 1 } }),
+        capture({ storyId: 'b--two' }),
+      ]),
+      ['a--one'],
+    );
+  });
+});

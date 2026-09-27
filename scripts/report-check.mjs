@@ -98,6 +98,7 @@ const capture = (o) => ({
   snapshotPath: `${o.id}-${o.w}.png`, artifacts: o.a || {},
   ...(o.mode ? { mode: o.mode } : {}),
   ...(o.state ? { state: o.state } : {}),
+  ...(o.ax ? { accessibility: o.ax } : {}),
   ...(o.px != null ? { diffPixels: o.px, diffRatio: o.r } : {}),
   ...(o.regions ? { regions: o.regions } : {}),
   ...(o.dropped != null ? { regionsDropped: o.dropped } : {}),
@@ -846,6 +847,82 @@ check('ticking the plain capture leaves its state twin unticked',
   (await page.locator('.tile[data-key="card--default@640"]').getAttribute('class')).includes('done') &&
   !(await page.locator('.tile[data-key="card--default@640[dark]{hover}"]').getAttribute('class'))
     .includes('done'));
+await page.close();
+
+// Accessibility findings beside the pixels. A chip — offered only when a run has findings —
+// filters to the audited captures that carry them, and the capture lists each rule with
+// its impact as text, its help as a link, and every element it failed on, the new ones
+// marked. No colour anywhere in it: colour still means status alone (D-020).
+const a11yFindings = (rules) => {
+  let fresh = 0;
+  const violations = Object.entries(rules).map(([id, targets]) => {
+    fresh += targets.filter((t) => t.new).length;
+    return {
+      id,
+      impact: id === 'image-alt' ? 'serious' : 'critical',
+      help: id === 'image-alt' ? 'Images must have alternate text' : 'Buttons must have discernible text',
+      helpUrl: 'https://example.com/rules/' + id,
+      targets,
+    };
+  });
+  return { violations, new: fresh };
+};
+const a11yCaptures = [
+  capture({ t: 'Card', n: 'Default', id: 'card--default', w: 640, s: 'unchanged',
+    ax: a11yFindings({
+      'image-alt': [{ target: 'img.hero' }, { target: 'img.logo', new: true }],
+      'button-name': [{ target: 'button.save', new: true }],
+    }) }),
+  capture({ t: 'Card', n: 'Default', id: 'card--default', w: 320, s: 'unchanged' }),
+  capture({ t: 'Card', n: 'Long', id: 'card--long', w: 380, s: 'unchanged', mode: 'dark',
+    // Audited and clean: present in the data, invisible in the report.
+    ax: { violations: [], new: 0 } }),
+];
+const a11ySummary = {
+  ...summary,
+  captures: a11yCaptures,
+  totals: { ...summary.totals, stories: 2, captures: 3, unchanged: 3, changed: 0, new: 0,
+    renderFailed: 0, a11yNew: 2 },
+  changedStories: [],
+};
+await writeFile(path.join(work, 'a11y.html'), await renderReport(a11ySummary, work));
+page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+page.on('pageerror', (e) => crashes.push(String(e)));
+page.on('console', (m) => { if (m.type() === 'error') crashes.push(m.text()); });
+await page.goto('file://' + path.join(work, 'a11y.html'));
+await page.waitForTimeout(250);
+
+check('a run with findings offers the Accessibility chip',
+  (await page.locator('.chip[data-key=a11y]').count()) === 1 &&
+  (await page.locator('.chip[data-key=a11y]').textContent()) === 'Accessibility1');
+await page.locator('.chip[data-key=a11y]').click();
+await page.waitForTimeout(150);
+check('the Accessibility view shows the one audited capture with findings',
+  (await page.evaluate(() => flat.map((e) => keyOf(e.capture)).join())) === 'card--default@640');
+const rules = page.locator('#story-card--default .a11y .a11y-rule');
+check('each rule is listed with its id and impact as text',
+  (await rules.count()) === 2 &&
+  (await page.locator('#story-card--default .a11y code').first().textContent()) === 'image-alt' &&
+  (await page.locator('#story-card--default .a11y .impact').first().textContent()) === 'serious');
+check('the help text links to the rule',
+  (await page.locator('#story-card--default .a11y a').first().getAttribute('href')) ===
+    'https://example.com/rules/image-alt');
+check('every target is listed, and only the new ones are marked',
+  (await page.locator('#story-card--default .a11y .a11y-targets li').count()) === 3 &&
+  (await page.locator('#story-card--default .a11y-new').count()) === 2 &&
+  (await page.locator('#story-card--default .a11y-targets li').first().locator('.a11y-new').count()) === 0);
+check('a clean audit leaves nothing on the page',
+  (await page.locator('#story-card--long .a11y').count()) === 0);
+await page.close();
+
+// The control: the run without findings shows no chip at all.
+page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+page.on('pageerror', (e) => crashes.push(String(e)));
+page.on('console', (m) => { if (m.type() === 'error') crashes.push(m.text()); });
+await page.goto(url);
+await page.waitForTimeout(150);
+check('a run without findings shows no Accessibility chip',
+  (await page.locator('.chip[data-key=a11y]').count()) === 0);
 await page.close();
 
 // The control: a run without modes shows no mode chips at all.

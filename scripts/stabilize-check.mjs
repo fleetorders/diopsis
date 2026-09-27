@@ -12,9 +12,10 @@
 //
 // Bypass is deliberate and loud: STABILIZE_CHECK_SKIP=1.
 
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 if (process.env.STABILIZE_CHECK_SKIP === '1') {
   console.log('› stabilize-check: SKIPPED by STABILIZE_CHECK_SKIP=1');
@@ -29,9 +30,10 @@ try {
   process.exit(1);
 }
 
-const { applyState, componentClip, openStory, releaseState, StoryRenderError } = await import('../src/runtime/capture.ts');
+const { applyState, auditAccessibility, componentClip, openStory, releaseState, StoryRenderError } = await import('../src/runtime/capture.ts');
 const { serveStatic } = await import('../src/server.ts');
 const { defaultConfig } = await import('../src/config.ts');
+const { resolveAxePath } = await import('../src/accessibility.ts');
 
 const work = await mkdtemp(path.join(os.tmpdir(), 'diopsis-stabilize-check-'));
 const page = (script) => `<!doctype html><meta charset=utf-8>
@@ -143,6 +145,23 @@ await writeFile(path.join(work, 'states.html'), `<!doctype html><meta charset=ut
 background:#eeeeee}button:hover{background:#ff8800}button:focus-visible{background:#0088ff}
 button:active{background:#ff00ff}</style>
 <div id="storybook-root"><button id="b">go</button></div>`);
+
+// The accessibility audit's two pages: one with violations a real audit must catch — an
+// image without alternate text, a button without an accessible name — and one without.
+// The audit runs the axe-core this repo dev-depends on, injected exactly as the generated
+// spec injects it, against a page opened through the same openStory.
+await writeFile(path.join(work, 'a11y.html'), `<!doctype html><html lang="en"><meta charset=utf-8>
+<div id="storybook-root">
+  <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==">
+  <button></button>
+  <p id="out">a11y</p>
+</div>`);
+await writeFile(path.join(work, 'a11y-clean.html'), `<!doctype html><html lang="en"><meta charset=utf-8>
+<div id="storybook-root">
+  <img alt="A single pixel" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==">
+  <button>Save</button>
+  <p id="out">clean</p>
+</div>`);
 
 const results = [];
 const check = (name, pass, detail) => results.push({ name, pass, detail });
@@ -336,6 +355,41 @@ try {
     check('a selector naming nothing is a render failure',
       missing instanceof StoryRenderError && missing.message === 'State target not found: #absent',
       missing ? `${missing.name}: ${missing.message}` : 'resolved');
+    await context.close();
+  }
+
+  // The accessibility audit: real axe-core, a page opened like a story, and the violations
+  // trimmed to the shape the reporter records. The library resolves from this repo, the
+  // way a run resolves it from the tested project.
+  {
+    const repo = fileURLToPath(new URL('..', import.meta.url));
+    const axeSource = await readFile(resolveAxePath(repo), 'utf8');
+    const context = await browser.newContext();
+    const p = await context.newPage();
+    await openStory(p, `${server.url}/a11y.html`, defaultConfig.stabilize);
+    const violations = await auditAccessibility(p, axeSource);
+    const ids = violations.map((violation) => violation.id);
+    check('the audit reports an image without alternate text', ids.includes('image-alt'), ids.join(', '));
+    check('the audit reports a button without an accessible name', ids.includes('button-name'), ids.join(', '));
+    const imageAlt = violations.find((violation) => violation.id === 'image-alt');
+    check(
+      'a violation carries its impact, its help and where it failed',
+      imageAlt != null &&
+        typeof imageAlt.impact === 'string' &&
+        imageAlt.help.length > 0 &&
+        imageAlt.helpUrl.startsWith('https://') &&
+        imageAlt.targets.every((target) => typeof target === 'string' && target.length > 0),
+      JSON.stringify(imageAlt),
+    );
+
+    await openStory(p, `${server.url}/a11y-clean.html`, defaultConfig.stabilize);
+    const clean = await auditAccessibility(p, axeSource);
+    const cleanIds = clean.map((violation) => violation.id);
+    check(
+      'a page without the two violations reports neither',
+      !cleanIds.includes('image-alt') && !cleanIds.includes('button-name'),
+      cleanIds.join(', '),
+    );
     await context.close();
   }
 } finally {

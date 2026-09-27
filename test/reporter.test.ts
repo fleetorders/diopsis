@@ -724,3 +724,146 @@ describe('DiopsisReporter change-aware fields', () => {
     assert.equal(summary.carried, undefined);
   });
 });
+
+describe('DiopsisReporter with the accessibility audit', () => {
+  const findings = [
+    {
+      id: 'image-alt',
+      impact: 'serious',
+      help: 'Images must have alternate text',
+      helpUrl: 'https://example.com/rules/image-alt',
+      targets: ['img.hero', 'img.logo'],
+    },
+  ];
+
+  /** A reporter whose accepted-findings file exists before onBegin reads it. */
+  async function setupWithAccepted(accepted: string | undefined): Promise<{
+    reporter: DiopsisReporter;
+    outputDir: string;
+  }> {
+    const root = await mkdtemp(path.join(tmpdir(), 'diopsis-reporter-a11y-'));
+    temporaries.push(root);
+    if (accepted !== undefined) {
+      await mkdir(path.join(root, '__screenshots__'), { recursive: true });
+      await writeFile(path.join(root, '__screenshots__', 'accessibility.json'), accepted, 'utf8');
+    }
+    const config = resolveConfig();
+    const { captures } = resolveMatrix(stories, config, 'linux-x64');
+    const planned = planCaptures(captures, path.join(root, '__screenshots__'));
+    const outputDir = path.join(root, '.diopsis');
+    await mkdir(outputDir, { recursive: true });
+    const planPath = path.join(root, 'plan.json');
+    await writeFile(
+      planPath,
+      JSON.stringify({
+        baseUrl: 'http://127.0.0.1:4321',
+        captures: planned,
+        stabilize: config.stabilize,
+        compare: config.compare,
+        mask: config.mask,
+        fullPage: config.fullPage,
+        accessibility: 'report',
+      }),
+    );
+    const reporter = new DiopsisReporter({
+      planPath,
+      outputDir,
+      snapshotDir: '__screenshots__',
+      snapshotDirAbs: path.join(root, '__screenshots__'),
+      mode: 'run',
+      retries: 0,
+      platform: 'linux',
+      arch: 'x64',
+      createdAt: '2026-01-01T00:00:00Z',
+    });
+    await reporter.onBegin({} as FullConfig);
+    return { reporter, outputDir };
+  }
+
+  const audited = (status: string) =>
+    result({
+      status: status as TestResult['status'],
+      ...(status === 'passed'
+        ? {}
+        : { errors: [{ message: 'New accessibility findings: 1 in a--one (image-alt)' }] }),
+      annotations: [
+        { type: 'diopsis-baseline', description: 'present' },
+        { type: 'diopsis-a11y', description: JSON.stringify(findings) },
+      ],
+    });
+
+  it('marks findings new against the accepted file, and totals them', async () => {
+    const { reporter, outputDir } = await setupWithAccepted(
+      '{ "a--one": { "image-alt": ["img.hero"] } }',
+    );
+    const { out } = await withCapturedStdout(async () => {
+      reporter.onTestEnd(testTitled('a--one @320'), audited('passed'));
+      await reporter.onEnd({ status: 'passed' } as FullResult);
+    });
+
+    const summary = await summaryAt(outputDir);
+    const capture = summary.captures.find((c) => c.storyId === 'a--one');
+    // img.hero was accepted; img.logo was not — the report's "new" marker and the count
+    // both come from that match.
+    assert.deepEqual(capture?.accessibility?.violations[0]?.targets, [
+      { target: 'img.hero' },
+      { target: 'img.logo', new: true },
+    ]);
+    assert.equal(capture?.accessibility?.new, 1);
+    assert.equal(summary.totals.a11yNew, 1);
+    assert.match(out, /  a11y      1 new finding in 1 story/);
+    assert.match(out, /  ! a--one  image-alt \(1\)/);
+    // 'report' mode never touched the exit code: the capture stayed unchanged.
+    assert.equal(capture?.status, 'unchanged');
+    assert.deepEqual(summary.changedStories, []);
+  });
+
+  it('fails a capture with new findings in fail mode, like a change', async () => {
+    const { reporter, outputDir } = await setupWithAccepted(undefined);
+    const { out } = await withCapturedStdout(async () => {
+      reporter.onTestEnd(testTitled('a--one @320'), audited('failed'));
+      await reporter.onEnd({ status: 'failed' } as FullResult);
+    });
+
+    const summary = await summaryAt(outputDir);
+    const capture = summary.captures.find((c) => c.storyId === 'a--one');
+    assert.equal(capture?.status, 'changed');
+    assert.deepEqual(summary.changedStories, ['a--one']);
+    assert.match(out, /~ a--one @320  changed/);
+    assert.match(out, /Accept as the new baseline/);
+  });
+
+  it('keeps a clean audit on the record — an audited story is not an unaudited one', async () => {
+    const { reporter, outputDir } = await setupWithAccepted(undefined);
+    await withCapturedStdout(async () => {
+      reporter.onTestEnd(
+        testTitled('a--one @320'),
+        result({
+          status: 'passed',
+          annotations: [
+            { type: 'diopsis-baseline', description: 'present' },
+            { type: 'diopsis-a11y', description: '[]' },
+          ],
+        }),
+      );
+      await reporter.onEnd({ status: 'passed' } as FullResult);
+    });
+
+    const summary = await summaryAt(outputDir);
+    const capture = summary.captures.find((c) => c.storyId === 'a--one');
+    assert.deepEqual(capture?.accessibility, { violations: [], new: 0 });
+    assert.equal(summary.totals.a11yNew, 0);
+  });
+
+  it('prints no a11y line when every finding was accepted', async () => {
+    const { reporter, outputDir } = await setupWithAccepted(
+      '{ "a--one": { "image-alt": ["img.hero", "img.logo"] } }',
+    );
+    const { out } = await withCapturedStdout(async () => {
+      reporter.onTestEnd(testTitled('a--one @320'), audited('passed'));
+      await reporter.onEnd({ status: 'passed' } as FullResult);
+    });
+    assert.doesNotMatch(out, /^  a11y /m);
+    assert.equal((await summaryAt(outputDir)).totals.a11yNew, 0);
+  });
+});

@@ -1004,3 +1004,56 @@ the files beside the report. The report still opens and works on its own, with a
 each image it cannot reach.
 
 **Scope:** repo.
+
+## D-041 — 2026-09-27 — Optional capabilities use a library only when the project installs it
+
+**Decision:** Diopsis keeps its zero runtime dependencies (D-015). A capability that needs a
+third-party library declares it as an optional peer dependency and loads it resolved from
+the tested project. When the capability is switched on and the library is missing, the run
+stops with one line saying exactly what to install. Nothing is downloaded or installed by
+Diopsis itself.
+
+**Why:** the tested project, not the tool, owns the dependency tree: versions, audits and
+licence review all happen where the project already does them, and a tool that installs
+behind its user's back breaks the no-runtime-dependencies property the package is trusted
+for. An optional peer dependency states the need without imposing it, and resolving from
+the project means the version a story is audited with is the one the project chose.
+
+**Consequences:** the first use of such a capability stops with an install instruction
+rather than working out of the box, and the library's version can differ between projects.
+The first capability under this policy is the accessibility audit (D-042).
+
+**Scope:** repo.
+
+## D-042 — 2026-09-27 — Accessibility findings beside the pixels, accepted like baselines
+
+**Decision:** `accessibility: 'off' | 'report' | 'fail'` (default `'off'`, validated; a
+`diopsis:a11y=off` tag opts a story out) audits each story's render with the tested
+project's axe-core — an optional peer dependency under D-041 — once per story and mode, on
+the first width, after the screenshot so nothing the audit does can touch the compared
+pixels, and never on an interaction-state capture. Findings are recorded per capture and
+totalled as new in `summary.json`; `'report'` never affects the exit code, `'fail'` fails
+a run with new findings like a change and lists the story among the changed. Accepted
+findings live in `<snapshotDir>/accessibility.json`, keyed `<storyId>[@<mode>]` with each
+rule's target selectors, committed like baselines; a finding is new when its rule and
+target are not listed for its story. `diopsis accept` adopts the current findings for the
+stories it accepts and drops ones that disappeared, so the file never grows stale. The
+report offers an Accessibility chip when a run has findings, and the capture lists each
+rule with its impact, its help and its targets, new findings marked.
+
+**Why:** pixels are not the only way a component regresses, and an accessibility failure
+is invisible to a pixel diff that renders exactly what it rendered before. axe-core is the
+engine the ecosystem already ships, so the audit's vocabulary is one a team recognises;
+keeping acceptance in the repository — the same review a baseline gets — is what makes the
+findings reviewable in a pull request rather than in a report nobody reopens. Auditing
+once per story and mode, after the comparison, keeps the cost bounded and the screenshot
+authoritative.
+
+**Consequences:** the audit runs only on a capture whose comparison passed, so a story
+with both a pixel change and findings reports the pixels first and the findings on the
+next run. `update` audits and records but never fails, matching a regeneration that passes
+by construction — its summary offers nothing findings could be accepted from. Impact is
+shown as text and "new" as an outlined marker, so the report's colour keeps meaning status
+alone (D-020).
+
+**Scope:** repo.

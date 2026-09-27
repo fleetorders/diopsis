@@ -1,8 +1,14 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { copyFile, mkdir, readFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
+import {
+  ACCEPTED_A11Y_FILENAME,
+  adoptFindings,
+  formatAcceptedA11y,
+  type AcceptedAccessibility,
+} from '../accessibility.ts';
 import { loadConfig } from '../config.ts';
 import { gitEnv, isGitRepo } from '../git.ts';
 import { needsReview, type CaptureResult, type RunSummary } from '../report/summary.ts';
@@ -79,9 +85,30 @@ export async function acceptCommand(options: AcceptOptions): Promise<number> {
     (capture) => inScope(capture.storyId) && needsReview(capture.status),
   );
   const wanted = candidates.filter(adoptable);
-  const skipped = candidates.filter((capture) => !adoptable(capture));
+  // A candidate that carries audit data failed on findings, not pixels — the comparison
+  // passed, there is no image to copy, and its findings are what this accept adopts. Only
+  // a capture with nothing adoptable about it is reported as skipped.
+  const skipped = candidates.filter(
+    (capture) => !adoptable(capture) && !capture.accessibility,
+  );
 
-  if (candidates.length === 0) {
+  // The audit's findings are adopted beside the images, for the same stories the accept
+  // covers. A summary from a run that never audited has no accessibility data anywhere,
+  // and such an accept leaves the accepted-findings file untouched.
+  const acceptedPath = path.join(snapshotDir, ACCEPTED_A11Y_FILENAME);
+  let acceptedExisting: AcceptedAccessibility = {};
+  let acceptedText = '';
+  if (summary.captures.some((capture) => capture.accessibility)) {
+    try {
+      acceptedText = await readFile(acceptedPath, 'utf8');
+      acceptedExisting = JSON.parse(acceptedText) as AcceptedAccessibility;
+    } catch {
+      // Nothing accepted yet — the file is absent on a first accept.
+    }
+  }
+  const adopted = adoptFindings(acceptedExisting, summary.captures, inScope);
+
+  if (candidates.length === 0 && !adopted) {
     process.stdout.write(
       wantedIds.length > 0
         ? `Nothing to accept for ${wantedIds.join(', ')}.\n`
@@ -145,6 +172,18 @@ export async function acceptCommand(options: AcceptOptions): Promise<number> {
     written.push(to);
   }
 
+  // The accepted-findings file is written only when adopting changed it — a re-accept of
+  // the same run rewrites identical content, and a needless rewrite is a needless diff.
+  let findingsWritten = false;
+  if (adopted) {
+    const formatted = formatAcceptedA11y(adopted.next);
+    if (formatted !== acceptedText) {
+      await mkdir(path.dirname(acceptedPath), { recursive: true });
+      await writeFile(acceptedPath, formatted, 'utf8');
+      findingsWritten = true;
+    }
+  }
+
   for (const capture of skipped) {
     process.stdout.write(
       `  skipped ${capture.storyId} @${capture.width}` +
@@ -153,20 +192,39 @@ export async function acceptCommand(options: AcceptOptions): Promise<number> {
     );
   }
 
-  process.stdout.write(
-    written.length > 0
-      ? `Accepted ${written.length} capture${written.length === 1 ? '' : 's'} ` +
-          `into ${config.snapshotDir}.\n`
-      : 'Nothing to accept — no reviewable capture produced an image.\n',
-  );
+  if (written.length > 0) {
+    process.stdout.write(
+      `Accepted ${written.length} capture${written.length === 1 ? '' : 's'} ` +
+        `into ${config.snapshotDir}.\n`,
+    );
+  }
+  if (findingsWritten) {
+    const file = `${config.snapshotDir}${config.snapshotDir.endsWith('/') ? '' : '/'}${ACCEPTED_A11Y_FILENAME}`;
+    if (adopted!.stories > 0) {
+      process.stdout.write(
+        `Accepted accessibility findings for ${adopted!.stories} ` +
+          `${adopted!.stories === 1 ? 'story' : 'stories'} into ${file}.\n`,
+      );
+    } else {
+      // The only change the adoption made was removals: the run stopped reporting
+      // findings the file still claimed.
+      process.stdout.write(
+        `Dropped accepted accessibility findings the run no longer reports, in ${file}.\n`,
+      );
+    }
+  }
+  if (written.length === 0 && !findingsWritten) {
+    process.stdout.write('Nothing to accept — no reviewable capture produced an image.\n');
+  }
 
-  if (!options.noStage && written.length > 0) {
+  const stagedPaths = findingsWritten ? [...written, acceptedPath] : written;
+  if (!options.noStage && stagedPaths.length > 0) {
     const inRepo = isGitRepo(options.root);
 
     if (!inRepo) {
       process.stdout.write('Not staged — this is not a git repository. The files are written.\n');
     } else {
-      const staged = spawnSync('git', ['add', '--', ...written], {
+      const staged = spawnSync('git', ['add', '--', ...stagedPaths], {
         cwd: options.root,
         env: gitEnv,
         encoding: 'utf8',

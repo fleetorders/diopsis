@@ -160,6 +160,7 @@ describe('validateConfig', () => {
     fullPage?: unknown;
     mask?: unknown;
     affected?: unknown;
+    accessibility?: unknown;
     budget?: unknown;
     stabilize?: Record<string, unknown>;
     compare?: Record<string, unknown>;
@@ -279,13 +280,22 @@ describe('validateConfig', () => {
         fullPage: 'yes',
         mask: '[data-x]',
         affected: 'everything',
+        accessibility: 'enforce',
         stabilize: { freezeClock: 'not-a-date' },
       }),
     );
     assert.ok(problems.some((p) => /fullPage must be true or false/.test(p)));
     assert.ok(problems.some((p) => /mask must be an array of selector strings/.test(p)));
     assert.ok(problems.some((p) => /affected must be "all" or "auto"/.test(p)));
+    assert.ok(problems.some((p) => /accessibility must be "off", "report" or "fail"/.test(p)));
     assert.ok(problems.some((p) => /stabilize\.freezeClock must be false or a date/.test(p)));
+  });
+
+  it('accepts each accessibility mode, and defaults to off', () => {
+    for (const accessibility of ['off', 'report', 'fail'] as const) {
+      assert.deepEqual(validateConfig(configWith({ accessibility })), []);
+    }
+    assert.equal(resolveConfig().accessibility, 'off');
   });
 
   it('accepts freezeClock false and a date Date can parse', () => {

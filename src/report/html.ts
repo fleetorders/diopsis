@@ -374,6 +374,23 @@ input[type=range] { display: block; width: 100%; margin-top: 9px; accent-color: 
 .err { white-space: pre-wrap; font: 12px/1.5 ui-monospace, monospace; color: var(--failed);
   background: var(--raised); border: 1px solid var(--line); border-radius: 6px; padding: 9px;
   margin-top: 10px; }
+/* Accessibility findings are a second verdict beside the pixels, not a status: nothing in
+   them takes a colour of its own — impact reads as plain text, and "new" is an outlined
+   marker, so colour still means exactly one thing at a time (D-020). */
+.a11y { margin-top: 10px; }
+.a11y ul { margin: 0; padding: 0; list-style: none; }
+.a11y-rule { display: flex; flex-direction: column; gap: 3px; }
+.a11y-rule + .a11y-rule { margin-top: 8px; }
+.a11y-head { display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; }
+.a11y code { font-size: 12px; padding: 1px 5px; white-space: pre-wrap; }
+.a11y .impact { color: var(--muted); font-size: 11px; border: 1px solid var(--line);
+  border-radius: 4px; padding: 0 5px; }
+.a11y a { color: var(--ink); font-size: 12px; text-decoration: underline;
+  text-underline-offset: 2px; }
+.a11y-targets { padding-left: 12px; display: flex; flex-direction: column; gap: 2px; }
+.a11y-targets li { display: flex; align-items: baseline; gap: 7px; }
+.a11y-new { color: var(--muted); border: 1px solid var(--line); border-radius: 4px;
+  padding: 0 5px; font-size: 11px; }
 /* Carried is neither a status nor a verdict — the capture was never shot — so it claims no
    colour of its own: muted grey like removed, reading as bookkeeping, not review. */
 .carried { border: 1px solid var(--line); border-radius: 8px; background: var(--surface);
@@ -536,6 +553,12 @@ filters.appendChild(chip('review', 'Needs review'));
 for (const s of order) if (counts[s]) filters.appendChild(chip(s, LABEL[s], s));
 // Offered only when a run actually saw flake; no dot, because there is no unstable colour.
 if (unstableCount) filters.appendChild(chip('unstable', 'Unstable'));
+/* The audit's findings are offered the same way — only when the run has any, and with no
+   dot, because findings are not a status. The chip selects the audited captures that
+   carry them: one per story and mode. */
+if (data.captures.some(c => c.accessibility && c.accessibility.violations.length)) {
+  filters.appendChild(chip('a11y', 'Accessibility'));
+}
 /* Carried captures are not in data.captures — they were never shot — so the chip counts the
    carried list itself and no capture can match its filter: the view it selects is the grey
    section under the list. */
@@ -579,6 +602,7 @@ function inFilter(c, key) {
   return key === 'all' ? true
     : key === 'review' ? REVIEW.has(c.status)
     : key === 'unstable' ? !!c.unstable
+    : key === 'a11y' ? !!(c.accessibility && c.accessibility.violations.length)
     : key === 'carried' ? false
     : c.status === key;
 }
@@ -649,6 +673,58 @@ function truncatedNote(capture, parent) {
   parent.appendChild(p);
 }
 
+/* The audit's findings, beside the pixels: each rule with its impact and its help, and
+   every element it failed on. Impact is plain text and "new" an outlined marker, so colour
+   keeps meaning status alone (D-020). */
+function a11yList(a11y) {
+  const wrap = document.createElement('div');
+  wrap.className = 'a11y';
+  const list = document.createElement('ul');
+  for (const v of a11y.violations) {
+    const rule = document.createElement('li');
+    rule.className = 'a11y-rule';
+    const head = document.createElement('div');
+    head.className = 'a11y-head';
+    const id = document.createElement('code');
+    id.textContent = v.id;
+    head.appendChild(id);
+    if (v.impact) {
+      const impact = document.createElement('span');
+      impact.className = 'impact';
+      impact.textContent = v.impact;
+      head.appendChild(impact);
+    }
+    const help = document.createElement('a');
+    help.href = v.helpUrl;
+    help.target = '_blank';
+    help.rel = 'noreferrer';
+    help.textContent = v.help;
+    head.appendChild(help);
+    rule.appendChild(head);
+    if (v.targets.length) {
+      const targets = document.createElement('ul');
+      targets.className = 'a11y-targets';
+      for (const t of v.targets) {
+        const li = document.createElement('li');
+        const code = document.createElement('code');
+        code.textContent = t.target;
+        li.appendChild(code);
+        if (t.new) {
+          const marker = document.createElement('span');
+          marker.className = 'a11y-new';
+          marker.textContent = 'new';
+          li.appendChild(marker);
+        }
+        targets.appendChild(li);
+      }
+      rule.appendChild(targets);
+    }
+    list.appendChild(rule);
+  }
+  wrap.appendChild(list);
+  return wrap;
+}
+
 /* One image is drawn at a time and only once its story is open: every capture needing review
    carries three inlined PNGs, and decoding the whole matrix up front is what made a large
    report slow to become interactive. */
@@ -706,8 +782,10 @@ function stage(capture) {
   if (!modes.length && img.actual) modes.push('Actual');
   if (!modes.length) {
     // An unchanged capture is meant to have no images; saying so on every row of a full
-    // matrix reads as a fault report. Only an absence that needs explaining gets a line.
-    if (REVIEW.has(capture.status)) {
+    // matrix reads as a fault report. Only an absence that needs explaining gets a line —
+    // and a capture that failed on findings has its explanation already: the findings
+    // listed beside the pixels are the content, no image was ever missing.
+    if (REVIEW.has(capture.status) && !(capture.accessibility && capture.accessibility.violations.length)) {
       el.className = 'note';
       el.textContent = 'No image artifacts for this capture.';
     }
@@ -1318,6 +1396,11 @@ function buildAll() {
         e.className = 'err';
         e.textContent = c.error;
         box.appendChild(e);
+      }
+      // The findings list sits after everything the capture's own status explains, so it
+      // reads as the second verdict it is — beside the pixels, never under them.
+      if (c.accessibility && c.accessibility.violations.length) {
+        box.appendChild(a11yList(c.accessibility));
       }
       det.appendChild(box);
       entries.push(entry);
