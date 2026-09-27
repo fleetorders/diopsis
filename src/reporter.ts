@@ -329,8 +329,8 @@ export default class DiopsisReporter implements Reporter {
       ...(totals.failed ? [`${totals.failed} failed`] : []),
     ];
 
+    // The run header already ends in a blank line; opening with another printed two.
     const lines = [
-      '',
       ...(totals.notRun > 0
         ? [`  run interrupted — ${totals.notRun} captures did not run`]
         : []),

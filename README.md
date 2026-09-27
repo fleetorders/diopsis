@@ -30,11 +30,11 @@ Diopsis · 7 stories → 13 captures · darwin-arm64
 
   8 unchanged · 5 changed
 
-  ~ card--default @320  2,684 px differ
-  ~ card--default @1280  3,150 px differ
-  ~ card--long @320  6,328 px differ
-  ~ card--long @1280  6,212 px differ
-  ~ card--wide-only @1280  3,204 px differ
+  ~ card--default @320  2,092 px differ
+  ~ card--default @1280  1,845 px differ
+  ~ card--long @320  5,914 px differ
+  ~ card--long @1280  5,377 px differ
+  ~ card--wide-only @1280  1,964 px differ
 
   report   .diopsis/report.html
   summary  .diopsis/summary.json
@@ -42,11 +42,11 @@ Diopsis · 7 stories → 13 captures · darwin-arm64
   Accept as the new baseline:  npx diopsis accept
 ```
 
-And when something did change, the report shows you exactly what — baseline beside current
-render, changed stories first:
+And when something did change, the report shows you exactly what — an overview of every
+change, then each one with the changed region outlined, largest change first:
 
 <div align="center">
-  <img src="https://raw.githubusercontent.com/fleetorders/diopsis/main/media/diopsis-report.png" width="920" alt="The Diopsis report: filter chips for changed and unchanged captures, above a story showing its committed baseline and current render side by side">
+  <img src="https://raw.githubusercontent.com/fleetorders/diopsis/main/media/diopsis-report.png" width="920" alt="The Diopsis report: filter chips and a page-wide comparison switch above an overview of five changed captures, then a changed card with the region that moved outlined over the diff">
 </div>
 
 Needs Node 18.3+, a built static Storybook, and `@playwright/test` as a peer dependency; runs on
@@ -99,11 +99,13 @@ change afterwards.
 
 | | |
 |---|---|
-| **Captures that do not flake** | A frozen clock, settled fonts and images, animations disabled, locale and timezone pinned — [all on by default](#configuration) |
+| **Captures that do not flake** | A frozen clock, settled fonts, images, network and play functions, animations disabled, locale and timezone pinned — [all on by default](#configuration) — and a capture that differs only once is retaken and reported unstable, not changed |
 | **Baselines that cannot collide** | Platform and architecture in every snapshot path, so a local run can never overwrite what CI reads |
-| **A diff you can actually review** | A self-contained HTML report with [four ways to compare](#everyday-use) each pair, largest change first, filterable and keyboard-driven |
+| **A diff you can actually review** | A self-contained HTML report that opens on an overview of every change, outlines where each capture changed, and offers [four ways to compare](#everyday-use) each pair — keyboard-driven, with one command to accept what you reviewed |
+| **Every state you ship** | Widths, [modes](#modes) such as a dark theme or right-to-left, and stories captured after their play functions, each with its own baselines |
+| **Reviewable baselines** | [`diopsis diff`](#everyday-use) renders a branch's baseline changes straight from git, for the pull request that accepts them |
 | **A machine-readable result** | `summary.json` with every capture and changed story id, for your existing CI bot |
-| **Visible cost** | [`diopsis doctor`](#reference) reports capture count, baseline weight and orphans before they become a problem |
+| **Visible cost** | [`diopsis doctor`](#reference) reports capture count and baseline weight against a budget, and `diopsis prune` removes what no capture writes any more |
 | **Nothing to sign up for** | Zero runtime dependencies, no uploads, no account, no dashboard |
 
 ## How it works, in plain words
