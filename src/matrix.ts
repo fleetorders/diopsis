@@ -9,6 +9,8 @@ export interface Capture {
   importPath?: string;
   width: number;
   height: number;
+  /** What this capture frames: the whole page, or the rendered component alone. */
+  scope: 'page' | 'component';
   /** Comparison overrides the story's tags set; only the keys a tag actually carried. */
   compare?: Partial<CompareOptions>;
   /** Baseline location, relative to `snapshotDir`. */
@@ -87,6 +89,46 @@ export function toleranceForStory(
   return { ...(Object.keys(compare).length > 0 ? { compare } : {}), warnings };
 }
 
+/**
+ * The scope directives: `diopsis:component` photographs the rendered component rather than
+ * the whole page; `diopsis:page` pins one story of a component-configured run back to the
+ * page. Like the tolerance directives they name no width and never take part in width
+ * resolution.
+ */
+const SCOPE_TAGS: Record<string, 'page' | 'component'> = {
+  component: 'component',
+  page: 'page',
+};
+
+/**
+ * The capture scope for one story: its tags' directive over the configured default. A story
+ * carrying both directives is ambiguous, so the conflict is a warning and the page wins —
+ * the whole page is the capture a reader expects when the tags disagree.
+ */
+export function scopeForStory(
+  story: StoryEntry,
+  capture: 'page' | 'component',
+): { scope: 'page' | 'component'; warnings: string[] } {
+  let found: 'page' | 'component' | undefined;
+  let conflict = false;
+  for (const tag of story.tags) {
+    if (!tag.startsWith(TAG_PREFIX)) continue;
+    const scope = SCOPE_TAGS[tag.slice(TAG_PREFIX.length)];
+    if (!scope) continue;
+    if (found !== undefined && found !== scope) conflict = true;
+    found = scope;
+  }
+  if (conflict) {
+    return {
+      scope: 'page',
+      warnings: [
+        `${story.id}: tags "diopsis:page" and "diopsis:component" both set — "page" wins.`,
+      ],
+    };
+  }
+  return { scope: found ?? capture, warnings: [] };
+}
+
 /** `darwin-arm64`, `linux-x64` — the token that keeps two platforms' baselines apart. */
 export function platformToken(
   platform: string = process.platform,
@@ -133,8 +175,9 @@ export function widthsForStory(
       continue;
     }
     // A tolerance directive names a comparison knob, not a width; skipping it here is what
-    // keeps a story carrying only tolerance tags on the default widths.
-    if (toleranceDirective(token)) continue;
+    // keeps a story carrying only tolerance tags on the default widths. The scope directives
+    // are the same kind: they name what the camera frames.
+    if (toleranceDirective(token) || SCOPE_TAGS[token]) continue;
     if (/^\d+$/.test(token)) {
       widths.add(Number.parseInt(token, 10));
       continue;
@@ -166,7 +209,7 @@ export function widthsForStory(
  */
 export function resolveMatrix(
   stories: StoryEntry[],
-  config: Pick<DiopsisConfig, 'viewports' | 'viewportHeight'>,
+  config: Pick<DiopsisConfig, 'viewports' | 'viewportHeight' | 'capture'>,
   platform: string = platformToken(),
 ): ResolvedMatrix {
   const captures: Capture[] = [];
@@ -181,7 +224,8 @@ export function resolveMatrix(
   for (const story of stories) {
     const resolved = widthsForStory(story, config.viewports);
     const tolerance = toleranceForStory(story);
-    warnings.push(...resolved.warnings, ...tolerance.warnings);
+    const scope = scopeForStory(story, config.capture);
+    warnings.push(...resolved.warnings, ...tolerance.warnings, ...scope.warnings);
     if (resolved.skip) {
       skipped.push(story.id);
       continue;
@@ -209,6 +253,7 @@ export function resolveMatrix(
         ...(story.importPath ? { importPath: story.importPath } : {}),
         width,
         height: config.viewportHeight,
+        scope: scope.scope,
         snapshotPath: snapshotPathFor(story.id, width, platform),
         ...(tolerance.compare ? { compare: tolerance.compare } : {}),
       });

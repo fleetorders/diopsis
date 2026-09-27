@@ -35,10 +35,11 @@ describe('headerLine', () => {
 describe('headerBlock', () => {
   const config = resolveConfig({ viewports: { default: [320] } });
 
-  function blockFor(all: StoryEntry[]): string {
-    const matrix = resolveMatrix(all, config);
+  function blockFor(all: StoryEntry[], capture: 'page' | 'component' = config.capture): string {
+    const matrix = resolveMatrix(all, { ...config, capture });
     return headerBlock({
       captures: matrix.captures,
+      capture,
       configSource: 'diopsis.config.mjs',
       storybookDir: 'storybook-static',
       snapshotDir: '__screenshots__',
@@ -57,6 +58,29 @@ describe('headerBlock', () => {
   it('prints no loosened line while nothing compares more loosely than the config', () => {
     const out = blockFor([...stories(['a--strict'], ['diopsis:threshold=0.1']), ...stories(['b--plain'])]);
     assert.doesNotMatch(out, /loosened/);
+  });
+
+  it('prints no scope line while everything is captured as the whole page', () => {
+    const out = blockFor([...stories(['a--one']), ...stories(['b--pin'], ['diopsis:page'])]);
+    assert.doesNotMatch(out, /scope/);
+  });
+
+  it('counts the stories that pull a component run back to the page', () => {
+    const out = blockFor(
+      [...stories(['a--pin'], ['diopsis:page']), ...stories(['b--pin'], ['diopsis:page']), ...stories(['c--comp'])],
+      'component',
+    );
+    assert.match(out, /  scope     component \(2 stories page\)\n/);
+  });
+
+  it('counts component-tagged stories in a page-configured run', () => {
+    const out = blockFor([...stories(['a--chip'], ['diopsis:component']), ...stories(['b--plain'])]);
+    assert.match(out, /  scope     page \(1 story component\)\n/);
+  });
+
+  it('states the component scope even when no story overrides it', () => {
+    const out = blockFor([...stories(['a--one'])], 'component');
+    assert.match(out, /  scope     component\n/);
   });
 });
 

@@ -50,6 +50,11 @@ export interface DiopsisConfig {
   viewportHeight: number;
   /** Capture the whole scrollable page rather than the viewport. */
   fullPage: boolean;
+  /**
+   * What each capture frames: the whole page, or the rendered component alone. Per-story
+   * `diopsis:component` / `diopsis:page` tags override it for one story.
+   */
+  capture: 'page' | 'component';
   /** The one image name that both baseline generation and CI verification read. */
   image: string;
   stabilize: StabilizeOptions;
@@ -83,6 +88,7 @@ export const defaultConfig: DiopsisConfig = {
   viewports: { default: [320, 1280] },
   viewportHeight: 900,
   fullPage: true,
+  capture: 'page',
   image: 'mcr.microsoft.com/playwright:v1.62.1-jammy',
   stabilize: {
     freezeClock: '2026-01-15T12:00:00Z',
@@ -200,6 +206,9 @@ export function validateConfig(config: DiopsisConfig): string[] {
   }
   if (typeof config.fullPage !== 'boolean') {
     problems.push(`fullPage must be true or false (got ${show(config.fullPage)})`);
+  }
+  if (config.capture !== 'page' && config.capture !== 'component') {
+    problems.push(`capture must be "page" or "component" (got ${show(config.capture)})`);
   }
   if (!Array.isArray(config.mask) || !config.mask.every((selector) => typeof selector === 'string')) {
     problems.push(`mask must be an array of selector strings (got ${show(config.mask)})`);

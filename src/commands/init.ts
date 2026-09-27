@@ -183,6 +183,7 @@ export async function initCommand(options: InitOptions): Promise<number> {
         const matrix = resolveMatrix(stories, {
           viewports: { default: widths },
           viewportHeight: config.viewportHeight,
+          capture: 'page',
         });
         const label = widths.join(', ').padEnd(25);
         const count = String(matrix.captures.length).padStart(8);

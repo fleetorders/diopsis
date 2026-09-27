@@ -253,6 +253,92 @@ export async function stabilize(
   );
 }
 
+/** Padding, in CSS pixels, added around a component's union box before clipping. */
+export const COMPONENT_PADDING = 8;
+
+/** The descendant walk stops here, so clipping cannot become a scan of a pathological page. */
+const MAX_WALKED_ELEMENTS = 5000;
+
+/** A clip rectangle in document coordinates, whole CSS pixels. */
+export interface ComponentClip {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * The box a component-scoped capture photographs: the union of the render root's children
+ * that have a non-zero box, together with their descendants' — a child whose contents
+ * overflow it, an absolutely positioned popover say, must not be cut short — padded on every
+ * side and rounded outward to whole pixels. Undefined when nothing has a box, which is the
+ * caller's signal to fall back to the page capture.
+ *
+ * Boxes are read in document coordinates, scroll offsets added, because a clip is applied to
+ * a full-page screenshot: the coordinate system is the page, not the viewport.
+ */
+export async function componentClip(page: Page): Promise<ComponentClip | undefined> {
+  return page.evaluate(
+    ({ roots, padding, limit }: { roots: readonly string[]; padding: number; limit: number }) => {
+      let root: Element | null = null;
+      for (const selector of roots) {
+        root = document.querySelector(selector);
+        if (root) break;
+      }
+      if (!root) return undefined;
+
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      let any = false;
+      let walked = 0;
+      // A zero box contributes nothing to a union, and a display:none subtree reports zeros
+      // at the origin — including it would drag the box to the page's corner.
+      const include = (element: Element): boolean => {
+        const rect = element.getBoundingClientRect();
+        if (rect.width <= 0 && rect.height <= 0) return false;
+        const x1 = rect.left + window.scrollX;
+        const y1 = rect.top + window.scrollY;
+        const x2 = x1 + rect.width;
+        const y2 = y1 + rect.height;
+        minX = Math.min(minX, x1);
+        minY = Math.min(minY, y1);
+        maxX = Math.max(maxX, x2);
+        maxY = Math.max(maxY, y2);
+        any = true;
+        return true;
+      };
+
+      for (const child of Array.from(root.children)) {
+        if (walked >= limit) break;
+        if (!include(child)) continue;
+        const stack: Element[] = [child];
+        while (stack.length > 0 && walked < limit) {
+          const element = stack.pop();
+          if (!element) break;
+          walked += 1;
+          for (const descendant of Array.from(element.children)) {
+            include(descendant);
+            stack.push(descendant);
+          }
+        }
+      }
+      if (!any) return undefined;
+
+      const x = Math.max(0, Math.floor(minX - padding));
+      const y = Math.max(0, Math.floor(minY - padding));
+      return {
+        x,
+        y,
+        width: Math.ceil(maxX + padding) - x,
+        height: Math.ceil(maxY + padding) - y,
+      };
+    },
+    { roots: RENDER_ROOTS, padding: COMPONENT_PADDING, limit: MAX_WALKED_ELEMENTS },
+  );
+}
+
 /**
  * Forget everything the previous story left behind.
  *

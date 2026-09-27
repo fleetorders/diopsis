@@ -70,6 +70,11 @@ describe('resolveConfig', () => {
   it('recognises only its own ignore attribute', () => {
     assert.deepEqual(defaultConfig.mask, ['[data-diopsis-ignore]']);
   });
+
+  it('captures the whole page unless the config says component', () => {
+    assert.equal(resolveConfig().capture, 'page');
+    assert.equal(resolveConfig({ capture: 'component' }).capture, 'component');
+  });
 });
 
 describe('supportsTypeStripping', () => {
@@ -141,6 +146,7 @@ describe('validateConfig', () => {
   function configWith(over: {
     viewports?: unknown;
     viewportHeight?: unknown;
+    capture?: unknown;
     timeout?: unknown;
     workers?: unknown;
     fullPage?: unknown;
@@ -229,6 +235,14 @@ describe('validateConfig', () => {
       problems[0] ?? '',
       /workers must be a positive integer or a percentage like "50%" \(got "all"\)/,
     );
+  });
+
+  it('accepts "page" and "component" as the capture scope, and nothing else', () => {
+    assert.deepEqual(validateConfig(configWith({ capture: 'page' })), []);
+    assert.deepEqual(validateConfig(configWith({ capture: 'component' })), []);
+    const problems = validateConfig(configWith({ capture: 'story' }));
+    assert.equal(problems.length, 1);
+    assert.match(problems[0] ?? '', /capture must be "page" or "component" \(got "story"\)/);
   });
 
   it('checks the remaining shape rules', () => {

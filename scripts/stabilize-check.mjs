@@ -29,7 +29,7 @@ try {
   process.exit(1);
 }
 
-const { openStory } = await import('../src/runtime/capture.ts');
+const { componentClip, openStory } = await import('../src/runtime/capture.ts');
 const { serveStatic } = await import('../src/server.ts');
 const { defaultConfig } = await import('../src/config.ts');
 
@@ -58,6 +58,29 @@ await writeFile(path.join(work, 'fast-ticker.html'), page(`
 await writeFile(path.join(work, 'cleared.html'), page(`
   const t = setTimeout(() => {}, 400); clearTimeout(t);
   document.getElementById('out').textContent = 'cleared';`));
+
+// componentClip pages: body margin zeroed so the coordinates asserted below are exact.
+const clipPage = (body) => `<!doctype html><meta charset=utf-8>
+<style>body{margin:0}</style>
+<div id="storybook-root">${body}</div>`;
+// A small component, offset well inside a page much larger than it.
+await writeFile(
+  path.join(work, 'component-small.html'),
+  clipPage(
+    '<button style="position:absolute;left:300px;top:200px;width:120px;height:40px;box-sizing:border-box">small</button>',
+  ),
+);
+// A child whose absolutely positioned descendant overflows it, on a page tall enough to
+// scroll — the clip must be in document coordinates and include the descendant.
+await writeFile(
+  path.join(work, 'component-overflow.html'),
+  `<!doctype html><meta charset=utf-8>
+<style>body{margin:0}</style>
+<div style="position:absolute;top:0;left:0;width:0;height:2000px"></div>
+<div id="storybook-root"><div style="position:absolute;left:40px;top:30px;width:100px;height:50px"><span style="position:absolute;left:150px;top:70px;width:60px;height:20px">far</span></div></div>`,
+);
+// A render root with nothing in it.
+await writeFile(path.join(work, 'component-empty.html'), clipPage(''));
 
 const results = [];
 const check = (name, pass, detail) => results.push({ name, pass, detail });
@@ -124,6 +147,45 @@ try {
   const seen = await shared.locator('#out').textContent();
   check('a reused page starts each story with empty storage', seen === ',,,', seen);
   await context.close();
+
+  // componentClip: the geometry a component-scoped capture photographs.
+  {
+    const context = await browser.newContext();
+    const p = await context.newPage();
+    await openStory(p, `${server.url}/component-small.html`, defaultConfig.stabilize);
+    const clip = await componentClip(p);
+    check(
+      'a small offset component clips to its padded box',
+      clip != null &&
+        clip.x === 292 && clip.y === 192 && clip.width === 136 && clip.height === 56,
+      JSON.stringify(clip),
+    );
+    await context.close();
+  }
+  {
+    const context = await browser.newContext();
+    const p = await context.newPage();
+    await p.goto(`${server.url}/component-overflow.html`);
+    await p.evaluate(() => window.scrollTo(0, 40));
+    const clip = await componentClip(p);
+    // (40,30)-(250,120) padded by 8: the overflow included, the scroll offset added back.
+    check(
+      'a clip includes a descendant overflowing its parent, in document coordinates',
+      clip != null &&
+        clip.x === 32 && clip.y === 22 && clip.width === 226 && clip.height === 106,
+      JSON.stringify(clip),
+    );
+    await context.close();
+  }
+  {
+    const context = await browser.newContext();
+    const p = await context.newPage();
+    // Not through openStory: an empty root is exactly what its waits would reject.
+    await p.goto(`${server.url}/component-empty.html`);
+    const clip = await componentClip(p);
+    check('an empty render root has no clip to take', clip === undefined, JSON.stringify(clip));
+    await context.close();
+  }
 } finally {
   await browser.close();
   await server.close();

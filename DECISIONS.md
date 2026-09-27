@@ -745,3 +745,24 @@ A story that sets only a pixel count is no longer bounded by the configured rati
 point; `doctor` is where that is seen.
 
 **Scope:** repo.
+
+## D-029 — 2026-09-27 — Component-scoped capture, opt-in
+
+**Decision:** `capture: 'component'` (or a story's `diopsis:component` tag) photographs the
+union of the boxes of everything under the render root — children and their descendants, so an
+overflowing popover is included — padded by 8 px, instead of the whole canvas.
+`diopsis:page` restores the canvas for one story; conflicting tags warn and the page wins. When
+nothing under the root has a box, the capture falls back to the page and says so in an
+annotation. The default stays `page`.
+
+**Why:** most component stories draw a small thing in a large canvas, and every empty pixel is
+stored in history, compared on every run and scrolled past in review. Measuring the drawn box
+at capture time needs no configuration per story. It stays opt-in because switching changes
+every baseline's dimensions, which must be a deliberate regeneration rather than a surprise
+after an upgrade.
+
+**Consequences:** the saving depends on how stories lay themselves out; a story that wraps
+itself in a full-width, full-height container gains little, because its component is the
+container. Descendants are walked up to 5000 elements to bound the cost on very large stories.
+
+**Scope:** repo.
