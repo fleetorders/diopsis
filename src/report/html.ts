@@ -282,11 +282,13 @@ main { padding: 14px 18px 56px; }
 .stage.actual { max-height: 80vh; }
 .stage.actual img { max-width: none; image-rendering: pixelated; }
 .stage.zoom.actual img { cursor: zoom-out; }
-.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-items: start;
-  max-height: 70vh; overflow: auto; }
+/* Each pane scrolls on its own and the script holds the two at one offset and one zoom, so
+   the same pixel stays under the eye in both. This works because the width rule above keeps
+   their scales equal: one offset can only mean the same pixel when neither pane is scaled
+   by its own height. */
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-items: start; }
 .pair figure { margin: 0; min-width: 0; }
 .pair figcaption { color: var(--muted); font-size: 12px; padding: 3px 2px; }
-.pair .stage { max-height: none; overflow: visible; }
 /* A new capture is one labelled image, not half a comparison: the caption says what "new"
    means, so the absence of a second column reads as nothing-to-compare, not a missing panel. */
 .solo { margin: 0; }
@@ -341,6 +343,7 @@ button.copy:hover { background: var(--raised); }
     <input class="search" id="q" type="search" placeholder="Filter stories" autocomplete="off"
       spellcheck="false" aria-label="Filter stories">
     <span class="progress" id="progress" aria-live="polite"></span>
+    <span id="acceptreviewed"></span>
     <span id="acceptvisible"></span>
     <div class="viewall" id="viewall" role="group" aria-label="Comparison mode for every capture"
       hidden></div>
@@ -409,6 +412,7 @@ const searchEl = document.getElementById('q');
 const filters = document.getElementById('filters');
 const modeFilters = document.getElementById('modefilters');
 const progressEl = document.getElementById('progress');
+const acceptReviewedEl = document.getElementById('acceptreviewed');
 const acceptVisibleEl = document.getElementById('acceptvisible');
 
 // One measure for the ordering and the meters: differing pixels. Ranking captures by ratio
@@ -484,6 +488,29 @@ function copyButton(text, label) {
   };
   wrap.append(code, btn);
   return wrap;
+}
+
+/* A toolbar copy control keeps its command out of sight until the clipboard refuses it: the
+   toolbar travels with every scroll, and an id list long enough to be worth copying is long
+   enough to crowd the filters. On refusal the command appears beside the button, selectable,
+   the way the inline copy buttons carry theirs. */
+function copyCompact(text, label) {
+  const btn = document.createElement('button');
+  btn.className = 'copy';
+  btn.textContent = label;
+  btn.onclick = async () => {
+    try { await navigator.clipboard.writeText(text); btn.textContent = 'Copied'; }
+    catch (e) {
+      btn.textContent = 'Select it manually';
+      if (!btn.nextElementSibling || btn.nextElementSibling.tagName !== 'CODE') {
+        const code = document.createElement('code');
+        code.textContent = text;
+        btn.after(code);
+      }
+    }
+    setTimeout(() => (btn.textContent = label), 1600);
+  };
+  return btn;
 }
 
 /* Past the embed budget the artifacts exist as files but never made it into the report.
@@ -641,15 +668,41 @@ function stage(capture) {
     } else if (current === 'Side by side') {
       const pair = document.createElement('div');
       pair.className = 'pair';
+      const panes = [];
       for (const [src, cap, alt] of [[img.expected, 'Baseline', baselineAlt], [img.actual, 'This run', 'This run']]) {
         const f = document.createElement('figure');
         const c = document.createElement('figcaption');
         c.textContent = cap;
         const s = document.createElement('div');
-        s.className = 'stage';
+        s.className = 'stage zoom';
         s.appendChild(picture(src, alt));
         f.append(c, s);
         pair.appendChild(f);
+        panes.push(s);
+      }
+      /* One pair of pixels, one pair of hands: actual size is a property of the comparison,
+         not of a pane, so clicking either side toggles it for both — a pane kept at fit while
+         its neighbour shows real pixels compares two different scales. */
+      for (const s of panes) {
+        s.onclick = () => {
+          const actual = !panes[0].classList.contains('actual');
+          for (const p of panes) p.classList.toggle('actual', actual);
+        };
+      }
+      /* The panes scroll as one, so the same pixel stays under the eye in both. The script's
+         own writes must not write back: a pane the script just scrolled fires a scroll event
+         of its own, and unguarded that event would drive its neighbour in turn — against a
+         shorter pane's clamp, yanking the pane under the reader's hand. A written pane is
+         marked, its next event (the script's) spends the mark and does nothing. */
+      const written = new Set();
+      for (const s of panes) {
+        s.addEventListener('scroll', () => {
+          if (written.has(s)) { written.delete(s); return; }
+          for (const p of panes) if (p !== s) {
+            if (p.scrollTop !== s.scrollTop) { written.add(p); p.scrollTop = s.scrollTop; }
+            if (p.scrollLeft !== s.scrollLeft) { written.add(p); p.scrollLeft = s.scrollLeft; }
+          }
+        });
       }
       body.appendChild(pair);
     } else {
@@ -778,22 +831,50 @@ function toggleReviewed(entry) {
 }
 
 function drawProgress() {
+  // The ticks this counts are what the reviewed-accept button offers as a command, so the
+  // two are redrawn together — the button must never describe a stale set of ticks.
+  drawAcceptReviewed();
   const all = data.captures.filter(c => REVIEW.has(c.status));
   if (!all.length) { progressEl.textContent = ''; return; }
   const done = all.filter(c => reviewed.has(keyOf(c))).length;
   progressEl.textContent = done + ' of ' + all.length + ' reviewed';
 }
 
-/* The accept command takes one story id at a time, so a filtered set is offered as one command
-   per line rather than as a single call that would silently adopt only the first. */
+/* What accept adopts: changed and new captures. The rest it skips, so a tick on a
+   render-failure names a story the command would not act on and joins no command. */
+const ADOPTABLE = new Set(['changed', 'new']);
+
+/* Ticks are per capture; accept adopts per story. The bridge is one command listing the
+   ticked stories. A story ticked only in part is the trap: accepting it adopts its unticked
+   changed captures too, so the label says how many stories that concerns rather than letting
+   a partial review look complete. */
+function drawAcceptReviewed() {
+  acceptReviewedEl.innerHTML = '';
+  const ticked = data.captures.filter(c => reviewed.has(keyOf(c)) && ADOPTABLE.has(c.status));
+  if (!ticked.length) return;
+  const ids = [...new Set(ticked.map(c => c.storyId))].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  const partial = ids.filter(id => data.captures.some(c =>
+    c.storyId === id && ADOPTABLE.has(c.status) && !reviewed.has(keyOf(c))));
+  // Counted in stories, because stories are what the command adopts.
+  const label = 'Copy accept for ' + ids.length + ' reviewed ' +
+    (ids.length === 1 ? 'story' : 'stories') +
+    (partial.length
+      ? ' (' + partial.length + (partial.length === 1 ? ' includes' : ' include') +
+        ' unticked captures)'
+      : '');
+  const btn = copyCompact('npx diopsis accept ' + ids.join(' '), label);
+  if (partial.length) btn.title = 'accepting a story adopts all of its changed captures';
+  acceptReviewedEl.appendChild(btn);
+}
+
+/* A filtered set is one accept call: the command takes any number of story ids, so what is on
+   screen is offered as one copyable line rather than one line per story. */
 function drawAcceptVisible(stories) {
   acceptVisibleEl.innerHTML = '';
   const ids = stories.filter(id => data.changedStories.includes(id));
   if (!ids.length || ids.length === data.changedStories.length) return;
-  const cmd = ids.map(id => 'npx diopsis accept ' + id).join('\n');
-  const holder = copyButton(cmd, 'Copy accept for these ' + ids.length);
-  holder.querySelector('code').remove();
-  acceptVisibleEl.appendChild(holder);
+  acceptVisibleEl.appendChild(copyCompact(
+    'npx diopsis accept ' + ids.join(' '), 'Copy accept for these ' + ids.length));
 }
 
 const out = document.getElementById('out');

@@ -248,7 +248,10 @@ opens with an overview — a thumbnail of every capture that needs review, click
 it — and filters by story, remembers which captures you have already ticked off, and gives every story
 its own link to paste into the review. From the keyboard: `/` filters, `j` and `k` move between
 captures, `1`–`4` switch how the pair is compared, `Shift`+`1`–`4` switch every capture at
-once, `o` shows or hides the overview, and `r` ticks one off.
+once, `o` shows or hides the overview, and `r` ticks one off. Once something is ticked, one
+button copies a single `accept` command for exactly the stories you reviewed — and warns when
+one of them still has a changed capture you have not ticked, because accepting a story adopts
+all of it. Side by side, the two renders scroll and zoom together.
 
 **Accept** — `npx diopsis accept` adopts the whole run, or `npx diopsis accept card--default`
 adopts one story; name several to adopt them together. Only changed and new captures are
