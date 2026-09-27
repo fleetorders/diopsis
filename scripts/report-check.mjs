@@ -164,9 +164,22 @@ await page.waitForTimeout(150);
 check('search narrows the list', (await page.locator('details.story:visible').count()) === 1);
 check('chip counts follow the search', (await page.locator('.chip[data-key=all] .n').textContent()) === '1');
 check('a filtered subset offers its own accept', (await page.locator('#acceptvisible button').count()) === 1);
+// The command the filtered accept copies is one line naming every visible story: `accept`
+// takes any number of ids, so one call adopts exactly what is on screen. The clipboard is
+// stubbed and the argument captured, because a file:// page has no clipboard permission to
+// grant.
+await page.evaluate(() => {
+  window.__copied = null;
+  navigator.clipboard.writeText = (t) => { window.__copied = t; return Promise.resolve(); };
+});
+await page.locator('#acceptvisible button').click();
+check('the filtered accept is one command on one line',
+  (await page.evaluate(() => window.__copied)) === 'npx diopsis accept card--long');
 await page.fill('#q', '');
 await page.waitForTimeout(150);
 check('no filtered accept when nothing is filtered', (await page.locator('#acceptvisible button').count()) === 0);
+check('no reviewed-accept button before any tick',
+  (await page.locator('#acceptreviewed button').count()) === 0);
 check('a filter round trip keeps the drawn image',
   await page.locator('#story-card--default img').first().evaluate((i) => i.taggedByCheck === true));
 
@@ -287,9 +300,62 @@ await page.reload();
 await page.waitForTimeout(250);
 check('triage survives a reload', (await page.locator('#progress').textContent()).startsWith('1 of'));
 
+// The bridge from ticks to a command: what was reviewed becomes one accept call, holding
+// only the stories accept would act on. card--default's other capture is unchanged — not
+// adoptable — so a fully-reviewed-as-far-as-accept-goes story carries no warning.
+check('a tick brings up the reviewed-accept button',
+  (await page.locator('#acceptreviewed button').textContent()) === 'Copy accept for 1 reviewed story');
+check('a story with no adoptable capture unticked carries no warning',
+  (await page.locator('#acceptreviewed button').getAttribute('title')) === null);
+// The reload took the page's window state with it; the stub is installed again for this click.
+await page.evaluate(() => {
+  window.__copied = null;
+  navigator.clipboard.writeText = (t) => { window.__copied = t; return Promise.resolve(); };
+});
+await page.locator('#acceptreviewed button').click();
+check('the reviewed accept copies one command',
+  (await page.evaluate(() => window.__copied)) === 'npx diopsis accept card--default');
+// A render-failure is reviewable but not adoptable: its tick counts as reviewed progress
+// and still joins no command.
+await page.locator('#story-header--sticky .mark').click();
+await page.waitForTimeout(100);
+check('a ticked render-failure joins no accept command',
+  (await page.locator('#acceptreviewed button').textContent()) === 'Copy accept for 1 reviewed story');
+await page.locator('#story-card--long .mark').click();
+await page.waitForTimeout(100);
+check('ticks across stories collect into one label',
+  (await page.locator('#acceptreviewed button').textContent()) === 'Copy accept for 2 reviewed stories');
+await page.locator('#acceptreviewed button').click();
+check('the one command lists the ticked stories, sorted',
+  (await page.evaluate(() => window.__copied)) === 'npx diopsis accept card--default card--long');
+
 // Actual-size inspection.
 await page.locator('.stage.zoom').first().click();
 check('a capture opens to actual size', (await page.locator('.stage.actual').count()) >= 1);
+
+// Side by side moves as one: scrolling or zooming either pane applies to both, so the same
+// pixel stays under the eye in each. The region story's renders are wider than their panes,
+// which is what gives the scroll something to carry.
+await page.locator('#story-region--blocks').getByRole('button', { name: 'Side by side' }).click();
+await page.waitForTimeout(150);
+const panes = page.locator('#story-region--blocks .pair .stage');
+check('side by side is two panes', (await panes.count()) === 2);
+await panes.nth(0).click();
+await page.waitForTimeout(150);
+check('clicking either pane toggles actual size for both',
+  (await page.locator('#story-region--blocks .pair .stage.actual').count()) === 2);
+await panes.nth(0).evaluate((s) => { s.scrollLeft = 400; });
+await page.waitForTimeout(150);
+check('scrolling one pane carries the other to the same offset',
+  (await panes.evaluateAll((els) => els.map((s) => s.scrollLeft).join('|'))) === '400|400');
+await panes.nth(1).evaluate((s) => { s.scrollLeft = 200; });
+await page.waitForTimeout(150);
+check('the scroll sync runs from either pane',
+  (await panes.evaluateAll((els) => els.map((s) => s.scrollLeft).join('|'))) === '200|200');
+await panes.nth(1).click();
+await page.waitForTimeout(150);
+check('clicking the other pane stands both down from actual size',
+  (await page.locator('#story-region--blocks .pair .stage.actual').count()) === 0);
 
 // Accessibility: images name what they show, the slider says what it drives, review progress
 // announces itself, nothing interactive hides inside a summary, and the vertical arrows keep
@@ -675,6 +741,26 @@ await page.waitForTimeout(100);
 check('ticking the base capture leaves its mode twin unticked',
   (await page.locator('.tile[data-key="card--default@640"]').getAttribute('class')).includes('done') &&
   !(await page.locator('.tile[data-key="card--default@640[dark]"]').getAttribute('class')).includes('done'));
+// A partly ticked story is the trap the reviewed-accept button exists to catch: the command
+// adopts the story, and with it every changed capture of it — the unticked dark twin too.
+check('a partly ticked story warns in the button label',
+  (await page.locator('#acceptreviewed button').textContent()) ===
+    'Copy accept for 1 reviewed story (1 includes unticked captures)');
+check('the warning title says what accepting a story does',
+  (await page.locator('#acceptreviewed button').getAttribute('title')) ===
+    'accepting a story adopts all of its changed captures');
+await page.locator('#story-card--default .capture').nth(1).locator('.mark').click();
+await page.waitForTimeout(100);
+check('ticking the rest of the story clears the warning',
+  (await page.locator('#acceptreviewed button').textContent()) === 'Copy accept for 1 reviewed story' &&
+  (await page.locator('#acceptreviewed button').getAttribute('title')) === null);
+await page.evaluate(() => {
+  window.__copied = null;
+  navigator.clipboard.writeText = (t) => { window.__copied = t; return Promise.resolve(); };
+});
+await page.locator('#acceptreviewed button').click();
+check('two ticks on one story copy one id, not two',
+  (await page.evaluate(() => window.__copied)) === 'npx diopsis accept card--default');
 await page.close();
 
 // The control: a run without modes shows no mode chips at all.

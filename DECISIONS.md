@@ -854,3 +854,24 @@ header make visible. Mode names are limited to lower-case letters, digits and hy
 they appear in file names; global keys and values cannot contain the URL separators `:` and `;`.
 
 **Scope:** repo.
+
+## D-034 — 2026-09-27 — Review ticks become one accept command; side by side moves as one
+
+**Decision:** When captures are ticked reviewed, the report offers one command,
+`npx diopsis accept <ids…>`, naming the ticked stories whose captures accept would adopt —
+changed or new, not failed, not unstable. Because accept works per story, a story ticked only
+in part is called out in the button's label and title. The filtered-accept command becomes one
+line with every id. In side-by-side mode the two panes share scroll position and actual-size
+zoom. Ticks stay browser-local and advisory, as D-020 set; the command is still something the
+reviewer runs and commits.
+
+**Why:** ticking captures off and then typing out which stories to accept was the review's last
+manual step, and the step where a story gets accepted by accident. Once `accept` took several
+ids (D-025) the ticks could produce the command directly. Comparing two renders pixel by pixel
+needs the same pixel under the eye in both, which independent scrolling made impossible past
+the first screen.
+
+**Consequences:** the button counts stories, since stories are what the command adopts, while
+the progress beside it counts captures. No tick is transmitted or stored beyond the browser.
+
+**Scope:** repo.
