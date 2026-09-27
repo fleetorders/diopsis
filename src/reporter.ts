@@ -15,12 +15,13 @@ import {
   changedStoriesOf,
   classify,
   indexPlanByTitle,
+  NOT_RUN,
   totalsFor,
   type CaptureArtifacts,
   type CaptureResult,
   type RunSummary,
 } from './report/summary.ts';
-import type { RunPlan } from './runner/generate.ts';
+import type { PlannedCapture, RunPlan } from './runner/generate.ts';
 
 export interface DiopsisReporterOptions {
   /** Absolute path of the run plan written by the generator. */
@@ -74,6 +75,26 @@ function errorTextOf(result: TestResult): string {
   return stripAnsi(parts.join('\n'));
 }
 
+/** The spec records baseline existence as an annotation; Playwright's wording is not ours. */
+function baselineOf(result: TestResult): 'present' | 'missing' | undefined {
+  const description = result.annotations.find((a) => a.type === 'diopsis-baseline')?.description;
+  return description === 'present' || description === 'missing' ? description : undefined;
+}
+
+/** A capture the run never reached still has to appear in the summary, as not-run. */
+function notRunCapture(planned: PlannedCapture): CaptureResult {
+  return {
+    storyId: planned.storyId,
+    storyTitle: planned.storyTitle,
+    storyName: planned.storyName,
+    width: planned.width,
+    status: 'failed',
+    snapshotPath: planned.snapshotPath,
+    error: NOT_RUN,
+    artifacts: {},
+  };
+}
+
 /**
  * Playwright reporter that owns the review surface.
  *
@@ -85,6 +106,7 @@ export default class DiopsisReporter implements Reporter {
   private readonly options: DiopsisReporterOptions;
   private readonly results = new Map<string, CaptureResult>();
   private plan: RunPlan | undefined;
+  private planByTitle: Map<string, PlannedCapture> | undefined;
 
   constructor(options: DiopsisReporterOptions) {
     this.options = options;
@@ -113,19 +135,29 @@ export default class DiopsisReporter implements Reporter {
 
   async onBegin(_config: FullConfig): Promise<void> {
     this.plan = JSON.parse(await readFile(this.options.planPath, 'utf8')) as RunPlan;
+    // Built once here: re-indexing per test was the reporter's own quadratic on large suites.
+    this.planByTitle = indexPlanByTitle(this.plan.captures);
   }
 
   onTestEnd(test: TestCase, result: TestResult): void {
-    const planned = this.plan ? indexPlanByTitle(this.plan.captures).get(test.title) : undefined;
+    const planned = this.planByTitle?.get(test.title);
     if (!planned) return;
 
-    const verdict = classify({
-      passed: result.status === 'passed',
-      errorText: errorTextOf(result),
-      timedOut: result.status === 'timedOut',
-    });
+    // An interrupted or skipped test compared nothing at all; recording it as a plain
+    // failure with no text is how an aborted run looks like a small, clean one.
+    if (result.status === 'interrupted' || result.status === 'skipped') {
+      this.results.set(planned.title, notRunCapture(planned));
+      return;
+    }
 
     const errorText = errorTextOf(result).trim();
+    const verdict = classify({
+      passed: result.status === 'passed',
+      errorText,
+      timedOut: result.status === 'timedOut',
+      baseline: baselineOf(result),
+    });
+
     this.results.set(planned.title, {
       storyId: planned.storyId,
       storyTitle: planned.storyTitle,
@@ -142,10 +174,15 @@ export default class DiopsisReporter implements Reporter {
     });
   }
 
-  async onEnd(_result: FullResult): Promise<void> {
+  async onEnd(runResult: FullResult): Promise<void> {
+    const interrupted = runResult.status === 'interrupted';
     // Report in plan order, so the list is stable between runs rather than finish-order.
+    // A capture the run never reached is still listed: an interrupted run must not
+    // present itself as a smaller run that simply passed.
     const ordered = (this.plan?.captures ?? [])
-      .map((capture) => this.results.get(capture.title))
+      .map((capture) =>
+        this.results.get(capture.title) ?? (interrupted ? notRunCapture(capture) : undefined),
+      )
       .filter((capture): capture is CaptureResult => capture !== undefined);
 
     const summary: RunSummary = {
@@ -154,6 +191,7 @@ export default class DiopsisReporter implements Reporter {
       platform: this.options.platform,
       arch: this.options.arch,
       mode: this.options.mode,
+      ...(interrupted ? { interrupted: true } : {}),
       snapshotDir: this.options.snapshotDir,
       totals: totalsFor(ordered),
       changedStories: changedStoriesOf(ordered),
@@ -180,7 +218,14 @@ export default class DiopsisReporter implements Reporter {
       ...(totals.failed ? [`${totals.failed} failed`] : []),
     ];
 
-    const lines = ['', `  ${counts.join(' · ')}`, ''];
+    const lines = [
+      '',
+      ...(totals.notRun > 0
+        ? [`  run interrupted — ${totals.notRun} captures did not run`]
+        : []),
+      `  ${counts.join(' · ')}`,
+      '',
+    ];
 
     for (const capture of ordered) {
       if (capture.status === 'unchanged') continue;

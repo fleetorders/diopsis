@@ -45,7 +45,15 @@ export async function serveStatic(root: string, port = 0): Promise<StaticServer>
     void (async () => {
       try {
         const requestUrl = new URL(req.url ?? '/', 'http://localhost');
-        const decoded = decodeURIComponent(requestUrl.pathname);
+        // A malformed percent-escape is a client error; letting URIError reach the catch
+        // below would answer 500 for a URL that never named a file at all.
+        let decoded: string;
+        try {
+          decoded = decodeURIComponent(requestUrl.pathname);
+        } catch {
+          res.writeHead(400).end('Bad request');
+          return;
+        }
 
         // Resolve inside the root, then verify: a `..` segment must not escape the build.
         const candidate = path.resolve(absoluteRoot, `.${path.posix.normalize(decoded)}`);
@@ -68,12 +76,24 @@ export async function serveStatic(root: string, port = 0): Promise<StaticServer>
           return;
         }
 
-        res.writeHead(200, {
-          'Content-Type': MIME_TYPES[path.extname(filePath).toLowerCase()] ?? 'application/octet-stream',
-          'Content-Length': fileInfo.size,
-          'Cache-Control': 'no-store',
+        const stream = createReadStream(filePath);
+        // Headers wait for the stream to open: a file that vanishes between the stat and
+        // the open — or refuses read access — must still answer 500, which is impossible
+        // once a 200 with a promised length is on the wire. And without a handler the
+        // error on the stream would take the whole process down.
+        stream.once('open', () => {
+          res.writeHead(200, {
+            'Content-Type':
+              MIME_TYPES[path.extname(filePath).toLowerCase()] ?? 'application/octet-stream',
+            'Content-Length': fileInfo.size,
+            'Cache-Control': 'no-store',
+          });
+          stream.pipe(res);
         });
-        createReadStream(filePath).pipe(res);
+        stream.on('error', () => {
+          if (!res.headersSent) res.writeHead(500);
+          res.end('Internal error');
+        });
       } catch {
         if (!res.headersSent) res.writeHead(500);
         res.end('Internal error');

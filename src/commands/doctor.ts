@@ -122,6 +122,16 @@ export async function runChecks(options: DoctorOptions): Promise<Check[]> {
             .join(' · ')}` +
           (matrix.skipped.length ? ` · ${matrix.skipped.length} skipped` : ''),
       });
+      if (matrix.unwatched.length > 0) {
+        checks.push({
+          level: 'warn',
+          title: `${matrix.unwatched.length} stories are captured at no width`,
+          detail:
+            'viewports.default is empty, so only stories tagged with a width or a viewport ' +
+            'set are captured. Give default its widths back if the others should be watched.',
+        });
+      }
+
       for (const warning of matrix.warnings) {
         checks.push({ level: 'warn', title: 'Unrecognised story tag', detail: warning });
       }

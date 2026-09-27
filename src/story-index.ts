@@ -83,7 +83,18 @@ export async function readStoryIndex(storybookDir: string): Promise<StoryEntry[]
     } catch {
       continue;
     }
-    return parseStoryIndex(JSON.parse(text) as unknown);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch (error) {
+      // A truncated or hand-edited index surfaces as a bare parse error; naming the file
+      // and the remedy saves the user from guessing which candidate file it was.
+      throw new Error(
+        `${path.relative(process.cwd(), file)} is not valid JSON ` +
+          `(${error instanceof Error ? error.message : String(error)}). Rebuild the Storybook.`,
+      );
+    }
+    return parseStoryIndex(parsed);
   }
   throw new Error(
     `No story index in ${storybookDir} (looked for ${tried.join(', ')}). ` +

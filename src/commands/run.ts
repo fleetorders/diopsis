@@ -43,6 +43,12 @@ export async function runCommand(options: RunOptions): Promise<number> {
 
   if (captures.length === 0) {
     process.stderr.write('Nothing to capture.\n');
+    if (matrix.unwatched.length > 0) {
+      // An empty run over unwatched stories would otherwise be inexplicable from outside.
+      process.stderr.write(
+        `  unwatched ${matrix.unwatched.length} stories (no widths: viewports.default is empty)\n`,
+      );
+    }
     return 1;
   }
 
@@ -54,6 +60,9 @@ export async function runCommand(options: RunOptions): Promise<number> {
       `  storybook ${config.storybookDir}\n` +
       `  baselines ${config.snapshotDir}\n` +
       (matrix.skipped.length ? `  skipped   ${matrix.skipped.length} stories (diopsis:skip)\n` : '') +
+      (matrix.unwatched.length
+        ? `  unwatched ${matrix.unwatched.length} stories (no widths: viewports.default is empty)\n`
+        : '') +
       '\n',
   );
 

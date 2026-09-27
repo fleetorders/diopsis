@@ -155,3 +155,17 @@ describe('initCommand', () => {
     );
   });
 });
+
+describe('runChecks with an empty default set', () => {
+  it('warns, with the count, when stories are captured at no width', async () => {
+    const root = await project();
+    await writeFile(
+      path.join(root, 'diopsis.config.mjs'),
+      'export default { viewports: { default: [], mobile: [320] } };',
+    );
+    const check = find(await runChecks({ root }), /captured at no width/);
+    assert.equal(check?.level, 'warn');
+    // The two untagged Button stories; the tagged Banner stories still capture.
+    assert.match(check?.title ?? '', /2 stories/);
+  });
+});

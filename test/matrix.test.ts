@@ -104,3 +104,36 @@ describe('resolveMatrix', () => {
     assert.equal(first?.height, 900);
   });
 });
+
+describe('resolveMatrix with an empty default set', () => {
+  it('lists stories with no widths as unwatched instead of dropping them quietly', () => {
+    const matrix = resolveMatrix(
+      [story('a--one'), story('b--tagged', ['diopsis:mobile']), story('c--gone', ['diopsis:skip'])],
+      { viewports: { default: [], mobile: [320] }, viewportHeight: 900 },
+      'linux-x64',
+    );
+    // A story tagged with a width is still watched; only the untagged ones lose everything.
+    assert.deepEqual(matrix.captures.map((c) => c.snapshotPath), ['b--tagged/320w-linux-x64.png']);
+    assert.deepEqual(matrix.unwatched, ['a--one']);
+    assert.deepEqual(matrix.skipped, ['c--gone']);
+  });
+});
+
+describe('baseline path collisions', () => {
+  it('refuses two story ids that would silently share one baseline', () => {
+    // Both ids collapse onto the same safe directory segment.
+    assert.equal(
+      snapshotPathFor('a b--c', 320, 'linux-x64'),
+      snapshotPathFor('a:b--c', 320, 'linux-x64'),
+    );
+    assert.throws(
+      () =>
+        resolveMatrix(
+          [story('a b--c'), story('a:b--c')],
+          { viewports, viewportHeight: 900 },
+          'linux-x64',
+        ),
+      /"a b--c".*"a:b--c".*baseline/,
+    );
+  });
+});
