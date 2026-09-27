@@ -1,4 +1,4 @@
-import type { DiopsisConfig } from './config.ts';
+import type { CompareOptions, DiopsisConfig } from './config.ts';
 import type { StoryEntry } from './story-index.ts';
 
 /** One screenshot: a story at a width. Captures are the unit that costs, not stories. */
@@ -9,6 +9,8 @@ export interface Capture {
   importPath?: string;
   width: number;
   height: number;
+  /** Comparison overrides the story's tags set; only the keys a tag actually carried. */
+  compare?: Partial<CompareOptions>;
   /** Baseline location, relative to `snapshotDir`. */
   snapshotPath: string;
 }
@@ -24,6 +26,66 @@ export interface ResolvedMatrix {
 }
 
 const TAG_PREFIX = 'diopsis:';
+
+/**
+ * The tolerance directives: `diopsis:<key>=<value>`, overriding the comparison for one
+ * story through the same channel as the widths (DECISIONS.md §8/D-014 — the index
+ * serialises tags, so tags are the only per-story setting that cannot drift). They are not
+ * widths and never take part in width resolution.
+ */
+const TOLERANCE_KEYS: Record<string, { option: keyof CompareOptions; unit: boolean }> = {
+  threshold: { option: 'threshold', unit: true },
+  'max-diff-ratio': { option: 'maxDiffPixelRatio', unit: true },
+  'max-diff-pixels': { option: 'maxDiffPixels', unit: false },
+};
+
+/** One tolerance directive, split into the compare option it overrides and its raw value. */
+function toleranceDirective(
+  token: string,
+): { option: keyof CompareOptions; unit: boolean; value: string } | undefined {
+  const eq = token.indexOf('=');
+  if (eq === -1) return undefined;
+  const spec = TOLERANCE_KEYS[token.slice(0, eq)];
+  return spec ? { ...spec, value: token.slice(eq + 1) } : undefined;
+}
+
+/** `0..1` for the two ratio knobs, a whole pixel count for `max-diff-pixels`. */
+function parseToleranceValue(value: string, unit: boolean): number | undefined {
+  if (unit) {
+    if (!/^\d+(\.\d+)?$/.test(value)) return undefined;
+    const parsed = Number(value);
+    return parsed <= 1 ? parsed : undefined;
+  }
+  return /^\d+$/.test(value) ? Number(value) : undefined;
+}
+
+/**
+ * Tolerance overrides for one story, from its tags. A malformed value — not a number, or
+ * out of range — warns through the same channel as an unrecognised tag and is ignored,
+ * so a typo costs a warning, never the run.
+ */
+export function toleranceForStory(
+  story: StoryEntry,
+): { compare?: Partial<CompareOptions>; warnings: string[] } {
+  const compare: Partial<CompareOptions> = {};
+  const warnings: string[] = [];
+  for (const directive of story.tags) {
+    if (!directive.startsWith(TAG_PREFIX)) continue;
+    const parsed = toleranceDirective(directive.slice(TAG_PREFIX.length));
+    if (!parsed) continue;
+    const value = parseToleranceValue(parsed.value, parsed.unit);
+    if (value === undefined) {
+      warnings.push(
+        `${story.id}: tag "${directive}" is not ` +
+          (parsed.unit ? 'a number between 0 and 1' : 'a non-negative integer') +
+          ' — ignored.',
+      );
+      continue;
+    }
+    compare[parsed.option] = value;
+  }
+  return { ...(Object.keys(compare).length > 0 ? { compare } : {}), warnings };
+}
 
 /** `darwin-arm64`, `linux-x64` — the token that keeps two platforms' baselines apart. */
 export function platformToken(
@@ -47,7 +109,9 @@ export function snapshotPathFor(storyId: string, width: number, platform = platf
  *
  * Overrides come from story tags rather than a hand-maintained map: the index serializes
  * `tags` but not `parameters`, so any external map drifts silently (DECISIONS.md §8). A tag
- * is either a literal width (`diopsis:1280`) or the name of a viewport set (`diopsis:mobile`).
+ * is either a literal width (`diopsis:1280`) or the name of a viewport set (`diopsis:mobile`);
+ * tolerance tags (`diopsis:threshold=…`) name comparison knobs instead and are resolved by
+ * `toleranceForStory`.
  */
 export function widthsForStory(
   story: StoryEntry,
@@ -68,6 +132,9 @@ export function widthsForStory(
       skip = true;
       continue;
     }
+    // A tolerance directive names a comparison knob, not a width; skipping it here is what
+    // keeps a story carrying only tolerance tags on the default widths.
+    if (toleranceDirective(token)) continue;
     if (/^\d+$/.test(token)) {
       widths.add(Number.parseInt(token, 10));
       continue;
@@ -113,7 +180,8 @@ export function resolveMatrix(
 
   for (const story of stories) {
     const resolved = widthsForStory(story, config.viewports);
-    warnings.push(...resolved.warnings);
+    const tolerance = toleranceForStory(story);
+    warnings.push(...resolved.warnings, ...tolerance.warnings);
     if (resolved.skip) {
       skipped.push(story.id);
       continue;
@@ -142,9 +210,64 @@ export function resolveMatrix(
         width,
         height: config.viewportHeight,
         snapshotPath: snapshotPathFor(story.id, width, platform),
+        ...(tolerance.compare ? { compare: tolerance.compare } : {}),
       });
     }
   }
 
   return { captures, skipped, unwatched, warnings };
+}
+
+/**
+ * The comparison one capture runs with.
+ *
+ * Playwright applies the stricter of a pixel count and a ratio when both are given, and the
+ * configured ratio is always set — so a story's `max-diff-pixels` merged over it could only
+ * ever tighten the check. A story that sets either count-based limit therefore replaces both
+ * configured ones; its threshold overrides the configured threshold on its own.
+ */
+export function effectiveCompare(
+  base: CompareOptions,
+  override: Partial<CompareOptions> | undefined,
+): CompareOptions {
+  if (!override) return base;
+  const ownCount =
+    override.maxDiffPixels !== undefined || override.maxDiffPixelRatio !== undefined;
+  const counts = ownCount ? override : base;
+  return {
+    threshold: override.threshold ?? base.threshold,
+    ...(counts.maxDiffPixelRatio === undefined ? {} : { maxDiffPixelRatio: counts.maxDiffPixelRatio }),
+    ...(counts.maxDiffPixels === undefined ? {} : { maxDiffPixels: counts.maxDiffPixels }),
+  } as CompareOptions;
+}
+
+/** How many differing pixels a comparison lets through on an image of `area` pixels. */
+function allowance(compare: Partial<CompareOptions>, area: number): number {
+  return Math.min(
+    compare.maxDiffPixels ?? Infinity,
+    compare.maxDiffPixelRatio === undefined ? Infinity : compare.maxDiffPixelRatio * area,
+  );
+}
+
+/**
+ * The stories whose tags compare more loosely than the configured comparison — a higher
+ * threshold, ratio or differing-pixel count. Per-story tolerance exists for the odd story
+ * that cannot be deterministic, so the run header and `doctor` surface every use of it: a
+ * widened tolerance nobody can see becomes the suite's quiet default.
+ */
+export function loosenedStoryIds(captures: Capture[], compare: CompareOptions): string[] {
+  const ids = new Set<string>();
+  for (const capture of captures) {
+    const override = capture.compare;
+    if (!override) continue;
+    // Count limits are compared by what they let through at this capture's viewport, because
+    // a pixel count and a ratio only become comparable once an image size is fixed.
+    const area = capture.width * capture.height;
+    const effective = effectiveCompare(compare, override);
+    const looser =
+      effective.threshold > compare.threshold ||
+      allowance(effective, area) > allowance(compare, area);
+    if (looser) ids.add(capture.storyId);
+  }
+  return [...ids].sort();
 }

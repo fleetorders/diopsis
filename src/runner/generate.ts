@@ -2,8 +2,8 @@ import { mkdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import type { DiopsisConfig } from '../config.ts';
-import type { Capture } from '../matrix.ts';
+import type { CompareOptions, DiopsisConfig } from '../config.ts';
+import { effectiveCompare, type Capture } from '../matrix.ts';
 
 /** Absolute path of this package's compiled `dist` directory. */
 export function distRoot(): string {
@@ -47,9 +47,15 @@ export interface GeneratedProject {
   cleanup(): Promise<void>;
 }
 
-export function planCaptures(captures: Capture[], snapshotDirAbs: string): PlannedCapture[] {
+export function planCaptures(
+  captures: Capture[],
+  snapshotDirAbs: string,
+  compare?: CompareOptions,
+): PlannedCapture[] {
   return captures.map((capture) => ({
     ...capture,
+    // Resolved here, once, so the spec runs exactly the comparison the summary reports.
+    ...(capture.compare && compare ? { compare: effectiveCompare(compare, capture.compare) } : {}),
     baselinePath: path.join(snapshotDirAbs, capture.snapshotPath),
     title: `${capture.storyId} @${capture.width}`,
     segments: capture.snapshotPath.split('/'),
@@ -78,7 +84,7 @@ export async function generateProject(options: GenerateOptions): Promise<Generat
 
   const plan: RunPlan = {
     baseUrl,
-    captures: planCaptures(options.captures, snapshotDir),
+    captures: planCaptures(options.captures, snapshotDir, config.compare),
     stabilize: config.stabilize,
     compare: config.compare,
     mask: config.mask,
@@ -163,6 +169,10 @@ for (const capture of plan.captures) {
     await page.setViewportSize({ width: capture.width, height: capture.height });
     await openStory(page, storyUrlFor(plan.baseUrl, capture.storyId), plan.stabilize);
 
+    // A story's tolerance tags were resolved against the configured comparison when the plan
+    // was written; a capture without them runs the configured comparison as it is.
+    const compare = capture.compare ?? plan.compare;
+
     await expect(page).toHaveScreenshot(capture.segments, {
       fullPage: plan.fullPage,
       animations: plan.stabilize.disableAnimations ? 'disabled' : 'allow',
@@ -170,8 +180,10 @@ for (const capture of plan.captures) {
       scale: 'css',
       mask: plan.mask.map((selector) => page.locator(selector)),
       maskColor: '#ff00ff',
-      threshold: plan.compare.threshold,
-      maxDiffPixelRatio: plan.compare.maxDiffPixelRatio,
+      threshold: compare.threshold,
+      // Each limit is passed only when set; Playwright applies the stricter when both are.
+      ...(compare.maxDiffPixelRatio === undefined ? {} : { maxDiffPixelRatio: compare.maxDiffPixelRatio }),
+      ...(compare.maxDiffPixels === undefined ? {} : { maxDiffPixels: compare.maxDiffPixels }),
     });
   });
 }

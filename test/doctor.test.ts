@@ -154,6 +154,59 @@ describe('runChecks', () => {
   });
 });
 
+describe('runChecks on loosened tolerance', () => {
+  function indexWith(ids: string[]): string {
+    return JSON.stringify({
+      v: 5,
+      entries: Object.fromEntries(
+        ids.map((id) => [
+          id,
+          { type: 'story', id, name: id, title: 'T', tags: ['diopsis:threshold=0.6'] },
+        ]),
+      ),
+    });
+  }
+
+  it('warns, naming the story, when a tag compares more loosely than the config', async () => {
+    const root = await project();
+    await writeFile(path.join(root, 'storybook-static', 'index.json'), indexWith(['a--one']));
+    const check = find(await runChecks({ root }), /more loosely than the config/);
+    assert.equal(check?.level, 'warn');
+    assert.match(check?.title ?? '', /^1 story compares/);
+    assert.match(check?.detail ?? '', /a--one/);
+  });
+
+  it('caps the listed ids at ten and counts the rest', async () => {
+    const root = await project();
+    const ids = Array.from({ length: 12 }, (_, i) => `s--${i.toString().padStart(2, '0')}`);
+    await writeFile(path.join(root, 'storybook-static', 'index.json'), indexWith(ids));
+    const check = find(await runChecks({ root }), /more loosely than the config/);
+    assert.match(check?.title ?? '', /^12 stories compare/);
+    assert.match(check?.detail ?? '', /s--09, and 2 more/);
+    assert.doesNotMatch(check?.detail ?? '', /s--10\b/);
+  });
+
+  it('stays quiet while every story compares within the config', async () => {
+    const root = await project();
+    await writeFile(
+      path.join(root, 'storybook-static', 'index.json'),
+      JSON.stringify({
+        v: 5,
+        entries: {
+          'a--one': {
+            type: 'story',
+            id: 'a--one',
+            name: 'One',
+            title: 'A',
+            tags: ['diopsis:threshold=0.1'],
+          },
+        },
+      }),
+    );
+    assert.equal(find(await runChecks({ root }), /more loosely than the config/), undefined);
+  });
+});
+
 describe('initCommand', () => {
   it('writes a config, git settings, and refuses to clobber an existing one', async () => {
     const root = await project();

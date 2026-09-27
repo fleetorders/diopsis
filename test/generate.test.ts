@@ -102,6 +102,50 @@ describe('generateProject', () => {
   });
 });
 
+describe('generateProject per-story tolerance', () => {
+  it('resolves story overrides into the plan, replacing the configured count limits', async () => {
+    const root = await scratch();
+    const config = resolveConfig({ compare: { maxDiffPixels: 40 } });
+    const tagged: StoryEntry[] = [
+      {
+        id: 'a--one',
+        name: 'One',
+        title: 'A',
+        tags: ['diopsis:threshold=0.4', 'diopsis:max-diff-pixels=200'],
+      },
+    ];
+    const { captures } = resolveMatrix(tagged, config, 'linux-x64');
+    const project = await generateProject({ root, config, captures, baseUrl: 'http://x' });
+
+    const plan = JSON.parse(await readFile(project.planPath, 'utf8')) as {
+      compare: { maxDiffPixels?: number };
+      captures: Array<{ compare?: Record<string, number> }>;
+    };
+    assert.equal(plan.compare.maxDiffPixels, 40);
+    assert.deepEqual(plan.captures[0]?.compare, { threshold: 0.4, maxDiffPixels: 200 });
+
+    const spec = await readFile(path.join(project.dir, 'diopsis.spec.js'), 'utf8');
+    assert.match(spec, /capture\.compare \?\? plan\.compare/);
+    assert.match(spec, /maxDiffPixels: compare\.maxDiffPixels/);
+  });
+
+  it('leaves an unset pixel count out of the options rather than tolerating zero', async () => {
+    const root = await scratch();
+    const config = resolveConfig();
+    const { captures } = resolveMatrix(stories, config, 'linux-x64');
+    const project = await generateProject({ root, config, captures, baseUrl: 'http://x' });
+
+    const plan = JSON.parse(await readFile(project.planPath, 'utf8')) as {
+      compare: Record<string, unknown>;
+      captures: Array<{ compare?: Record<string, number> }>;
+    };
+    assert.equal('maxDiffPixels' in plan.compare, false);
+    assert.equal(plan.captures.every((capture) => capture.compare === undefined), true);
+    const spec = await readFile(path.join(project.dir, 'diopsis.spec.js'), 'utf8');
+    assert.match(spec, /compare\.maxDiffPixels === undefined/);
+  });
+});
+
 describe('planCaptures baseline paths', () => {
   it('carries the absolute baseline path the spec checks before comparing', () => {
     const { captures } = resolveMatrix(stories, resolveConfig(), 'linux-x64');

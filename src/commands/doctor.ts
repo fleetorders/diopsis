@@ -5,7 +5,7 @@ import path from 'node:path';
 
 import { findConfigFile, loadConfig, supportsTypeStripping } from '../config.ts';
 import { gitIgnores, isGitRepo } from '../git.ts';
-import { platformToken, resolveMatrix } from '../matrix.ts';
+import { loosenedStoryIds, platformToken, resolveMatrix } from '../matrix.ts';
 import { readStoryIndex } from '../story-index.ts';
 
 export type Level = 'ok' | 'warn' | 'fail';
@@ -245,6 +245,19 @@ export async function runChecks(options: DoctorOptions): Promise<Check[]> {
           detail:
             'viewports.default is empty, so only stories tagged with a width or a viewport ' +
             'set are captured. Give default its widths back if the others should be watched.',
+        });
+      }
+
+      const loosened = loosenedStoryIds(matrix.captures, config.compare);
+      if (loosened.length > 0) {
+        const shown = loosened.slice(0, 10);
+        const rest = loosened.length - shown.length;
+        checks.push({
+          level: 'warn',
+          title: `${loosened.length} ${loosened.length === 1 ? 'story compares' : 'stories compare'} more loosely than the config`,
+          detail:
+            `${shown.join(', ')}${rest > 0 ? `, and ${rest} more` : ''} — ` +
+            'diopsis:threshold / max-diff-* tags widened these beyond compare in the config.',
         });
       }
 

@@ -90,6 +90,7 @@ function notRunCapture(planned: PlannedCapture): CaptureResult {
     width: planned.width,
     status: 'failed',
     snapshotPath: planned.snapshotPath,
+    ...(planned.compare ? { tolerance: planned.compare } : {}),
     error: NOT_RUN,
     artifacts: {},
   };
@@ -165,6 +166,7 @@ export default class DiopsisReporter implements Reporter {
       width: planned.width,
       status: verdict.status,
       snapshotPath: planned.snapshotPath,
+      ...(planned.compare ? { tolerance: planned.compare } : {}),
       ...(verdict.diffPixels === undefined ? {} : { diffPixels: verdict.diffPixels }),
       ...(verdict.diffRatio === undefined ? {} : { diffRatio: verdict.diffRatio }),
       ...(verdict.status === 'unchanged' || !errorText

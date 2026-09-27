@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { explainEmptyRun, headerLine } from '../src/commands/run.ts';
+import { explainEmptyRun, headerBlock, headerLine } from '../src/commands/run.ts';
 import { resolveConfig } from '../src/config.ts';
-import { resolveMatrix } from '../src/matrix.ts';
+import { loosenedStoryIds, resolveMatrix } from '../src/matrix.ts';
 import type { StoryEntry } from '../src/story-index.ts';
 
 const stories = (ids: string[], tags: string[] = []): StoryEntry[] =>
@@ -29,6 +29,34 @@ describe('headerLine', () => {
       headerLine(captures, 'card'),
       /^Diopsis · 2 stories → 4 captures \(matched "card"\) · [a-z0-9]+-[a-z0-9]+$/,
     );
+  });
+});
+
+describe('headerBlock', () => {
+  const config = resolveConfig({ viewports: { default: [320] } });
+
+  function blockFor(all: StoryEntry[]): string {
+    const matrix = resolveMatrix(all, config);
+    return headerBlock({
+      captures: matrix.captures,
+      configSource: 'diopsis.config.mjs',
+      storybookDir: 'storybook-static',
+      snapshotDir: '__screenshots__',
+      skipped: matrix.skipped,
+      unwatched: matrix.unwatched,
+      loosened: loosenedStoryIds(matrix.captures, config.compare),
+    });
+  }
+
+  it('counts the stories whose tags loosened tolerance beyond the config', () => {
+    const out = blockFor([...stories(['a--loose'], ['diopsis:threshold=0.6']), ...stories(['b--plain'])]);
+    assert.match(out, /Diopsis · 2 stories → 2 captures · /);
+    assert.match(out, /  loosened  1 stories \(diopsis:threshold \/ max-diff-\* tags\)\n/);
+  });
+
+  it('prints no loosened line while nothing compares more loosely than the config', () => {
+    const out = blockFor([...stories(['a--strict'], ['diopsis:threshold=0.1']), ...stories(['b--plain'])]);
+    assert.doesNotMatch(out, /loosened/);
   });
 });
 

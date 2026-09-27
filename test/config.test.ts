@@ -10,6 +10,7 @@ import {
   loadConfig,
   resolveConfig,
   supportsTypeStripping,
+  type UserConfig,
 } from '../src/config.ts';
 
 const temporaries: string[] = [];
@@ -48,6 +49,22 @@ describe('resolveConfig', () => {
 
   it('ships a non-zero pixel-ratio tolerance so one stray pixel cannot block a pipeline', () => {
     assert.ok(defaultConfig.compare.maxDiffPixelRatio > 0);
+  });
+
+  it('leaves the pixel-count tolerance off unless configured', () => {
+    // Off, not zero: an unset maxDiffPixels must not silently tolerate exactly nothing.
+    assert.equal(resolveConfig().compare.maxDiffPixels, undefined);
+    assert.equal(resolveConfig({ compare: { maxDiffPixels: 250 } }).compare.maxDiffPixels, 250);
+  });
+
+  it('accepts compare.maxDiffPixels through the public UserConfig type', () => {
+    // A compile-time guarantee dressed as a test: the literal stops typechecking the day
+    // the key is dropped from the public type.
+    const user: UserConfig = { compare: { maxDiffPixels: 250 } };
+    assert.deepEqual(resolveConfig(user).compare, {
+      ...defaultConfig.compare,
+      maxDiffPixels: 250,
+    });
   });
 
   it('recognises only its own ignore attribute', () => {
@@ -173,6 +190,24 @@ describe('validateConfig', () => {
     assert.ok(problems.some((p) => /timeout must be a positive number \(got -1\)/.test(p)));
     assert.ok(
       problems.some((p) => /stabilize\.settleTimeout must be a positive number \(got 0\)/.test(p)),
+    );
+  });
+
+  it('bounds the pixel-count tolerance to non-negative integers', () => {
+    assert.deepEqual(validateConfig(configWith({ compare: { maxDiffPixels: 0 } })), []);
+    const problems = validateConfig(configWith({ compare: { maxDiffPixels: -1 } }));
+    assert.equal(problems.length, 1);
+    assert.match(
+      problems[0] ?? '',
+      /compare\.maxDiffPixels must be a non-negative integer \(got -1\)/,
+    );
+    assert.match(
+      validateConfig(configWith({ compare: { maxDiffPixels: 1.5 } }))[0] ?? '',
+      /got 1\.5/,
+    );
+    assert.match(
+      validateConfig(configWith({ compare: { maxDiffPixels: 'many' } }))[0] ?? '',
+      /got "many"/,
     );
   });
 

@@ -177,6 +177,22 @@ export const Untestable = { tags: ['diopsis:skip'] };    // never captured
 A tag naming neither a width nor a configured set warns and falls back to the default widths. A
 typo should not quietly stop watching a story.
 
+### Per-story tolerance
+
+The occasional story that cannot be made deterministic — a gradient that dithers, a chart that
+anti-aliases differently by a pixel — gets its own tolerance through the same channel:
+
+```ts
+export const Gradient = { tags: ['diopsis:threshold=0.3'] };        // per-pixel colour tolerance
+export const Chart = { tags: ['diopsis:max-diff-pixels=400'] };     // this many pixels may differ
+export const Hero = { tags: ['diopsis:max-diff-ratio=0.005'] };     // this share may differ
+```
+
+A story's pixel count or ratio replaces both configured limits for that story, so it can loosen
+as well as tighten. Loosening is never silent: `run` counts the stories that compare more
+loosely than the config, `doctor` names them, and `summary.json` records the comparison each
+of those captures ran with.
+
 ### Excluding genuinely random pixels
 
 Mark the element with `data-diopsis-ignore` — a map tile, a video, a canvas. That is the only
@@ -263,6 +279,7 @@ captured.
 | `mask` | `['[data-diopsis-ignore]']` | Selectors painted over before comparison |
 | `compare.threshold` | `0.2` | Per-pixel colour tolerance, 0–1 |
 | `compare.maxDiffPixelRatio` | `0.001` | Share of differing pixels tolerated |
+| `compare.maxDiffPixels` | unset | Number of differing pixels tolerated; with the ratio, the stricter applies |
 | `timeout` | `30000` | Per-capture timeout, ms |
 | `workers` | Playwright's default | Parallel workers |
 | `outputDir` | `.diopsis` | Where the report and summary are written |

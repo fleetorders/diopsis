@@ -28,6 +28,12 @@ export interface CompareOptions {
   threshold: number;
   /** Share of differing pixels tolerated before a capture counts as changed. */
   maxDiffPixelRatio: number;
+  /**
+   * Differing-pixel count tolerated before a capture counts as changed. Unset means the
+   * knob is off; when both this and `maxDiffPixelRatio` are set, Playwright applies the
+   * stricter of the two.
+   */
+  maxDiffPixels?: number;
 }
 
 export interface DiopsisConfig {
@@ -165,6 +171,15 @@ export function validateConfig(config: DiopsisConfig): string[] {
     problems.push(
       `compare.maxDiffPixelRatio must be a number between 0 and 1 ` +
         `(got ${show(config.compare.maxDiffPixelRatio)})`,
+    );
+  }
+  if (
+    config.compare.maxDiffPixels !== undefined &&
+    !(Number.isInteger(config.compare.maxDiffPixels) && config.compare.maxDiffPixels >= 0)
+  ) {
+    problems.push(
+      `compare.maxDiffPixels must be a non-negative integer ` +
+        `(got ${show(config.compare.maxDiffPixels)})`,
     );
   }
   if (typeof config.timeout !== 'number' || !Number.isFinite(config.timeout) || config.timeout <= 0) {
