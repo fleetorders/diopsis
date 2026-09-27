@@ -594,9 +594,9 @@ has pending. The network counts as idle when neither is pending and nothing has 
 `settleTimeout` still bounds the wait, which gives up rather than failing.
 
 **Why:** `networkidle` waits for 500 ms of silence after every navigation. On a build served
-from the local disk that silence was the largest single cost of a capture: on a 208-capture
-run of a real Storybook build, a full verify took 32 s with it and 24–25 s with the observed
-wait, and 22 s with no network wait at all. Counting requests alone was nearly as fast but
+from the local disk that silence was the largest single cost of a capture: on a generated
+benchmark Storybook — 104 simple stories at two widths, 208 captures — a full verify took 32 s
+with it, 24–25 s with the observed wait, and 22 s with no network wait at all. Counting requests alone was nearly as fast but
 missed a fetch started by a 300 ms timer after mount, which the fixed window did catch — so
 pending short timers are counted too, which restores that case without paying the window when
 nothing is pending. Not counting timers armed by other timers keeps a ticking widget from
