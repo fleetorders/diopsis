@@ -603,3 +603,22 @@ compare; a run made entirely of new captures shows no control, because there is 
 could switch between.
 
 **Scope:** repo.
+
+## D-027 — 2026-09-27 — The report opens with a contact sheet
+
+**Decision:** Above the story list the report shows an overview: one thumbnail per capture that
+needs review, in the list's order, following the same filter and search. A changed capture
+shows its diff image, a new one its single render, and one with no image a text tile. Tiles are
+scaled by width only and clipped from the top, reuse the images already embedded, and jump to
+their capture when clicked. The overview collapses with `o`; the choice is remembered in the
+browser. This closes the overview deferred in D-020.
+
+**Why:** one capture occupies about a screen, so a run with dozens of changes could only be
+understood by scrolling through all of it. A grid answers "how much changed, and where" first,
+and makes the list a place to go deep rather than the only way in.
+
+**Consequences:** the report file does not grow by more than markup, because tiles point at
+the same data as the detail views. A wide capture is small in a tile; the tile shows where the
+change is, and the detail view is where it is inspected.
+
+**Scope:** repo.

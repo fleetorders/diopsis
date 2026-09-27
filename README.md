@@ -202,10 +202,11 @@ being looked at. Unchanged stories stay collapsed, the largest change leads, and
 story carries the exact command to accept it.
 
 A few hundred captures are meant to be worked through rather than scrolled past, so the report
-filters by story, remembers which captures you have already ticked off, and gives every story
+opens with an overview — a thumbnail of every capture that needs review, click one to jump to
+it — and filters by story, remembers which captures you have already ticked off, and gives every story
 its own link to paste into the review. From the keyboard: `/` filters, `j` and `k` move between
 captures, `1`–`4` switch how the pair is compared, `Shift`+`1`–`4` switch every capture at
-once, and `r` ticks one off.
+once, `o` shows or hides the overview, and `r` ticks one off.
 
 **Accept** — `npx diopsis accept` adopts the whole run, or `npx diopsis accept card--default`
 adopts one story. Both copy the new images over the baselines and stage them for review.

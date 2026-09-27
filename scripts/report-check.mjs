@@ -273,6 +273,88 @@ check('ArrowDown is left to scroll the page',
     return e.defaultPrevented;
   }) === false);
 
+// The contact sheet above the list — the overview D-020 deferred. One tile per capture
+// needing review, in the list's own order and under the same filter and search.
+check('a tile per capture needing review',
+  (await page.locator('.tile:not([hidden])').count()) === 5);
+check('the overview header counts its tiles',
+  (await page.locator('#ov-toggle').textContent()) === 'Overview · 5');
+check('a new capture tiles as its one render',
+  (await page.locator('.tile[data-key="card--brand-new@480"] img').count()) === 1);
+check('a tile reuses the embedded image, not a second copy',
+  (await page.locator('.tile[data-key="card--brand-new@480"] img').getAttribute('src')) ===
+  (await page.locator('#story-card--brand-new img').first().getAttribute('src')));
+check('a capture with no image tiles its status as text',
+  (await page.locator('.tile[data-key="header--sticky@1280"] img').count()) === 0 &&
+  (await page.locator('.tile[data-key="header--sticky@1280"]').textContent()).includes('Render failed'));
+check('every tile image says what it shows',
+  await page.evaluate(() => [...document.querySelectorAll('.tile img')]
+    .every((i) => i.hasAttribute('alt') && i.alt.trim() !== '')));
+check('tiles follow the list order',
+  await page.evaluate(() => JSON.stringify(
+    [...document.querySelectorAll('.tile:not([hidden])')].map((t) => t.dataset.key)) ===
+    JSON.stringify(flat.filter((e) => REVIEW.has(e.capture.status)).map((e) => keyOf(e.capture)))));
+
+// Clicking through: the story was closed first, so the check knows the tile is what opened it.
+await page.locator('#story-card--long > summary').click();
+await page.waitForTimeout(100);
+check('the story starts closed',
+  (await page.locator('#story-card--long').getAttribute('open')) === null);
+await page.locator('.tile[data-key="card--long@380"]').click();
+await page.waitForTimeout(150);
+const landed = page.locator('.capture.current');
+check('a tile opens its story',
+  (await page.locator('#story-card--long').getAttribute('open')) !== null);
+check('a tile lands the cursor on its capture',
+  (await landed.count()) === 1 &&
+  (await landed.locator('.w').textContent()).startsWith('380px') &&
+  (await page.evaluate(() => flat[cursor] && flat[cursor].capture.storyId)) === 'card--long');
+
+// Triage state reaches the sheet: dimmed on load for what was already ticked, dimmed at once
+// for what gets ticked under it.
+check('a reviewed capture is dimmed in the sheet',
+  (await page.locator('.tile[data-key="card--default@640"]').getAttribute('class')).includes('done'));
+await page.locator('#story-card--sliver .mark').click();
+await page.waitForTimeout(100);
+check('ticking in the list dims the tile at once',
+  (await page.locator('.tile[data-key="card--sliver@380"]').getAttribute('class')).includes('done'));
+
+// The sheet follows the filter and the search; with nothing left to review it steps aside.
+await page.fill('#q', 'header');
+await page.waitForTimeout(150);
+check('the search narrows the sheet with the list',
+  (await page.locator('.tile:not([hidden])').count()) === 1 &&
+  (await page.locator('#ov-toggle').textContent()) === 'Overview · 1');
+await page.fill('#q', '');
+await page.waitForTimeout(150);
+await page.locator('.chip[data-key=unchanged]').click();
+await page.waitForTimeout(150);
+check('a filter with nothing to review hides the overview',
+  (await page.locator('.overview[hidden]').count()) === 1);
+await page.locator('.chip[data-key=review]').click();
+await page.waitForTimeout(150);
+
+// Collapse: the key, the header toggle, and the choice outliving a reload.
+await page.locator('body').click({ position: { x: 5, y: 300 } });
+await page.keyboard.press('o');
+check('o collapses the overview',
+  (await page.locator('#ov-sheet[hidden]').count()) === 1 &&
+  (await page.locator('#ov-toggle').getAttribute('aria-expanded')) === 'false');
+await page.keyboard.press('o');
+check('o expands the overview again',
+  (await page.locator('#ov-sheet[hidden]').count()) === 0 &&
+  (await page.locator('#ov-toggle').getAttribute('aria-expanded')) === 'true');
+await page.locator('#ov-toggle').click();
+check('the header toggle collapses the overview',
+  (await page.locator('#ov-sheet[hidden]').count()) === 1);
+await page.reload();
+await page.waitForTimeout(250);
+check('the collapsed choice survives a reload',
+  (await page.locator('#ov-sheet[hidden]').count()) === 1);
+await page.keyboard.press('o');
+check('the overview opens again after the reload',
+  (await page.locator('#ov-sheet[hidden]').count()) === 0);
+
 // Noise that used to be printed on every row of a full matrix.
 await page.locator('.chip[data-key=all]').click();
 await page.waitForTimeout(200);
@@ -293,6 +375,25 @@ check('a deep link widens the filter to reach its story',
   (await page.locator('#story-footer--default:visible').count()) === 1);
 check('a deep link opens the story it names',
   (await page.locator('#story-footer--default').getAttribute('open')) !== null);
+await page.close();
+
+// A run with little to review opens with the sheet collapsed: the expanded default is for
+// runs large enough to need taking in at a glance.
+const fewSummary = {
+  ...summary,
+  captures: [captures[0], captures[4]],
+  totals: { ...summary.totals, stories: 2, captures: 2, unchanged: 0, changed: 1, new: 1,
+    renderFailed: 0 },
+  changedStories: ['card--brand-new', 'card--default'],
+};
+await writeFile(path.join(work, 'few.html'), await renderReport(fewSummary, work));
+page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+await page.goto('file://' + path.join(work, 'few.html'));
+await page.waitForTimeout(250);
+check('a small run starts with the overview collapsed',
+  (await page.locator('#ov-sheet[hidden]').count()) === 1);
+check('the collapsed header still counts its tiles',
+  (await page.locator('#ov-toggle').textContent()) === 'Overview · 2');
 await page.close();
 
 // Past the embed budget the artifacts exist as files; the report must point at them instead

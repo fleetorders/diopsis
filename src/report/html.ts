@@ -172,6 +172,38 @@ h1 { margin: 0; font-size: 15px; font-weight: 650; letter-spacing: -0.01em; }
 .progress { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 
 main { padding: 14px 18px 56px; }
+
+/* The overview is a contact sheet: one tile per capture needing review, so a run too large
+   to scroll through can be taken in at a glance before one capture fills the screen. A
+   thumbnail scales by width only and clips what hangs below — the width rule the
+   comparisons follow — so a tall render reads as tall, never squashed. */
+.overview { margin-bottom: 14px; }
+.overview[hidden] { display: none; }
+.ov-toggle { display: inline-flex; align-items: center; gap: 6px; background: transparent;
+  border: 0; padding: 0; color: var(--ink); font: inherit; font-size: 13px; font-weight: 600;
+  cursor: pointer; }
+.ov-toggle::before { content: "\\25B8"; color: var(--muted); font-size: 11px; }
+.ov-toggle[aria-expanded="true"]::before { content: "\\25BE"; }
+.ov-toggle:hover { color: var(--accent); }
+.sheet { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 10px; margin-top: 9px; }
+.sheet[hidden] { display: none; }
+.tile { display: flex; flex-direction: column; gap: 6px; padding: 8px; text-align: left;
+  background: var(--surface); color: var(--ink); border: 1px solid var(--line);
+  border-radius: 8px; font: inherit; cursor: pointer; }
+.tile:hover { background: var(--raised); border-color: var(--accent); }
+.tile.done { opacity: 0.5; }
+.thumb { display: block; height: 160px; overflow: hidden; border-radius: 5px;
+  background: var(--matte-alt); }
+.thumb img { display: block; width: 100%; height: auto; }
+.thumb.text { display: flex; align-items: center; justify-content: center; }
+.tile-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.tile-title { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; }
+.tile-sub { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px;
+  font-variant-numeric: tabular-nums; }
+.tile-dims { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 .story { border: 1px solid var(--line); border-radius: 8px; margin-bottom: 10px;
   background: var(--surface); overflow: hidden; position: relative; }
 .story > summary { cursor: pointer; padding: 9px 12px; display: flex; gap: 10px;
@@ -279,7 +311,8 @@ button.copy:hover { background: var(--raised); }
     <h1>Diopsis</h1>
     <div class="meta" id="meta"></div>
     <div class="keys"><b>/</b> search &middot; <b>j k</b> move &middot; <b>1&ndash;4</b> mode
-      &middot; <b>&#8679;1&ndash;4</b> all &middot; <b>r</b> reviewed</div>
+      &middot; <b>&#8679;1&ndash;4</b> all &middot; <b>r</b> reviewed &middot; <b>o</b>
+      overview</div>
   </div>
   <div class="tools">
     <div class="totals" id="filters"></div>
@@ -566,6 +599,8 @@ function stage(capture) {
 /** Every capture entry, built once; filtering after that only shows and hides them. */
 const entries = [];
 const storyEls = [];
+/** Overview tiles, one per capture needing review — built once and hidden, never rebuilt. */
+const tiles = [];
 /** The visible captures in reading order — the target list for j/k. */
 let flat = [];
 
@@ -615,6 +650,7 @@ function toggleReviewed(entry) {
   else reviewed.add(key);
   saveReviewed();
   entry.box.classList.toggle('done', reviewed.has(key));
+  if (entry.tile) entry.tile.classList.toggle('done', reviewed.has(key));
   entry.mark.setAttribute('aria-pressed', String(reviewed.has(key)));
   entry.mark.textContent = reviewed.has(key) ? 'Reviewed' : 'Mark reviewed';
   drawProgress();
@@ -646,7 +682,44 @@ const listEl = document.createElement('div');
 const emptyEl = document.createElement('p');
 emptyEl.className = 'empty';
 emptyEl.hidden = true;
-out.append(listEl, emptyEl);
+
+/* The overview is a contact sheet above the list: one tile per capture needing review, so a
+   run too large to scroll capture by capture can still be taken in at a glance. Unlike
+   triage — remembered per run, because it describes that run's pixels — collapsed or
+   expanded is a preference about the interface, so it is kept per browser. */
+const overviewEl = document.createElement('section');
+overviewEl.className = 'overview';
+overviewEl.setAttribute('aria-label', 'Captures needing review');
+const ovToggle = document.createElement('button');
+ovToggle.className = 'ov-toggle';
+ovToggle.id = 'ov-toggle';
+ovToggle.textContent = 'Overview';
+ovToggle.setAttribute('aria-expanded', 'false');
+ovToggle.setAttribute('aria-controls', 'ov-sheet');
+const sheetEl = document.createElement('div');
+sheetEl.className = 'sheet';
+sheetEl.id = 'ov-sheet';
+overviewEl.append(ovToggle, sheetEl);
+out.append(overviewEl, listEl, emptyEl);
+
+const OV_STORE = 'diopsis:overview';
+// Expanded only once there are enough captures to be worth a glance over; a small run reads
+// faster starting at the captures themselves.
+let overviewCollapsed = data.captures.filter(c => REVIEW.has(c.status)).length <= 3;
+try {
+  const stored = localStorage.getItem(OV_STORE);
+  if (stored !== null) overviewCollapsed = stored === 'collapsed';
+} catch (e) { /* private mode */ }
+function applyOverview() {
+  ovToggle.setAttribute('aria-expanded', String(!overviewCollapsed));
+  sheetEl.hidden = overviewCollapsed;
+}
+function setOverviewCollapsed(collapsed) {
+  overviewCollapsed = collapsed;
+  try { localStorage.setItem(OV_STORE, collapsed ? 'collapsed' : 'expanded'); } catch (e) { /* private mode */ }
+  applyOverview();
+}
+ovToggle.onclick = () => setOverviewCollapsed(!overviewCollapsed);
 
 /* Filtering hides and shows what was built once. Rebuilding on every keystroke threw away
    every drawn image stage — and with it the comparison mode and zoom a reviewer had already
@@ -666,6 +739,16 @@ function applyFilter() {
   for (const story of storyEls) story.el.hidden = story.entries.every(e => e.box.hidden);
   flat = entries.filter(e => !e.box.hidden && !e.story.hidden);
   cursor = -1;
+
+  // The sheet mirrors the list capture by capture: the same filter and search decide which
+  // tiles show, and with none left the overview steps aside entirely.
+  let shownTiles = 0;
+  for (const tile of tiles) {
+    tile.el.hidden = tile.entry.box.hidden;
+    if (!tile.el.hidden) shownTiles += 1;
+  }
+  overviewEl.hidden = shownTiles === 0;
+  ovToggle.textContent = 'Overview · ' + shownTiles;
 
   // With nothing to show, the whole list — its accept-everything footer included — steps
   // aside for one line that says so.
@@ -837,6 +920,74 @@ function buildAll() {
   }
 }
 
+/* One tile per capture needing review, in the list's own order — worst story first, largest
+   change first. Each thumbnail reuses a data URI the report already carries: the sheet
+   multiplies what there is to see, not the size of the file. */
+function buildOverview() {
+  for (const entry of entries) {
+    const c = entry.capture;
+    if (!REVIEW.has(c.status)) continue;
+    const tile = document.createElement('button');
+    tile.className = 'tile' + (reviewed.has(keyOf(c)) ? ' done' : '');
+    tile.dataset.key = keyOf(c);
+
+    // A tile shows the one image that says why the capture is here — the highlight for a
+    // change, the single render for a new capture — and the status as text when there is no
+    // image to show: nothing rendered, or images the embed budget left out.
+    const img = c.images || {};
+    const src = c.status === 'changed' ? img.diff
+      : c.status === 'new' ? (img.actual || img.expected) : null;
+    const thumb = document.createElement('span');
+    thumb.className = 'thumb';
+    if (src) {
+      const i = document.createElement('img');
+      i.loading = 'lazy';
+      i.decoding = 'async';
+      i.alt = (c.status === 'changed' ? 'Difference thumbnail of ' : 'First render of ') +
+        c.storyTitle + ' › ' + c.storyName + ' at ' + c.width + 'px';
+      i.src = src;
+      thumb.appendChild(i);
+    } else {
+      thumb.classList.add('text');
+      const st = document.createElement('span');
+      st.className = 'badge s-' + c.status;
+      st.textContent = LABEL[c.status];
+      thumb.appendChild(st);
+    }
+
+    const meta = document.createElement('span');
+    meta.className = 'tile-meta';
+    const titleEl = document.createElement('span');
+    titleEl.className = 'tile-title';
+    const name = c.storyTitle + ' › ' + c.storyName;
+    titleEl.textContent = name;
+    titleEl.title = name;
+    const sub = document.createElement('span');
+    sub.className = 'tile-sub';
+    const dot = document.createElement('span');
+    dot.className = 'dot c-' + c.status;
+    const dims = document.createElement('span');
+    dims.className = 'tile-dims';
+    dims.textContent = c.width + 'px' +
+      (c.status === 'changed' && c.diffPixels != null
+        ? ' · ' + c.diffPixels.toLocaleString() + ' px differ' : '');
+    sub.append(dot, dims);
+    meta.append(titleEl, sub);
+    tile.append(thumb, meta);
+
+    // Landing from the sheet behaves like arriving by j/k: the story opens, the capture
+    // scrolls into view and the cursor sits on it.
+    tile.onclick = () => {
+      const at = flat.indexOf(entry);
+      if (at >= 0) setCursor(at);
+    };
+
+    sheetEl.appendChild(tile);
+    tiles.push({ el: tile, entry });
+    entry.tile = tile;
+  }
+}
+
 /* A link into the report has to land even when the current filter excludes its target. Every
    story is built — a filtered-out one is hidden, not absent — so a hidden target widens the
    view once and tries again rather than scrolling nowhere. */
@@ -868,6 +1019,7 @@ document.addEventListener('keydown', (e) => {
   // vertical ones stay with the page, so a keyboard user can still scroll a long report.
   if (e.key === 'j') { e.preventDefault(); setCursor(cursor + 1); return; }
   if (e.key === 'k') { e.preventDefault(); setCursor(cursor - 1); return; }
+  if (e.key === 'o') { e.preventDefault(); setOverviewCollapsed(!overviewCollapsed); return; }
   // Shift turns a number into a page-wide choice. The code, not the key, identifies the digit:
   // with Shift held the key reads as whatever symbol the layout puts above it.
   const digit = /^Digit([1-4])$/.exec(e.code);
@@ -895,7 +1047,9 @@ document.addEventListener('keydown', (e) => {
 window.addEventListener('hashchange', focusHash);
 
 buildAll();
+buildOverview();
 applyFilter();
+applyOverview();
 drawProgress();
 focusHash();
 `;
