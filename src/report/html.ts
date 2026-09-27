@@ -337,6 +337,7 @@ button.copy:hover { background: var(--raised); }
   </div>
   <div class="tools">
     <div class="totals" id="filters"></div>
+    <div class="totals" id="modefilters"></div>
     <input class="search" id="q" type="search" placeholder="Filter stories" autocomplete="off"
       spellcheck="false" aria-label="Filter stories">
     <span class="progress" id="progress" aria-live="polite"></span>
@@ -378,6 +379,12 @@ let active = order.find(s => REVIEW.has(s) && counts[s]) ? 'review' : 'all';
 let query = '';
 let cursor = -1;
 
+/* The run's modes, in first-appearance order — the order the plan captured them in. A run
+   without modes shows no mode chips, and the filter below passes everything untouched. */
+const modeNames = [];
+for (const c of data.captures) if (c.mode && !modeNames.includes(c.mode)) modeNames.push(c.mode);
+let activeMode = 'all';
+
 /* The comparison mode chosen for the whole page. A capture that cannot show it — one with no
    diff image, or no baseline to compare against — keeps its own default instead of going blank. */
 const ALL_MODES = ['Overlay', 'Side by side', 'Swipe', 'Onion-skin'];
@@ -386,7 +393,9 @@ let preferred = ALL_MODES[0];
 /* Triage is remembered per run, not per file: the same report reopened after a fresh run
    describes different pixels, so a stale tick would claim a capture was seen that never was. */
 const STORE = 'diopsis:reviewed:' + data.createdAt;
-function keyOf(c) { return c.storyId + '@' + c.width; }
+/* A mode capture shares its story and width with the base capture, so the key names the
+   mode too — ticking one off must not tick off its twin. */
+function keyOf(c) { return c.storyId + '@' + c.width + (c.mode ? '[' + c.mode + ']' : ''); }
 function loadReviewed() {
   try { return new Set(JSON.parse(localStorage.getItem(STORE) || '[]')); }
   catch { return new Set(); }
@@ -398,6 +407,7 @@ const reviewed = loadReviewed();
 
 const searchEl = document.getElementById('q');
 const filters = document.getElementById('filters');
+const modeFilters = document.getElementById('modefilters');
 const progressEl = document.getElementById('progress');
 const acceptVisibleEl = document.getElementById('acceptvisible');
 
@@ -428,6 +438,20 @@ for (const s of order) if (counts[s]) filters.appendChild(chip(s, LABEL[s], s));
 if (unstableCount) filters.appendChild(chip('unstable', 'Unstable'));
 filters.appendChild(chip('all', 'All'));
 
+/* The mode chips sit beside the status chips and compose with them and the search: a mode
+   is a second thing a capture can be filtered by, not a second view. The keys carry a
+   prefix because a mode is free to be named "all" or "base". */
+if (modeNames.length) {
+  const modeChip = (key, label) => {
+    const b = chip('mode:' + key, label);
+    b.onclick = () => { activeMode = key; applyFilter(); };
+    modeFilters.appendChild(b);
+  };
+  modeChip('all', 'All modes');
+  modeChip('base', 'Base');
+  for (const m of modeNames) modeChip(m, m);
+}
+
 searchEl.oninput = () => { query = searchEl.value.trim().toLowerCase(); applyFilter(); };
 
 function textOf(c) {
@@ -439,6 +463,9 @@ function inFilter(c, key) {
     : key === 'review' ? REVIEW.has(c.status)
     : key === 'unstable' ? !!c.unstable
     : c.status === key;
+}
+function inMode(c, key) {
+  return key === 'all' ? true : key === 'base' ? !c.mode : c.mode === key;
 }
 
 function copyButton(text, label) {
@@ -823,11 +850,20 @@ function applyFilter() {
     const key = b.dataset.key;
     b.setAttribute('aria-pressed', String(key === active));
     b.querySelector('.n').textContent =
-      data.captures.filter(c => inSearch(c) && inFilter(c, key)).length;
+      data.captures.filter(c => inSearch(c) && inMode(c, activeMode) && inFilter(c, key)).length;
+  }
+  // Each group's counts reflect the other group's active filter, so a count is always "of
+  // what is one click away", never of a set the click would not actually show.
+  for (const b of modeFilters.children) {
+    const key = b.dataset.key.slice(5);
+    b.setAttribute('aria-pressed', String(key === activeMode));
+    b.querySelector('.n').textContent =
+      data.captures.filter(c => inSearch(c) && inMode(c, key) && inFilter(c, active)).length;
   }
 
   for (const entry of entries) {
-    entry.box.hidden = !inSearch(entry.capture) || !inFilter(entry.capture, active);
+    entry.box.hidden = !inSearch(entry.capture) || !inFilter(entry.capture, active) ||
+      !inMode(entry.capture, activeMode);
   }
   // A story stays on the page while any of its captures does; its other rows hide with it.
   for (const story of storyEls) story.el.hidden = story.entries.every(e => e.box.hidden);
@@ -917,7 +953,8 @@ function buildAll() {
       if (c.unstable) {
         // The capture passed, so it has no images, no count of its own and no meter — the
         // sentence is the whole story of the row.
-        w.textContent = c.width + 'px · ' + (c.unstableDiffPixels != null
+        w.textContent = c.width + 'px' + (c.mode ? ' [' + c.mode + ']' : '') + ' · ' +
+          (c.unstableDiffPixels != null
           ? 'Differed on one load (' + c.unstableDiffPixels.toLocaleString() +
             ' px) and matched on the next.'
           : c.unstableStatus === 'render-failed'
@@ -939,7 +976,7 @@ function buildAll() {
           if (pixels > 0) share = (c.diffPixels / pixels) * 100;
           else if (c.diffRatio != null && c.diffRatio * 100 >= 0.005) share = c.diffRatio * 100;
         }
-        w.textContent = c.width + 'px' + (c.diffPixels == null
+        w.textContent = c.width + 'px' + (c.mode ? ' [' + c.mode + ']' : '') + (c.diffPixels == null
           ? ''
           : ', ' + c.diffPixels.toLocaleString() + ' px differ' +
             (share == null ? '' : ' (' + Number(share.toPrecision(2)) + '%)'));
@@ -1080,7 +1117,8 @@ function buildOverview() {
       i.loading = 'lazy';
       i.decoding = 'async';
       i.alt = (c.status === 'changed' ? 'Difference thumbnail of ' : 'First render of ') +
-        c.storyTitle + ' › ' + c.storyName + ' at ' + c.width + 'px';
+        c.storyTitle + ' › ' + c.storyName + ' at ' + c.width + 'px' +
+        (c.mode ? ' in ' + c.mode : '');
       i.src = src;
       // A change with known regions is shown at the change: the tile crops to the largest
       // region and scales it by width to the tile, answering "where" without a second
@@ -1118,7 +1156,7 @@ function buildOverview() {
     dot.className = 'dot c-' + c.status;
     const dims = document.createElement('span');
     dims.className = 'tile-dims';
-    dims.textContent = c.width + 'px' +
+    dims.textContent = c.width + 'px' + (c.mode ? ' [' + c.mode + ']' : '') +
       (c.status === 'changed' && c.diffPixels != null
         ? ' · ' + c.diffPixels.toLocaleString() + ' px differ' : '');
     sub.append(dot, dims);
@@ -1147,6 +1185,7 @@ function focusHash() {
   const target = document.getElementById(id);
   if (target && target.hidden) {
     active = 'all';
+    activeMode = 'all';
     query = '';
     searchEl.value = '';
     applyFilter();

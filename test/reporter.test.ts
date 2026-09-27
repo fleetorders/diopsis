@@ -561,3 +561,58 @@ describe('DiopsisReporter flake guard', () => {
     assert.equal(capture?.size, undefined);
   });
 });
+
+describe('DiopsisReporter modes', () => {
+  it('carries the mode into the summary and the terminal line', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'diopsis-reporter-'));
+    temporaries.push(root);
+    const modes = { dark: { theme: 'dark' } };
+    const config = resolveConfig({ viewports: { default: [320] }, modes });
+    const { captures } = resolveMatrix([stories[0]!], config, 'linux-x64');
+    const planned = planCaptures(captures, path.join(root, '__screenshots__'), undefined, modes);
+    const outputDir = path.join(root, '.diopsis');
+    await mkdir(outputDir, { recursive: true });
+    const planPath = path.join(root, 'plan.json');
+    await writeFile(
+      planPath,
+      JSON.stringify({
+        baseUrl: 'http://127.0.0.1:4321',
+        captures: planned,
+        stabilize: config.stabilize,
+        compare: config.compare,
+        mask: config.mask,
+        fullPage: config.fullPage,
+      }),
+    );
+    const reporter = new DiopsisReporter({
+      planPath,
+      outputDir,
+      snapshotDir: '__screenshots__',
+      snapshotDirAbs: path.join(root, '__screenshots__'),
+      mode: 'run',
+      platform: 'linux',
+      arch: 'x64',
+      createdAt: '2026-01-01T00:00:00Z',
+      retries: 0,
+    });
+    await reporter.onBegin({} as FullConfig);
+    const { out } = await withCapturedStdout(async () => {
+      reporter.onTestEnd(testTitled('a--one @320'), result({}));
+      reporter.onTestEnd(
+        testTitled('a--one @320 [dark]'),
+        result({
+          status: 'failed',
+          errors: [{ message: '500 pixels (ratio 0.1 of all image pixels) are different.' }],
+          annotations: [{ type: 'diopsis-baseline', description: 'present' }],
+        }),
+      );
+      await reporter.onEnd({ status: 'failed' } as FullResult);
+    });
+
+    const summary = await summaryAt(outputDir);
+    assert.equal(summary.captures.find((c) => c.mode === 'dark')?.status, 'changed');
+    // The base capture carries no mode key at all, so it stays byte-identical to before.
+    assert.equal('mode' in (summary.captures[0] ?? {}), false);
+    assert.match(out, /~ a--one @320 \[dark\]  500 px differ/);
+  });
+});

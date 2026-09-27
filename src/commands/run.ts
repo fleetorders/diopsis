@@ -55,6 +55,8 @@ export function headerBlock(input: {
   skipped: string[];
   unwatched: string[];
   loosened: string[];
+  /** Names of the configured modes, when there are any. */
+  modes?: string[];
 }): string {
   // Like the loosened line, the scope line exists to make an exception visible: it appears
   // only when something departs from the whole-page default, and counts the stories that
@@ -72,11 +74,16 @@ export function headerBlock(input: {
           : '') +
         '\n';
 
+  // Like the scope line, the modes line says what shaped the matrix: every mode multiplies
+  // every capture, so the names belong where the cost is read.
+  const modesLine = input.modes?.length ? `  modes     ${input.modes.join(', ')}\n` : '';
+
   return (
     `${headerLine(input.captures, input.grep)}\n` +
     `  config    ${input.configSource}\n` +
     `  storybook ${input.storybookDir}\n` +
     `  baselines ${input.snapshotDir}\n` +
+    modesLine +
     scopeLine +
     (input.skipped.length ? `  skipped   ${input.skipped.length} stories (diopsis:skip)\n` : '') +
     (input.unwatched.length
@@ -174,6 +181,7 @@ export async function runCommand(options: RunOptions): Promise<number> {
       skipped: matrix.skipped,
       unwatched: matrix.unwatched,
       loosened: loosenedStoryIds(captures, config.compare),
+      ...(config.modes ? { modes: Object.keys(config.modes) } : {}),
     }),
   );
 

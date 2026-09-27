@@ -832,3 +832,25 @@ every load is still reported changed about as often as both loads disagree with 
 the fix for that is in the story, and the Unstable filter is where it shows up first.
 
 **Scope:** repo.
+
+## D-033 — 2026-09-27 — Modes: named sets of Storybook globals, each with its own baselines
+
+**Decision:** `modes` in the config names sets of Storybook globals. Every story is captured in
+its plain form and in each mode, the globals passed through the story URL's `globals`
+parameter, so the story's own decorators apply them. A mode capture's baseline is
+`<story>/<width>w-<mode>-<platform>.png`; plain captures keep today's path exactly.
+`diopsis:modes=<names>` restricts a story and `diopsis:modes=none` leaves it plain. The report
+filters by mode alongside status and search; `doctor` counts mode captures and treats a
+baseline for a mode no longer configured as an orphan.
+
+**Why:** a dark theme, a right-to-left layout and a second locale are where component
+libraries break unseen, because nobody looks at every story in every combination. Globals are
+Storybook's own mechanism for exactly these, so driving them from the URL needs nothing from the
+story and captures what the story really renders in that mode. Keeping plain paths unchanged
+means adding the first mode costs new baselines, not a regeneration of the old ones.
+
+**Consequences:** each mode multiplies the capture count like a width, which `init` and the run
+header make visible. Mode names are limited to lower-case letters, digits and hyphens because
+they appear in file names; global keys and values cannot contain the URL separators `:` and `;`.
+
+**Scope:** repo.

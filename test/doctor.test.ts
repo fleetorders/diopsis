@@ -393,3 +393,66 @@ describe('initCommand --force with an existing config', () => {
     assert.match(out, /320, 1280[^\n]*\(configured\)/);
   });
 });
+
+describe('runChecks with modes', () => {
+  it('counts the mode captures in the cost line', async () => {
+    const root = await project();
+    await writeFile(
+      path.join(root, 'diopsis.config.mjs'),
+      "export default { modes: { dark: { theme: 'dark' } } };",
+    );
+    const checks = await runChecks({ root });
+    // 7 base captures from the fixture, each joined by one dark twin.
+    assert.match(find(checks, /stories/)?.title ?? '', /5 stories → 14 captures/);
+  });
+
+  it('treats a baseline for a mode the config no longer carries as an orphan', async () => {
+    const root = await project();
+    await mkdir(path.join(root, '__screenshots__', 'button--primary'), { recursive: true });
+    await writeFile(
+      path.join(root, '__screenshots__', 'button--primary', `320w-dark-${process.platform}-${process.arch}.png`),
+      'x',
+    );
+    const check = find(await runChecks({ root }), /no longer exist/);
+    assert.equal(check?.level, 'warn');
+    assert.match(check?.detail ?? '', /320w-dark-/);
+  });
+
+  it('keeps a baseline for a configured mode out of the orphans', async () => {
+    const root = await project();
+    await writeFile(
+      path.join(root, 'diopsis.config.mjs'),
+      "export default { modes: { dark: { theme: 'dark' } } };",
+    );
+    await mkdir(path.join(root, '__screenshots__', 'button--primary'), { recursive: true });
+    await writeFile(
+      path.join(root, '__screenshots__', 'button--primary', `320w-dark-${process.platform}-${process.arch}.png`),
+      'x',
+    );
+    assert.equal(find(await runChecks({ root }), /no longer exist/), undefined);
+  });
+});
+
+describe('initCommand --force with modes configured', () => {
+  it('multiplies the cost table and says so in the note', async () => {
+    const root = await project();
+    await writeFile(
+      path.join(root, 'diopsis.config.mjs'),
+      "export default { modes: { dark: { theme: 'dark' }, rtl: { direction: 'rtl' } } };",
+    );
+    const { code, out } = await captureStdout(() => initCommand({ root, force: true }));
+    assert.equal(code, 0);
+    // Two modes triple every row — 4 base captures at one width become 12. The rows
+    // stay widths, as ever — the note is where the multiplier is said out loud.
+    assert.match(out, /1280\s+12\s+960 KB/);
+    assert.match(out, /320, 1280\s+21\s+1\.6 MB\s+\(configured\)/);
+    assert.match(out, /Counts include the configured modes \(dark, rtl\)/);
+  });
+
+  it('prints no modes note when the config carries none', async () => {
+    const root = await project();
+    const { out } = await captureStdout(() => initCommand({ root, force: true }));
+    assert.doesNotMatch(out, /Counts include the configured modes/);
+    assert.match(out, /320, 1280\s+7\s+560 KB\s+\(configured\)/);
+  });
+});

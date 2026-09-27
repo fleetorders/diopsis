@@ -184,6 +184,24 @@ it is the rendered component instead — the box around everything the story dre
 8 px — so the empty canvas around a button is neither stored nor compared. A story can choose
 for itself with `diopsis:component` or `diopsis:page`. Switching regenerates those baselines.
 
+### Modes
+
+A theme, a text direction or a locale is a Storybook global. Name the combinations you ship and
+every story is captured in each of them as well as in its plain form, each with its own
+baselines:
+
+```ts
+modes: {
+  dark: { theme: 'dark' },
+  rtl: { direction: 'rtl', locale: 'ar' },
+},
+```
+
+Globals reach the story through its URL, so whatever your decorators do with them is what gets
+captured. `diopsis:modes=dark` limits a story to the modes it names and `diopsis:modes=none` to
+its plain form. A mode multiplies captures like a width does, and `init` and `doctor` count it.
+Plain captures keep the paths they always had, so adding a mode leaves existing baselines valid.
+
 ### Per-story tolerance
 
 The occasional story that cannot be made deterministic — a gradient that dithers, a chart that
@@ -291,6 +309,7 @@ captured.
 | `stabilize.settleTimeout` | `15000` | Ceiling on the whole stabilization sequence, ms |
 | `mask` | `['[data-diopsis-ignore]']` | Selectors painted over before comparison |
 | `capture` | `page` | `component` photographs the rendered component instead of the whole canvas |
+| `modes` | none | Named sets of Storybook globals; each story is also captured in each set |
 | `compare.threshold` | `0.2` | Per-pixel colour tolerance, 0–1 |
 | `compare.maxDiffPixelRatio` | `0.001` | Share of differing pixels tolerated |
 | `compare.maxDiffPixels` | unset | Number of differing pixels tolerated; with the ratio, the stricter applies |

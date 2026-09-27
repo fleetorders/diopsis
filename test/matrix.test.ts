@@ -5,6 +5,7 @@ import type { DiopsisConfig } from '../src/config.ts';
 import {
   effectiveCompare,
   loosenedStoryIds,
+  modesForStory,
   platformToken,
   resolveMatrix,
   scopeForStory,
@@ -373,5 +374,138 @@ describe('effectiveCompare', () => {
       maxDiffPixelRatio: 0.001,
       maxDiffPixels: 40,
     });
+  });
+});
+
+describe('snapshotPathFor with a mode', () => {
+  it('puts the mode between the width and the platform', () => {
+    assert.equal(snapshotPathFor('a--one', 320, 'linux-x64', 'dark'), 'a--one/320w-dark-linux-x64.png');
+  });
+
+  it('leaves the base path exactly as it was', () => {
+    assert.equal(snapshotPathFor('a--one', 320, 'linux-x64'), 'a--one/320w-linux-x64.png');
+    assert.equal(
+      snapshotPathFor('a--one', 320, 'linux-x64', undefined),
+      'a--one/320w-linux-x64.png',
+    );
+  });
+});
+
+describe('modesForStory', () => {
+  const modes = { dark: { theme: 'dark' }, rtl: { direction: 'rtl', locale: 'ar' } };
+
+  it('captures every configured mode when the story carries no restriction', () => {
+    assert.deepEqual(modesForStory(story('a--one'), modes), { modes: ['dark', 'rtl'], warnings: [] });
+  });
+
+  it('restricts a story to the modes its tag names', () => {
+    const result = modesForStory(story('a--one', ['diopsis:modes=rtl']), modes);
+    assert.deepEqual(result.modes, ['rtl']);
+    assert.deepEqual(result.warnings, []);
+  });
+
+  it('captures only the base for diopsis:modes=none', () => {
+    const result = modesForStory(story('a--one', ['diopsis:modes=none']), modes);
+    assert.deepEqual(result.modes, []);
+    assert.deepEqual(result.warnings, []);
+  });
+
+  it('warns about a mode the config does not carry, and ignores it', () => {
+    const result = modesForStory(story('a--one', ['diopsis:modes=dark,print']), modes);
+    assert.deepEqual(result.modes, ['dark']);
+    assert.equal(result.warnings.length, 1);
+    assert.match(
+      result.warnings[0] ?? '',
+      /a--one: tag "diopsis:modes=dark,print" names a mode not configured: print \(known: dark, rtl\)\./,
+    );
+  });
+
+  it('keeps the configured order however the tag lists them', () => {
+    assert.deepEqual(modesForStory(story('a--one', ['diopsis:modes=rtl,dark']), modes).modes, [
+      'dark',
+      'rtl',
+    ]);
+  });
+
+  it('says the config carries no modes when a story tags for them anyway', () => {
+    const result = modesForStory(story('a--one', ['diopsis:modes=dark']), undefined);
+    assert.deepEqual(result.modes, []);
+    assert.equal(result.warnings.length, 1);
+    assert.match(result.warnings[0] ?? '', /a--one: tag "diopsis:modes=dark" names modes but none/);
+  });
+
+  it('never touches width resolution — a modes-only story keeps the default widths', () => {
+    const result = widthsForStory(story('a--one', ['diopsis:modes=dark']), viewports);
+    assert.deepEqual(result.widths, [320, 1280]);
+    assert.deepEqual(result.warnings, []);
+  });
+});
+
+describe('resolveMatrix with modes', () => {
+  const modes = { dark: { theme: 'dark' }, rtl: { direction: 'rtl' } };
+  const withModes: Pick<DiopsisConfig, 'viewports' | 'viewportHeight' | 'capture' | 'modes'> = {
+    viewports: { default: [320] },
+    viewportHeight: 900,
+    capture: 'page',
+    modes,
+  };
+
+  it('captures the base plus every mode, base first', () => {
+    const matrix = resolveMatrix([story('a--one')], withModes, 'linux-x64');
+    assert.deepEqual(
+      matrix.captures.map((c) => [c.snapshotPath, c.mode]),
+      [
+        ['a--one/320w-linux-x64.png', undefined],
+        ['a--one/320w-dark-linux-x64.png', 'dark'],
+        ['a--one/320w-rtl-linux-x64.png', 'rtl'],
+      ],
+    );
+  });
+
+  it('keeps the base path and the absent mode key what they were without modes', () => {
+    const without = resolveMatrix(
+      [story('a--one')],
+      { viewports: { default: [320] }, viewportHeight: 900, capture: 'page' },
+      'linux-x64',
+    );
+    const matrix = resolveMatrix([story('a--one')], withModes, 'linux-x64');
+    assert.equal(matrix.captures[0]?.snapshotPath, without.captures[0]?.snapshotPath);
+    assert.equal('mode' in (matrix.captures[0] ?? {}), false);
+  });
+
+  it('honours a story restriction and a modes=none tag', () => {
+    const matrix = resolveMatrix(
+      [story('a--only-dark', ['diopsis:modes=dark']), story('b--base', ['diopsis:modes=none'])],
+      withModes,
+      'linux-x64',
+    );
+    assert.deepEqual(
+      matrix.captures.map((c) => c.snapshotPath),
+      [
+        'a--only-dark/320w-linux-x64.png',
+        'a--only-dark/320w-dark-linux-x64.png',
+        'b--base/320w-linux-x64.png',
+      ],
+    );
+  });
+
+  it('carries the story tags through every mode capture, and warns once', () => {
+    const matrix = resolveMatrix(
+      [story('a--one', ['diopsis:threshold=0.4', 'diopsis:modes=print'])],
+      withModes,
+      'linux-x64',
+    );
+    assert.equal(matrix.warnings.length, 1);
+    assert.match(matrix.warnings[0] ?? '', /print/);
+    for (const capture of matrix.captures) {
+      assert.deepEqual(capture.compare, { threshold: 0.4 });
+    }
+  });
+
+  it('still refuses two story ids that would share a baseline directory', () => {
+    assert.throws(
+      () => resolveMatrix([story('a b--c'), story('a:b--c')], withModes, 'linux-x64'),
+      /baseline/,
+    );
   });
 });

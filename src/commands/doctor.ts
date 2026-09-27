@@ -345,7 +345,12 @@ export async function runChecks(options: DoctorOptions): Promise<Check[]> {
           ? { level: 'ok', title: 'No orphaned baselines for this platform' }
           : {
               level: 'warn',
-              title: `${localOrphans.length} baselines belong to stories that no longer exist`,
+              // A mode baseline names a mode the config no longer carries as readily as a
+              // story the index no longer lists; both are dead weight until deleted.
+              title:
+                `${localOrphans.length} baselines belong to ` +
+                `${localOrphans.length === 1 ? 'a story or mode' : 'stories or modes'} ` +
+                'that no longer exist',
               detail: `e.g. ${localOrphans[0]} — delete them so the set stops carrying dead weight.`,
             },
       );

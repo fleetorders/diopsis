@@ -210,3 +210,44 @@ describe('acceptCommand', () => {
     assert.match(out, /Nothing to accept for a--one\./);
   });
 });
+
+describe('acceptCommand with modes', () => {
+  it('accepts a mode capture to its own baseline path, not the base one', async () => {
+    const root = await project(
+      [
+        capture({ status: 'unchanged' }),
+        capture({
+          status: 'changed',
+          mode: 'dark',
+          snapshotPath: 'a--one/320w-dark-linux-x64.png',
+          artifacts: { actual: 'test-results/a--one-320-dark-actual.png' },
+        }),
+      ],
+      ['test-results/a--one-320-dark-actual.png'],
+    );
+
+    const { code } = await runAccept(root);
+    assert.equal(code, 0);
+    // Accept works per capture through the snapshot path, so a mode lands on its own file
+    // and the base baseline next to it is untouched.
+    assert.equal(existsSync(path.join(root, '__screenshots__', 'a--one', '320w-dark-linux-x64.png')), true);
+    assert.equal(existsSync(path.join(root, '__screenshots__', 'a--one', '320w-linux-x64.png')), false);
+  });
+
+  it('names the mode when it says why a capture was skipped', async () => {
+    const root = await project(
+      [
+        capture({
+          status: 'render-failed',
+          mode: 'rtl',
+          snapshotPath: 'a--one/320w-rtl-linux-x64.png',
+          artifacts: {},
+        }),
+      ],
+      [],
+    );
+
+    const { out } = await runAccept(root);
+    assert.match(out, /skipped a--one @320 \[rtl\]: render-failed/);
+  });
+});

@@ -353,3 +353,43 @@ describe('loadConfig validation', () => {
     );
   });
 });
+
+describe('validateConfig modes', () => {
+  function configWith(modes: unknown): DiopsisConfig {
+    return { ...resolveConfig(), modes } as DiopsisConfig;
+  }
+
+  it('leaves modes off by default and accepts named globals sets', () => {
+    assert.equal(resolveConfig().modes, undefined);
+    assert.deepEqual(validateConfig(configWith({ dark: { theme: 'dark' } })), []);
+  });
+
+  it('rejects a mode name a baseline path could not carry', () => {
+    const problems = validateConfig(configWith({ 'Dark Mode': { theme: 'dark' } }));
+    assert.equal(problems.length, 1);
+    assert.match(problems[0] ?? '', /modes\.Dark Mode is not a valid mode name/);
+  });
+
+  it('rejects a mode whose globals are not a record', () => {
+    const problems = validateConfig(configWith({ dark: 'theme=dark' }));
+    assert.equal(problems.length, 1);
+    assert.match(problems[0] ?? '', /modes\.dark must be an object of globals \(got "theme=dark"\)/);
+  });
+
+  it('rejects empty keys and values, and any carrying the pair separators', () => {
+    const problems = validateConfig(
+      configWith({ dark: { '': 'x', theme: '', 'lo:cale': 'x', locale: 'ar;en' } }),
+    );
+    // One problem per bad key and per bad value, each naming where it sits.
+    assert.equal(problems.length, 4);
+    assert.match(problems[0] ?? '', /modes\.dark: globals keys must be non-empty/);
+    assert.match(problems[1] ?? '', /modes\.dark\.theme must be a non-empty string/);
+    assert.match(problems[2] ?? '', /modes\.dark: globals keys must be non-empty.*":".*";"/);
+    assert.match(problems[3] ?? '', /modes\.dark\.locale must be a non-empty string.*"ar;en"/);
+  });
+
+  it('accepts the modes key through the public UserConfig type', () => {
+    const user: UserConfig = { modes: { rtl: { direction: 'rtl' } } };
+    assert.deepEqual(resolveConfig(user).modes, { rtl: { direction: 'rtl' } });
+  });
+});

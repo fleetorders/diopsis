@@ -11,9 +11,23 @@ export const LOADING_SELECTORS = [
   '[role="progressbar"]',
 ] as const;
 
-/** `{base}/iframe.html?viewMode=story&id={storyId}` — the preview, without the manager UI. */
-export function storyUrlFor(baseUrl: string, storyId: string): string {
-  return `${baseUrl.replace(/\/$/, '')}/iframe.html?viewMode=story&id=${encodeURIComponent(storyId)}`;
+/**
+ * `{base}/iframe.html?viewMode=story&id={storyId}` — the preview, without the manager UI.
+ * Globals, when a mode sets them, ride the URL as `&globals={key}:{value};…`, each key and
+ * value percent-encoded and the pairs joined with `;` — the format the preview reads.
+ */
+export function storyUrlFor(
+  baseUrl: string,
+  storyId: string,
+  globals?: Record<string, string>,
+): string {
+  const pairs = Object.entries(globals ?? {}).map(
+    ([key, value]) => `${encodeURIComponent(key)}:${encodeURIComponent(value)}`,
+  );
+  return (
+    `${baseUrl.replace(/\/$/, '')}/iframe.html?viewMode=story&id=${encodeURIComponent(storyId)}` +
+    (pairs.length > 0 ? `&globals=${pairs.join(';')}` : '')
+  );
 }
 
 export class StoryRenderError extends Error {
