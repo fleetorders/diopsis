@@ -2,7 +2,13 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 
 import { loadConfig } from '../config.ts';
-import { platformToken, resolveMatrix, type Capture, type ResolvedMatrix } from '../matrix.ts';
+import {
+  loosenedStoryIds,
+  platformToken,
+  resolveMatrix,
+  type Capture,
+  type ResolvedMatrix,
+} from '../matrix.ts';
 import { distRoot, generateProject, projectDir } from '../runner/generate.ts';
 import { runPlaywright } from '../runner/execute.ts';
 import { serveStatic } from '../server.ts';
@@ -29,6 +35,39 @@ export function headerLine(captures: Capture[], grep: string | undefined): strin
   const captured = new Set(captures.map((capture) => capture.storyId)).size;
   const matched = grep ? ` (matched "${grep}")` : '';
   return `Diopsis · ${captured} stories → ${captures.length} captures${matched} · ${platformToken()}`;
+}
+
+/**
+ * The whole header block: what the run will capture, in the settings that shaped it. The
+ * loosened line is the visible half of per-story tolerance — a story comparing more
+ * loosely than the config is a deliberate exception, and an exception is only safe while
+ * someone can see it.
+ */
+export function headerBlock(input: {
+  captures: Capture[];
+  grep?: string;
+  /** Config source as shown to the user — a relative path, or 'defaults (no config file)'. */
+  configSource: string;
+  storybookDir: string;
+  snapshotDir: string;
+  skipped: string[];
+  unwatched: string[];
+  loosened: string[];
+}): string {
+  return (
+    `${headerLine(input.captures, input.grep)}\n` +
+    `  config    ${input.configSource}\n` +
+    `  storybook ${input.storybookDir}\n` +
+    `  baselines ${input.snapshotDir}\n` +
+    (input.skipped.length ? `  skipped   ${input.skipped.length} stories (diopsis:skip)\n` : '') +
+    (input.unwatched.length
+      ? `  unwatched ${input.unwatched.length} stories (no widths: viewports.default is empty)\n`
+      : '') +
+    (input.loosened.length
+      ? `  loosened  ${input.loosened.length} ${input.loosened.length === 1 ? 'story' : 'stories'} (diopsis:threshold / max-diff-* tags)\n`
+      : '') +
+    '\n'
+  );
 }
 
 /**
@@ -106,15 +145,16 @@ export async function runCommand(options: RunOptions): Promise<number> {
   // Captures, not stories: a viewport matrix multiplies, and every cost that matters —
   // runtime, repository weight, review effort — scales with captures (DECISIONS.md §3).
   process.stdout.write(
-    `${headerLine(captures, options.grep)}\n` +
-      `  config    ${filepath ? path.relative(options.root, filepath) : 'defaults (no config file)'}\n` +
-      `  storybook ${config.storybookDir}\n` +
-      `  baselines ${config.snapshotDir}\n` +
-      (matrix.skipped.length ? `  skipped   ${matrix.skipped.length} stories (diopsis:skip)\n` : '') +
-      (matrix.unwatched.length
-        ? `  unwatched ${matrix.unwatched.length} stories (no widths: viewports.default is empty)\n`
-        : '') +
-      '\n',
+    headerBlock({
+      captures,
+      ...(options.grep ? { grep: options.grep } : {}),
+      configSource: filepath ? path.relative(options.root, filepath) : 'defaults (no config file)',
+      storybookDir: config.storybookDir,
+      snapshotDir: config.snapshotDir,
+      skipped: matrix.skipped,
+      unwatched: matrix.unwatched,
+      loosened: loosenedStoryIds(captures, config.compare),
+    }),
   );
 
   const server = await serveStatic(storybookDir);

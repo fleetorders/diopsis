@@ -722,3 +722,26 @@ the same data as the detail views. A wide capture is small in a tile; the tile s
 change is, and the detail view is where it is inspected.
 
 **Scope:** repo.
+
+## D-028 — 2026-09-27 — Per-story tolerance through tags, and never silently
+
+**Decision:** A story can set its own comparison with `diopsis:threshold=<0–1>`,
+`diopsis:max-diff-ratio=<0–1>` and `diopsis:max-diff-pixels=<n>`, and the config gains
+`compare.maxDiffPixels`. A story that sets either count-based limit replaces both configured
+ones for that story; its threshold replaces the configured threshold on its own. The effective
+comparison is resolved once when the plan is written, so the spec runs exactly what
+`summary.json` records. `run` counts, and `doctor` names, every story that compares more
+loosely than the config, judged by what each lets through at that capture's viewport.
+
+**Why:** per-story settings must come from tags, because the index serialises tags and not
+parameters (§8). Playwright applies the stricter of a pixel count and a ratio when both are
+given, and the configured ratio is always set — so merging a story's pixel count over it could
+only ever tighten the check, and a tag meant to tolerate a noisy chart would have done nothing.
+Tolerance is also where a suite rots quietly: a loosened story nobody can see becomes the
+default, so every loosening is reported where the run and the audit are read.
+
+**Consequences:** a malformed tolerance value warns and is ignored rather than failing the run.
+A story that sets only a pixel count is no longer bounded by the configured ratio, which is the
+point; `doctor` is where that is seen.
+
+**Scope:** repo.

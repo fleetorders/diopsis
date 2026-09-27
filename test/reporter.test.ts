@@ -23,11 +23,13 @@ afterEach(async () => {
   await Promise.all(temporaries.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
-async function setup(): Promise<{ reporter: DiopsisReporter; outputDir: string }> {
+async function setup(
+  withStories: StoryEntry[] = stories,
+): Promise<{ reporter: DiopsisReporter; outputDir: string }> {
   const root = await mkdtemp(path.join(tmpdir(), 'diopsis-reporter-'));
   temporaries.push(root);
   const config = resolveConfig();
-  const { captures } = resolveMatrix(stories, config, 'linux-x64');
+  const { captures } = resolveMatrix(withStories, config, 'linux-x64');
   const planned = planCaptures(captures, path.join(root, '__screenshots__'));
   const outputDir = path.join(root, '.diopsis');
   await mkdir(outputDir, { recursive: true });
@@ -177,5 +179,29 @@ describe('DiopsisReporter', () => {
       Number.prototype.toLocaleString = original;
     }
     assert.match(out, /~ a--one @320  1,234,567 px differ/);
+  });
+});
+
+describe('DiopsisReporter per-story tolerance', () => {
+  it('records the tolerance in effect, and only for the stories that set one', async () => {
+    const { reporter, outputDir } = await setup([
+      { id: 'a--one', name: 'One', title: 'A', tags: ['diopsis:threshold=0.4'] },
+      { id: 'b--two', name: 'Two', title: 'B', tags: [] },
+    ]);
+    await withCapturedStdout(async () => {
+      reporter.onTestEnd(testTitled('a--one @320'), result({}));
+      reporter.onTestEnd(testTitled('b--two @320'), result({}));
+      await reporter.onEnd({ status: 'passed' } as FullResult);
+    });
+
+    const summary = await summaryAt(outputDir);
+    assert.deepEqual(
+      summary.captures.find((c) => c.storyId === 'a--one' && c.width === 320)?.tolerance,
+      { threshold: 0.4 },
+    );
+    assert.equal(
+      summary.captures.find((c) => c.storyId === 'b--two' && c.width === 320)?.tolerance,
+      undefined,
+    );
   });
 });

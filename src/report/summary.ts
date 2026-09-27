@@ -1,3 +1,4 @@
+import type { CompareOptions } from '../config.ts';
 import type { PlannedCapture } from '../runner/generate.ts';
 
 /**
@@ -29,6 +30,8 @@ export interface CaptureResult {
   status: CaptureStatus;
   /** Baseline location, relative to the configured snapshot directory. */
   snapshotPath: string;
+  /** Tolerance overrides in effect for this capture; present only when its story set them. */
+  tolerance?: Partial<CompareOptions>;
   /** Differing pixel count, when the comparator reported one. */
   diffPixels?: number;
   /** Differing pixels as a share of the image. */
