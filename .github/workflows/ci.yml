@@ -47,16 +47,12 @@ jobs:
       # The fixture needs no Storybook install; doctor reads its index and counts captures.
       - name: doctor against the committed fixture
         working-directory: test/fixtures
-        # Written to a file first so doctor's own exit status fails the step, then read as JSON
-        # so the assertion does not depend on how the human-readable output is laid out.
+        # Written to a file first so doctor's own exit status fails the step; the assertions
+        # live in a committed script so CI and a local run read the JSON the same way, and
+        # they hold on the structured counts, never on the human-readable title.
         run: |
           node ../../dist/cli.js doctor --json > "$RUNNER_TEMP/doctor.json"
-          node -e '
-            const r = require(process.argv[1]);
-            if (!r.ok) throw new Error("doctor reported a failure");
-            if (!r.checks.some((c) => c.level === "ok" && c.title === "5 stories → 7 captures"))
-              throw new Error("expected 5 stories → 7 captures");
-          ' "$RUNNER_TEMP/doctor.json"
+          node ../../scripts/verify-doctor.mjs "$RUNNER_TEMP/doctor.json" 5 7
 
   # The report and the capture waits are client-side behaviour that only a real browser shows.
   # Locally these run from the pre-commit hook when their sources change; here they run always.
