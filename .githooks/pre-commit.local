@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 # Machine-local companion checks, when this machine has any: local/hooks/pre-commit at the main
 # checkout's root, gitignored and never tracked. It runs first, with this hook's arguments and
-# stdin; a contributor without one proceeds exactly as before. (published-surface stub)
+# stdin; a contributor without one proceeds exactly as before.
 COMMON_DIR=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || COMMON_DIR=""
 COMPANION="${COMMON_DIR%/.git}/local/hooks/pre-commit"
 if [ -n "$COMMON_DIR" ] && [ -x "$COMPANION" ]; then

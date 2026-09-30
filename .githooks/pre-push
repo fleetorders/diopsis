@@ -29,7 +29,7 @@ run_gate npm run test || exit 1
 # script added later is covered without regenerating this hook. The commits BEING PUSHED are
 # the bytes that ship, so each script is read as its raw blob from git's object store —
 # never the working tree (wrong in both directions: a fixed tree let an unfixed commit ship, and
-# a dirty tree shared by several sessions blocked an unrelated push) and never the tip alone (a
+# uncommitted edits in the tree blocked an unrelated push) and never the tip alone (a
 # bad commit under a clean tip shipped while the gate read only the tip's fix). The classifier
 # is discover-shell-scripts.sh beside this hook — tracked and shebanged like what it classifies,
 # so the scan it implements finds and checks it too. zsh is NOT in the checked set:
@@ -268,4 +268,4 @@ if [ -x "$GATE" ]; then
 fi
 
 exit 0
-# etymd:generated pack-v18 6ccf14e67f365ad8
+# etymd:generated pack-v18 7dab1bf99f20932a
