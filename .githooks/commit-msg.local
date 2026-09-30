@@ -1,8 +1,11 @@
 #!/usr/bin/env sh
-# Semantic disclosure review of the commit message, beside the pattern screen. The screen
-# matches literal patterns, so it catches names; it cannot catch a leaky DESCRIPTION — that
-# needs a reviewer reading the text. Resolved from PATH, no-op when absent: this file carries
-# no policy and is safe on any clone.
-GATE=$(command -v disclosure-gate || true)
-[ -x "$GATE" ] && exec "$GATE" --message "$1"
+# Machine-local companion checks, when this machine has any: local/hooks/commit-msg at the main
+# checkout's root, gitignored and never tracked. It runs first, with this hook's arguments and
+# stdin; a contributor without one proceeds exactly as before. (published-surface stub)
+COMMON_DIR=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || COMMON_DIR=""
+COMPANION="${COMMON_DIR%/.git}/local/hooks/commit-msg"
+if [ -n "$COMMON_DIR" ] && [ -x "$COMPANION" ]; then
+  "$COMPANION" "$@" || exit 1
+fi
+
 exit 0

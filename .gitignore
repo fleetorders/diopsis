@@ -16,8 +16,7 @@ coverage/
 # Reproduced from instructions, never committed.
 .validation/
 
-# Session scaffolding — internal, never published.
-# Delete both once v1 builds.
+# Local working notes; never tracked.
 HANDOFF.md
 NEXT-SESSION.md
 
