@@ -142,8 +142,9 @@ export interface RunSummary {
   /** Story ids with at least one capture needing review. */
   changedStories: string[];
   /**
-   * Every capture the run planned, in order — not only the interesting ones. Change-aware
-   * capture (docs/decisions.md, D-036) diffs against this to know what a previous run covered.
+   * Every capture the run shot, in plan order — not only the interesting ones. A change-aware
+   * run (docs/decisions.md, D-036) lists what it did not shoot under `carried`, and diffs
+   * against this to know what a previous run covered.
    */
   captures: CaptureResult[];
   /**

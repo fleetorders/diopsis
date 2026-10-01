@@ -65,7 +65,9 @@ dashboard, or an agent wiring Diopsis into something else reads this, not the te
 | `snapshotDir` | string | The configured baseline directory, as written |
 | `totals` | object | Counts per status, plus `captures` and the distinct `stories` behind them |
 | `changedStories` | string[] | Story ids with at least one capture needing review, sorted. Usually all a bot needs |
-| `captures` | object[] | **Every capture the run planned**, in plan order — not only the interesting ones |
+| `captures` | object[] | **Every capture the run shot**, in plan order — not only the interesting ones. A full run shoots every capture it planned; a change-aware run (`--changed`) shoots the affected ones and lists the rest under `carried` |
+| `carried` | object[] | Change-aware runs only: the planned captures the run did not shoot, each `{ storyId, width, mode?, state? }`; their baselines stand. `totals.carried` counts them |
+| `affected` | object | Change-aware runs only: what the affected set was decided against, `{ base, mergeBase, changedFiles, full? }`; `full` names the reason the run had to shoot the whole matrix |
 
 Per capture: `status` is one of `unchanged`, `changed`, `new`, `render-failed`, `failed`.
 `diffPixels` and `diffRatio` appear only when the comparator reported them. A changed capture
@@ -75,8 +77,9 @@ its render. `error` appears only when something failed, and `artifacts` holds wh
 paths **relative to `outputDir`** so a run stays portable when the directory is moved or
 downloaded from CI.
 
-Two things are deliberate. `captures` lists the full set rather than only the changed ones, so a
-consumer can diff one run's coverage against another's. And `status` is not Playwright's
+Two things are deliberate. `captures` lists every capture the run shot rather than only the changed
+ones, so a consumer can diff one run's coverage against another's; for a change-aware run that
+means reading `captures` and `carried` together. And `status` is not Playwright's
 pass/fail: "a baseline did not exist yet" and "this looks different" both present as a failing
 test and call for opposite responses, so they are separate states here.
 
