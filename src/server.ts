@@ -36,7 +36,7 @@ export interface StaticServer {
  * Minimal static file server for the built Storybook.
  *
  * A dependency would buy nothing here: the surface is one GET handler, and owning it keeps
- * the runtime dependency list at zero (DECISIONS.md §6).
+ * the runtime dependency list at zero (docs/decisions.md, D-015).
  */
 export async function serveStatic(root: string, port = 0): Promise<StaticServer> {
   const absoluteRoot = path.resolve(root);

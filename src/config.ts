@@ -6,7 +6,7 @@ import type { AccessibilityMode } from './accessibility.ts';
 
 /**
  * Stabilization defaults. Every one of these is on by default: a guarantee that has to be
- * switched on is a guarantee most suites never get (DECISIONS.md §3).
+ * switched on is a guarantee most suites never get (docs/decisions.md, D-046).
  */
 export interface StabilizeOptions {
   /** Fixed wall-clock time, ISO-8601. `false` leaves the clock alone. */
@@ -90,12 +90,12 @@ export interface DiopsisConfig {
    * encoded it.
    */
   compress: "off" | "auto";
-  /** `'all'` in v1; `'auto'` (change-aware capture) lands in v2 — DECISIONS.md §4. */
+  /** `'all'` captures every story; `'auto'` is what `run --changed` sets (docs/decisions.md, D-036). */
   affected: 'all' | 'auto';
   /**
    * Audits each story's render with the tested project's axe-core and reports the
    * findings beside the pixels. `'off'` never audits; `'report'` never touches the exit
-   * code; `'fail'` fails a run with new findings like a change (DECISIONS.md D-042).
+   * code; `'fail'` fails a run with new findings like a change (docs/decisions.md, D-042).
    */
   accessibility: AccessibilityMode;
   /** Per-capture timeout in ms. */

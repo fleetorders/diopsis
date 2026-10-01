@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   # The suite runs TypeScript directly through Node's type stripping, so it needs Node 22.
   # Windows is here because path handling is where a POSIX-only bug would hide.

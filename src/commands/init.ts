@@ -5,6 +5,7 @@ import path from 'node:path';
 import {
   defaultConfig,
   findConfigFile,
+  formatBytes,
   loadConfig,
   supportsTypeStripping,
   type DiopsisConfig,
@@ -27,12 +28,6 @@ export interface InitOptions {
  * stories, and `doctor` reports it once there is something to weigh.
  */
 const ESTIMATED_BYTES_PER_CAPTURE = 80 * 1024;
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
 
 /** Top-level fields the template writes in its own commented layout. */
 const TEMPLATE_FIELDS = new Set<string>([

@@ -164,14 +164,14 @@ describe('resolveMatrix', () => {
     assert.deepEqual(matrix.skipped, ['c--gone']);
   });
 
-  it('returns the full set as plain data, so a v2 filter is all that is needed', () => {
+  it('returns the full set as plain data, so a change-aware filter is all that is needed', () => {
     assert.deepEqual(
       matrix.captures.map((c) => c.snapshotPath),
       ['a--one/320w-linux-x64.png', 'a--one/1280w-linux-x64.png', 'b--wide/1280w-linux-x64.png'],
     );
   });
 
-  it('carries the story metadata a report and a v2 resolver both need', () => {
+  it('carries the story metadata a report and the change-aware resolver both need', () => {
     const first = matrix.captures[0];
     assert.equal(first?.storyId, 'a--one');
     assert.equal(first?.height, 900);

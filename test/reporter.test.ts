@@ -8,7 +8,7 @@ import { deflateSync } from 'node:zlib';
 
 import { resolveConfig } from '../src/config.ts';
 import { resolveMatrix } from '../src/matrix.ts';
-import DiopsisReporter, { type DiopsisReporterOptions } from '../src/reporter.ts';
+import DiopsisReporter, { errorTextOf, type DiopsisReporterOptions } from '../src/reporter.ts';
 import { NOT_RUN, type RunSummary } from '../src/report/summary.ts';
 import { planCaptures } from '../src/runner/generate.ts';
 import type { StoryEntry } from '../src/story-index.ts';
@@ -367,8 +367,7 @@ describe('DiopsisReporter changed regions', () => {
 });
 
 describe('error text', () => {
-  it('keeps the message once and drops stack frames', async () => {
-    const { errorTextOf } = await import('../src/reporter.ts');
+  it('keeps the message once and drops stack frames', () => {
     const text = errorTextOf({
       status: 'failed',
       errors: [

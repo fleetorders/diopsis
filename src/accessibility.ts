@@ -5,7 +5,7 @@ import path from 'node:path';
 /**
  * What Diopsis does with the audit's findings. `'off'` never audits; `'report'` records
  * findings and never touches the exit code; `'fail'` makes a new finding fail the capture
- * like a change (DECISIONS.md D-042).
+ * like a change (docs/decisions.md, D-042).
  */
 export type AccessibilityMode = 'off' | 'report' | 'fail';
 
@@ -42,7 +42,7 @@ export const AXE_MISSING_MESSAGE =
 
 /**
  * Locate the tested project's axe-core. The library is an optional peer dependency
- * (DECISIONS.md D-041): it is resolved from the project being tested, never bundled, and
+ * (docs/decisions.md, D-041): it is resolved from the project being tested, never bundled, and
  * a project that has not installed it gets one line saying exactly what to install.
  */
 export function resolveAxePath(root: string): string {

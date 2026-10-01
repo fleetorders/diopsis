@@ -248,9 +248,6 @@ main { padding: 14px 18px 56px; }
 .thumb { display: block; height: 160px; overflow: hidden; border-radius: 5px;
   background: var(--matte-alt); }
 .thumb img { display: block; width: 100%; height: auto; }
-/* A changed capture with regions crops its tile to the largest one: inline width and
-   offsets make the image deliberately wider than the tile and shifted so the region
-   fills the frame, and the thumb's overflow clips the rest. */
 .thumb.text { display: flex; align-items: center; justify-content: center; }
 .tile-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .tile-title { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden;
@@ -291,7 +288,7 @@ main { padding: 14px 18px 56px; }
 .badge.s-removed::before { display: none; }
 /* Unstable is not a status: the capture passed, so none of the palette colours speak for
    it. A muted, outlined badge marks what the run saw without joining the status
-   vocabulary (D-020: a colour means one kind of thing). */
+   vocabulary (docs/decisions.md, D-020: a colour means one kind of thing). */
 .badge.unstable { color: var(--muted); border: 1px solid var(--line); border-radius: 5px;
   padding: 1px 7px; }
 .badge.unstable::before { display: none; }
@@ -358,7 +355,7 @@ main { padding: 14px 18px 56px; }
 /* The overlay's region boxes sit on the diff, placed in percentages of its natural size
    so a box stays on its pixels at fit and at actual size alike. Outlined, never filled —
    the diff underneath is the evidence. The border is the status colour because every box
-   is a change; the accent joins only to mark the one a jump selected (D-020). */
+   is a change; the accent joins only to mark the one a jump selected (docs/decisions.md, D-020). */
 .diffwrap { position: relative; line-height: 0; width: fit-content; max-width: 100%; }
 /* The box layer is the wrapper's box, so the wrapper needs the same release to the full
    image the image itself gets at actual size, or the percentages resolve against a
@@ -376,7 +373,7 @@ input[type=range] { display: block; width: 100%; margin-top: 9px; accent-color: 
   margin-top: 10px; }
 /* Accessibility findings are a second verdict beside the pixels, not a status: nothing in
    them takes a colour of its own — impact reads as plain text, and "new" is an outlined
-   marker, so colour still means exactly one thing at a time (D-020). */
+   marker, so colour still means exactly one thing at a time (docs/decisions.md, D-020). */
 .a11y { margin-top: 10px; }
 .a11y ul { margin: 0; padding: 0; list-style: none; }
 .a11y-rule { display: flex; flex-direction: column; gap: 3px; }
@@ -699,7 +696,7 @@ function truncatedNote(capture, parent) {
 
 /* The audit's findings, beside the pixels: each rule with its impact and its help, and
    every element it failed on. Impact is plain text and "new" an outlined marker, so colour
-   keeps meaning status alone (D-020). */
+   keeps meaning status alone (docs/decisions.md, D-020). */
 function a11yList(a11y) {
   const wrap = document.createElement('div');
   wrap.className = 'a11y';

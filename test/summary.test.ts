@@ -7,6 +7,7 @@ import {
   changedStoriesOf,
   classify,
   needsReview,
+  NOT_RUN,
   totalsFor,
   type CaptureResult,
 } from '../src/report/summary.ts';
@@ -157,8 +158,6 @@ describe('stripAnsi', () => {
     assert.equal(stripAnsi('6798 pixels are different'), '6798 pixels are different');
   });
 });
-
-import { NOT_RUN } from '../src/report/summary.ts';
 
 describe('classify with the baseline annotation', () => {
   const NONE_VARIANT =

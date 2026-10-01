@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, it } from 'node:test';
+import { afterEach, describe, it } from 'node:test';
 
 import { parseStoryIndex, readStoryIndex } from '../src/story-index.ts';
 
@@ -114,10 +116,6 @@ describe('readStoryIndex', () => {
     await assert.rejects(() => readStoryIndex(fixtures), /No story index/);
   });
 });
-
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { afterEach } from 'node:test';
 
 const invalidTemporaries: string[] = [];
 

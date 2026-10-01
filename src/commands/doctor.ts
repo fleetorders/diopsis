@@ -29,7 +29,7 @@ export interface DoctorOptions {
   json?: boolean;
 }
 
-/** Any `data-…-ignore` attribute that is not ours — an unfinished migration (D-008). */
+/** Any `data-…-ignore` attribute that is not ours — an unfinished migration (docs/decisions.md, D-008). */
 const FOREIGN_IGNORE = /data-([a-z0-9-]+)-ignore\b/g;
 
 export function findForeignIgnoreAttributes(source: string): string[] {
@@ -124,7 +124,7 @@ export function installedPlaywrightVersion(root: string): string | undefined {
  * Audit a setup for the misconfigurations that silently invalidate a baseline set.
  *
  * This is the command that turns the guarantees in the design into guardrails rather than
- * documentation (DECISIONS.md §6): each of these costs a run, or a false green, when missed.
+ * documentation (docs/decisions.md, D-026): each of these costs a run, or a false green, when missed.
  */
 export async function runChecks(options: DoctorOptions): Promise<Check[]> {
   const checks: Check[] = [];

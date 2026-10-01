@@ -5,9 +5,8 @@
 // browser has parsed it, so `node --test` can assert that the string was emitted and nothing
 // more. This renders a report from a synthetic run, opens it, and drives it.
 //
-// Wire it into the moment it protects:
-//   .githooks/pre-commit.local → runs only when src/report/ is staged
-//   npm run check:report       → by hand, any time
+// Where it runs: CI on every push; the local pre-commit runner when src/report/ or this
+// script is staged; `npm run check:report` by hand, any time.
 //
 // Bypass is deliberate and loud: REPORT_CHECK_SKIP=1.
 
@@ -206,7 +205,7 @@ await page.keyboard.press('ArrowRight');
 check('an arrow drives the swipe',
   before !== (await page.locator('.capture.current input[type=range]').inputValue()));
 
-// Neither render is stretched onto the other's box when their heights differ (DECISIONS.md
+// Neither render is stretched onto the other's box when their heights differ (docs/decisions.md,
 // D-020). This names the story holding the mismatched pair rather than trusting wherever the
 // cursor happened to stop.
 await page.locator('#story-card--default').getByRole('button', { name: 'Swipe' }).first().click();
@@ -246,7 +245,7 @@ const sliverBar = await page.locator('#story-card--sliver .w').textContent();
 check('a sub-hundredth change keeps a non-zero share',
   sliverBar.includes('%') && !sliverBar.includes('0.00%'));
 
-// A new capture is one column, not a comparison (DECISIONS.md D-021). Its result carries both
+// A new capture is one column, not a comparison (docs/decisions.md, D-021). Its result carries both
 // an actual and a freshly written baseline reference, and showing the two — identical — images
 // side by side read as a difference that does not exist.
 const newStory = page.locator('#story-card--brand-new');

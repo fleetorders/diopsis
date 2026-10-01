@@ -19,7 +19,7 @@ const repoRoot = fileURLToPath(new URL('..', import.meta.url));
  *
  * The throwaway project lives under the repo's `node_modules` for the same reason the
  * generated one does: the peer `@playwright/test` resolves by ordinary upward lookup
- * (DECISIONS.md D-012). Its test touches no Playwright fixture, so no browser is launched —
+ * (docs/decisions.md, D-012). Its test touches no Playwright fixture, so no browser is launched —
  * the check costs a second, not a browser download.
  */
 describe('runPlaywright exit code', () => {

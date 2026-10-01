@@ -5,10 +5,8 @@ coverage/
 *.log
 .DS_Store
 
-# Local tooling state (may embed absolute paths). The config is the exception: it records what
-# this repo asks its gates to do, so it has to travel with the repo — a gate choice that lives
-# on one machine is a gate everyone else silently does not have. The `/*` form is required;
-# git will not re-include a file underneath an excluded directory.
+# State written by the git-hook generator named in the README; only its config travels with the
+# repo. The `/*` form is required: git will not re-include a file under an excluded directory.
 .etymd/*
 !.etymd/config.json
 
@@ -16,10 +14,6 @@ coverage/
 # Reproduced from instructions, never committed.
 .validation/
 
-# Local working notes; never tracked.
-HANDOFF.md
-NEXT-SESSION.md
-
-# Machine-local companion hooks and scratch; never tracked. Anchored to the root
-# so a directory named local deeper in the tree cannot silently become untrackable.
+# Machine-local companion hooks, run by the tracked `.githooks/*.local` runners; never tracked.
+# Anchored to the root so a directory named local deeper in the tree stays trackable.
 /local/
