@@ -1,22 +1,16 @@
 #!/usr/bin/env sh
-# Screen what this push publishes: branch and tag names, tag and commit messages, and the
-# tracked hooks, scripts and package manifest. The checker is resolved by name from PATH;
-# where it is not installed there is no check, never a failure. (published-surface stub)
-GUARD=$(command -v public-surface-guard || true)
-if [ -x "$GUARD" ]; then
-  "$GUARD" --pre-push "$@" || exit 1
-fi
-
-# Machine-local companion checks, when this machine has any. The companion lives in the
-# untracked local/ tree at the repo root; which checks it runs is deliberately not
-# enumerated here, so a contributor without one pushes exactly as before. Contract: it
-# runs after the screen, receives the same arguments, and gets no ref stream — the screen
-# above has already read stdin to EOF.
-ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)
-if [ -n "$ROOT" ] && [ -x "$ROOT/local/hooks/pre-push" ]; then
-  "$ROOT/local/hooks/pre-push" "$@" || exit 1
-elif [ -e "$ROOT/local/hooks/pre-push" ]; then
-  echo "warning: local/hooks/pre-push exists but is not executable — skipped" >&2
+# Machine-local companion checks, when this machine has any: local/hooks/pre-push at the main
+# checkout's root, gitignored and never tracked. It gets this hook's arguments AND the ref list
+# on stdin, unread — nothing here consumes either first, so a companion that screens what the
+# push publishes sees every ref. A checkout without a companion tree runs no extra checks: what
+# it would run is private to the machine that wrote it. (published-surface stub)
+COMMON_DIR=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || COMMON_DIR=""
+# The companion path derivation, and the layouts it covers, are documented in commit-msg.local.
+COMPANION="${COMMON_DIR%/.git}/local/hooks/pre-push"
+if [ -x "$COMPANION" ]; then
+  "$COMPANION" "$@" || exit 1
+elif [ -e "$COMPANION" ]; then
+  echo "warning: $COMPANION exists but is not executable — skipped" >&2
 fi
 
 exit 0

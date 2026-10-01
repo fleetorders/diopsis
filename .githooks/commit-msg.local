@@ -1,8 +1,21 @@
 #!/usr/bin/env sh
-# Semantic disclosure review of the commit message, beside the pattern screen. The screen
-# matches literal patterns, so it catches names; it cannot catch a leaky DESCRIPTION — that
-# needs a reviewer reading the text. Resolved from PATH, no-op when absent: this file carries
-# no policy and is safe on any clone.
-GATE=$(command -v disclosure-gate || true)
-[ -x "$GATE" ] && exec "$GATE" --message "$1"
+# Machine-local companion checks, when this machine has any: local/hooks/commit-msg at the main
+# checkout's root, gitignored and never tracked. It gets this hook's arguments. A checkout
+# without a companion tree runs no extra checks, and has none to miss: what a companion runs
+# is private to the machine that wrote it. (published-surface stub)
+COMMON_DIR=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || COMMON_DIR=""
+# `${COMMON_DIR%/.git}` names the main checkout's root in the two layouts this repo lives in —
+# a plain clone, and a linked worktree, whose common dir is the main checkout's .git, so the
+# one companion tree serves every worktree. Elsewhere the derivation resolves nowhere and the
+# companion is skipped: a submodule's common dir (.git/modules/…) does not end in /.git, a
+# bare repo has no working tree, and a git older than 2.31 (no --path-format) yields an empty
+# COMMON_DIR — none of those layouts has a companion to find. The warning below covers the one
+# skip that should never be silent: a companion that exists but cannot run.
+COMPANION="${COMMON_DIR%/.git}/local/hooks/commit-msg"
+if [ -x "$COMPANION" ]; then
+  "$COMPANION" "$@" || exit 1
+elif [ -e "$COMPANION" ]; then
+  echo "warning: $COMPANION exists but is not executable — skipped" >&2
+fi
+
 exit 0
