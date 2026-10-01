@@ -7,7 +7,7 @@ import { decodePng } from './png.ts';
 import { displayPath } from './paths.ts';
 
 /**
- * Lossless baseline recompression (DECISIONS.md D-043).
+ * Lossless baseline recompression (docs/decisions.md, D-043).
  *
  * Every baseline `update` and `accept` writes is encoded by the browser's PNG encoder,
  * which leaves room on the table. With `compress: 'auto'`, each written baseline is handed

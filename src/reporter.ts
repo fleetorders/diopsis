@@ -162,7 +162,7 @@ function notRunCapture(planned: PlannedCapture): CaptureResult {
  *
  * A reporter is the smallest stable extension point that sees every result, which is what
  * lets Diopsis delegate the runner and still own the part that is differentiated
- * (DECISIONS.md §2).
+ * (docs/decisions.md, D-045).
  */
 export default class DiopsisReporter implements Reporter {
   private readonly options: DiopsisReporterOptions;

@@ -13,7 +13,7 @@ import { CONFIG_FILENAMES } from './config.ts';
  * files a diff names, under one rule that outlives every edge case: whatever cannot be
  * proven affected is captured. A graph that does not describe this build, a changed file
  * the graph does not know, a missing stats file — each degrades to a full run, never to a
- * skip (DECISIONS.md §4).
+ * skip (docs/decisions.md, D-036).
  */
 
 /** One module of the stats file, as the Vite and the Webpack builder both write it. */

@@ -6,7 +6,7 @@ import type { PlannedCapture } from '../runner/generate.ts';
 /**
  * Outcome of one capture.
  *
- * These are the states a reviewer filters by (DECISIONS.md §5); they are deliberately not
+ * These are the states a reviewer filters by (docs/decisions.md, D-048); they are deliberately not
  * Playwright's pass/fail, because "a baseline did not exist yet" and "this looks different"
  * both present as a failing test and need entirely different responses. `removed` is the
  * diff report's own: the branch deleted this baseline, so there is a "was" and no "is".
@@ -142,8 +142,9 @@ export interface RunSummary {
   /** Story ids with at least one capture needing review. */
   changedStories: string[];
   /**
-   * Every capture the run planned, in order — not only the interesting ones. Change-aware
-   * capture (v2, DECISIONS.md §4) diffs against this to know what a previous run covered.
+   * Every capture the run shot, in plan order — not only the interesting ones. A change-aware
+   * run (docs/decisions.md, D-036) lists what it did not shoot under `carried`, and diffs
+   * against this to know what a previous run covered.
    */
   captures: CaptureResult[];
   /**

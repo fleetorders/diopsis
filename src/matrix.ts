@@ -4,7 +4,7 @@ import type { StoryEntry } from './story-index.ts';
 /**
  * An interaction state a story is photographed in: one element hovered, focused or pressed,
  * held by the browser itself for the shutter. Play functions cover scripted interactions
- * (DECISIONS.md D-031); this is for the pointer and keyboard states a play function cannot
+ * (docs/decisions.md, D-031); this is for the pointer and keyboard states a play function cannot
  * still be holding when the screenshot is taken.
  */
 export interface InteractionState {
@@ -35,7 +35,7 @@ export interface Capture {
   /**
    * This capture is the accessibility audit's slot for its story and mode: the first
    * width, never an interaction state. The audit runs here and only here — once per
-   * story and mode — when the config switches it on (DECISIONS.md D-042).
+   * story and mode — when the config switches it on (docs/decisions.md, D-042).
    */
   a11y?: true;
   /** Comparison overrides the story's tags set; only the keys a tag actually carried. */
@@ -58,7 +58,7 @@ const TAG_PREFIX = 'diopsis:';
 
 /**
  * The tolerance directives: `diopsis:<key>=<value>`, overriding the comparison for one
- * story through the same channel as the widths (DECISIONS.md §8/D-014 — the index
+ * story through the same channel as the widths (docs/decisions.md, D-047 — the index
  * serialises tags, so tags are the only per-story setting that cannot drift). They are not
  * widths and never take part in width resolution.
  */
@@ -375,7 +375,7 @@ export function parseSnapshotPath(relative: string): ParsedSnapshotPath | undefi
  * Widths for one story.
  *
  * Overrides come from story tags rather than a hand-maintained map: the index serializes
- * `tags` but not `parameters`, so any external map drifts silently (DECISIONS.md §8). A tag
+ * `tags` but not `parameters`, so any external map drifts silently (docs/decisions.md, D-047). A tag
  * is either a literal width (`diopsis:1280`) or the name of a viewport set (`diopsis:mobile`);
  * tolerance tags (`diopsis:threshold=…`) name comparison knobs instead and are resolved by
  * `toleranceForStory`.
@@ -436,7 +436,7 @@ export function widthsForStory(
 /**
  * Expand stories into the full capture set.
  *
- * Returned as plain data, unfiltered, so change-aware capture (v2, DECISIONS.md §4) adds a
+ * Returned as plain data, unfiltered, so change-aware capture (docs/decisions.md, D-036) is a
  * filter over this list rather than a second resolver.
  */
 export function resolveMatrix(

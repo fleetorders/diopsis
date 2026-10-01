@@ -48,7 +48,7 @@ export class StoryRenderError extends Error {
  * Everything that must be in place *before* the story navigates.
  *
  * The clock is fixed rather than masked: a mask hides content from review and still fails the
- * diff when its bounding box moves, so time is made deterministic instead (DECISIONS.md §3).
+ * diff when its bounding box moves, so time is made deterministic instead (docs/decisions.md, D-046).
  * `page.clock` is a property, not a method.
  */
 export async function preparePage(page: Page, options: StabilizeOptions): Promise<void> {
@@ -589,10 +589,10 @@ interface RawAxeResult {
 /**
  * Audit the story's render root and return the violations a review needs: the rule, its
  * impact, its help text, and where it failed. The library is the tested project's own
- * axe-core (DECISIONS.md D-041), injected as source because the page is served from a
+ * axe-core (docs/decisions.md, D-041), injected as source because the page is served from a
  * static build with no way to import it; injected here rather than at navigation time
  * because the audit runs after the screenshot, so nothing it does can touch the pixels
- * the comparison just judged (DECISIONS.md D-042).
+ * the comparison just judged (docs/decisions.md, D-042).
  */
 export async function auditAccessibility(page: Page, axeSource: string): Promise<RawA11yViolation[]> {
   await page.addScriptTag({ content: axeSource });

@@ -11,6 +11,8 @@ import {
   parseSize,
   resolveConfig,
   supportsTypeStripping,
+  validateConfig,
+  type DiopsisConfig,
   type UserConfig,
 } from '../src/config.ts';
 
@@ -152,8 +154,6 @@ describe('loadConfig', () => {
     await assert.rejects(() => loadConfig(dir), /default export/);
   });
 });
-
-import { validateConfig, type DiopsisConfig } from '../src/config.ts';
 
 describe('validateConfig', () => {
   function configWith(over: {
@@ -351,6 +351,11 @@ describe('validateConfig', () => {
     assert.equal(problems.length, 1);
     assert.match(problems[0] ?? '', /stabilize\.waitForPlay must be true or false \(got "yes"\)/);
   });
+
+  it('accepts the budget key through the public UserConfig type', () => {
+    const user: UserConfig = { budget: { weight: '25 MB' } };
+    assert.deepEqual(resolveConfig(user).budget, { weight: '25 MB' });
+  });
 });
 
 describe('loadConfig validation', () => {
@@ -437,11 +442,6 @@ describe('validateConfig modes', () => {
     assert.match(problems[1] ?? '', /modes\.dark\.theme must be a non-empty string/);
     assert.match(problems[2] ?? '', /modes\.dark: globals keys must be non-empty.*":".*";"/);
     assert.match(problems[3] ?? '', /modes\.dark\.locale must be a non-empty string.*"ar;en"/);
-  });
-
-  it('accepts the budget key through the public UserConfig type', () => {
-    const user: UserConfig = { budget: { weight: '25 MB' } };
-    assert.deepEqual(resolveConfig(user).budget, { weight: '25 MB' });
   });
 
   it('accepts the modes key through the public UserConfig type', () => {

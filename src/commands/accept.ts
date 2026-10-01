@@ -45,7 +45,7 @@ function containedPath(base: string, relative: string): string | undefined {
  * Adopt a run's output as the new baseline.
  *
  * Accepting is a file copy followed by a commit — there is no review state to keep anywhere
- * (DECISIONS.md §9), which is what makes the baseline set reviewable in the pull request
+ * (docs/decisions.md, D-048), which is what makes the baseline set reviewable in the pull request
  * rather than in a service.
  */
 export async function acceptCommand(options: AcceptOptions): Promise<number> {

@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { after, before, describe, it } from 'node:test';
+import { after, afterEach, before, describe, it } from 'node:test';
 
 import { serveStatic, storyUrlFor, type StaticServer } from '../src/server.ts';
 
@@ -79,10 +81,6 @@ describe('storyUrlFor', () => {
     assert.match(storyUrlFor('http://x', 'a b&c'), /id=a%20b%26c$/);
   });
 });
-
-import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { afterEach } from 'node:test';
 
 const errorTemporaries: string[] = [];
 

@@ -364,7 +364,7 @@ export async function runCommand(options: RunOptions): Promise<number> {
   }
 
   // The audit's library is the tested project's own, resolved before anything runs so a
-  // missing install costs one line and no browser (DECISIONS.md D-041).
+  // missing install costs one line and no browser (docs/decisions.md, D-041).
   let axePath: string | undefined;
   if (config.accessibility !== 'off') {
     try {
@@ -540,7 +540,7 @@ export async function runCommand(options: RunOptions): Promise<number> {
     : planned;
 
   // Captures, not stories: a viewport matrix multiplies, and every cost that matters —
-  // runtime, repository weight, review effort — scales with captures (DECISIONS.md §3).
+  // runtime, repository weight, review effort — scales with captures (docs/decisions.md, D-046).
   process.stdout.write(
     headerBlock({
       captures: runCaptures,
