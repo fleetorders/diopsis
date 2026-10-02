@@ -21,6 +21,9 @@ export interface Check {
   level: Level;
   title: string;
   detail?: string;
+  /** On the story-count check only: the numbers its title spells out, so a script can
+   *  assert them without matching display text. */
+  counts?: { stories: number; captures: number };
 }
 
 export interface DoctorOptions {
@@ -235,6 +238,7 @@ export async function runChecks(options: DoctorOptions): Promise<Check[]> {
       checks.push({
         level: 'ok',
         title: `${stories.length} stories → ${captureCount} captures`,
+        counts: { stories: stories.length, captures: captureCount },
         detail:
           `Widths ${Object.entries(config.viewports)
             .map(([name, widths]) => `${name}: ${widths.join(', ')}`)
@@ -516,9 +520,15 @@ export async function doctorCommand(options: DoctorOptions): Promise<number> {
     const payload = {
       diopsis: 1,
       ok: failures === 0,
-      checks: checks.map(({ level, title, detail }) =>
-        detail === undefined ? { level, title } : { level, title, detail },
-      ),
+      checks: checks.map(({ level, title, detail, counts }) => {
+        const entry: { level: Level; title: string; detail?: string; counts?: Check['counts'] } = {
+          level,
+          title,
+        };
+        if (detail !== undefined) entry.detail = detail;
+        if (counts !== undefined) entry.counts = counts;
+        return entry;
+      }),
     };
     process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
     return failures > 0 ? 1 : 0;

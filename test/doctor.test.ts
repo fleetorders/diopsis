@@ -425,6 +425,20 @@ describe('doctorCommand --json', () => {
     }
     assert.equal(payload.ok, code === 0);
   });
+
+  it('carries the story and capture counts as numbers, not only inside the title', async () => {
+    const root = await project();
+    const { out } = await captureStdout(() => doctorCommand({ root, json: true }));
+    const start = out.indexOf('{\n  "diopsis": 1');
+    const end = out.indexOf('\n}', start) + 2;
+    const payload = JSON.parse(out.slice(start, end)) as {
+      checks?: Array<{ level: string; counts?: { stories: number; captures: number } }>;
+    };
+    const withCounts = (payload.checks ?? []).filter((check) => check.counts !== undefined);
+    assert.equal(withCounts.length, 1);
+    assert.equal(withCounts[0]?.level, 'ok');
+    assert.deepEqual(withCounts[0]?.counts, { stories: 5, captures: 7 });
+  });
 });
 
 describe('initCommand --force with an existing config', () => {
