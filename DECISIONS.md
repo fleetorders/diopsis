@@ -583,3 +583,29 @@ rendering branches on the capture's status rather than on which artifacts happen
 present, so a result carrying both references still shows one column.
 
 **Scope:** repo.
+
+## D-022 — 2026-09-24 — Agent instructions live in AGENTS.md alone; no CLAUDE.md pointer
+
+**Decision:** the repository ships one instruction file, `AGENTS.md`, and no `CLAUDE.md`.
+The pointer `CLAUDE.md` that re-exported it via `@AGENTS.md` was deleted in b0c24ba.
+
+**Why:** Claude Code has read `AGENTS.md` natively since 2.1.277 — "in a project with no
+CLAUDE.md, Claude Code reads AGENTS.md instead" (its changelog). One file serves every
+agent; a second file whose only job is to re-export the first is drift surface. The cost is
+explicit: a Claude Code older than 2.1.277 loads no project instructions from this repo,
+silently. Two alternatives were rejected. Keeping the pointer preserves those old clients
+but perpetuates a client-specific artifact to serve outdated versions of one client. A
+`CLAUDE.md → AGENTS.md` symlink keeps name-keyed discovery with zero content drift, but on
+checkouts without symlink support it materialises as a regular file whose content is the
+path `AGENTS.md` — and because `CLAUDE.md` takes precedence over `AGENTS.md`, that one-word
+file then *replaces* the instructions for every client on such a checkout: a silent failure
+strictly worse than the one it avoids.
+
+**Consequences:** contributors on Claude Code older than 2.1.277 get no automatic project
+context and must open `AGENTS.md` themselves. No tracked file names `CLAUDE.md`, so nothing
+dangles after the deletion, and no other tool-specific pointer (`.cursorrules`, `GEMINI.md`,
+`.windsurfrules`) exists at the root — the Claude pointer was the only one, so nothing is
+half-migrated. Should pre-2.1.277 support ever matter, the pointer file is the shape to
+restore, not the symlink.
+
+**Scope:** repo.
