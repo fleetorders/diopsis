@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { displayPath } from './paths.ts';
 
 export interface StoryEntry {
   id: string;
@@ -68,7 +69,9 @@ export function parseStoryIndex(raw: unknown): StoryEntry[] {
     });
   }
 
-  stories.sort((a, b) => a.id.localeCompare(b.id));
+  // Code-unit order rather than locale collation: run order, and the baseline paths derived
+  // from it, must not shift between machines that carry different ICU data.
+  stories.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   return stories;
 }
 
@@ -83,7 +86,18 @@ export async function readStoryIndex(storybookDir: string): Promise<StoryEntry[]
     } catch {
       continue;
     }
-    return parseStoryIndex(JSON.parse(text) as unknown);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch (error) {
+      // A truncated or hand-edited index surfaces as a bare parse error; naming the file
+      // and the remedy saves the user from guessing which candidate file it was.
+      throw new Error(
+        `${displayPath(process.cwd(), file)} is not valid JSON ` +
+          `(${error instanceof Error ? error.message : String(error)}). Rebuild the Storybook.`,
+      );
+    }
+    return parseStoryIndex(parsed);
   }
   throw new Error(
     `No story index in ${storybookDir} (looked for ${tried.join(', ')}). ` +

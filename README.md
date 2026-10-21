@@ -30,11 +30,11 @@ Diopsis · 7 stories → 13 captures · darwin-arm64
 
   8 unchanged · 5 changed
 
-  ~ card--default @320  2,684 px differ
-  ~ card--default @1280  3,150 px differ
-  ~ card--long @320  6,328 px differ
-  ~ card--long @1280  6,212 px differ
-  ~ card--wide-only @1280  3,204 px differ
+  ~ card--default @320  2,092 px differ
+  ~ card--default @1280  1,845 px differ
+  ~ card--long @320  5,914 px differ
+  ~ card--long @1280  5,377 px differ
+  ~ card--wide-only @1280  1,964 px differ
 
   report   .diopsis/report.html
   summary  .diopsis/summary.json
@@ -42,17 +42,18 @@ Diopsis · 7 stories → 13 captures · darwin-arm64
   Accept as the new baseline:  npx diopsis accept
 ```
 
-And when something did change, the report shows you exactly what — baseline beside current
-render, changed stories first:
+And when something did change, the report shows you exactly what — an overview of every
+change, then each one with the changed region outlined, largest change first:
 
 <div align="center">
-  <img src="https://raw.githubusercontent.com/fleetorders/diopsis/main/media/diopsis-report.png" width="920" alt="The Diopsis report: filter chips for changed and unchanged captures, above a story showing its committed baseline and current render side by side">
+  <img src="https://raw.githubusercontent.com/fleetorders/diopsis/main/media/diopsis-report.png" width="920" alt="The Diopsis report: filter chips and a page-wide comparison switch above an overview of five changed captures, then a changed card with the region that moved outlined over the diff">
 </div>
 
-Needs Node 18+, a built static Storybook, and `@playwright/test` as a peer dependency; runs on
+Needs Node 18.11+, a built static Storybook, and `@playwright/test` as a peer dependency; runs on
 macOS, Windows and Linux, but baselines CI will agree with are generated in Linux via Docker.
-Chromium only — no cross-browser matrix, no interaction testing, no accessibility audit, and no
-hosted service of any kind.
+Chromium only — no cross-browser matrix and no interaction testing. An optional accessibility
+audit reports axe-core findings beside the pixels when you install `axe-core`; everything runs
+locally, with no hosted service of any kind.
 
 ## Your first run
 
@@ -70,7 +71,7 @@ From here `npx diopsis run` verifies every story against what you committed.
 
 `@playwright/test` is a **peer** dependency deliberately: browsers are downloaded once, and
 there is never a second copy on a different version. Diopsis itself has zero runtime
-dependencies. Node 18 or newer; a TypeScript config file needs Node 22.18+, where Node can
+dependencies. Node 18.11 or newer; a TypeScript config file needs Node 22.18+, where Node can
 strip types on its own — below that, `diopsis init` writes `diopsis.config.mjs` instead,
 the same object without the annotations.
 
@@ -99,11 +100,13 @@ change afterwards.
 
 | | |
 |---|---|
-| **Captures that do not flake** | A frozen clock, settled fonts and images, animations disabled, locale and timezone pinned — [all on by default](#configuration) |
+| **Captures that do not flake** | A frozen clock, settled fonts, images, network and play functions, animations disabled, locale and timezone pinned — [all on by default](https://github.com/fleetorders/diopsis/blob/main/docs/configuration.md) — and a capture that differs only once is retaken and reported unstable, not changed |
 | **Baselines that cannot collide** | Platform and architecture in every snapshot path, so a local run can never overwrite what CI reads |
-| **A diff you can actually review** | A self-contained HTML report with [four ways to compare](#everyday-use) each pair, largest change first, filterable and keyboard-driven |
+| **A diff you can actually review** | A self-contained HTML report that opens on an overview of every change, outlines where each capture changed, and offers [four ways to compare](#everyday-use) each pair — keyboard-driven, with one command to accept what you reviewed |
+| **Every state you ship** | Widths, [modes](https://github.com/fleetorders/diopsis/blob/main/docs/configuration.md#modes) such as a dark theme or right-to-left, hover, focus and press states, and stories captured after their play functions, each with its own baselines |
+| **Reviewable baselines** | [`diopsis diff`](#everyday-use) renders a branch's baseline changes straight from git, for the pull request that accepts them |
 | **A machine-readable result** | `summary.json` with every capture and changed story id, for your existing CI bot |
-| **Visible cost** | [`diopsis doctor`](#reference) reports capture count, baseline weight and orphans before they become a problem |
+| **Visible cost** | [`diopsis doctor`](#reference) reports capture count and baseline weight against a budget, and `diopsis prune` removes what no capture writes any more |
 | **Nothing to sign up for** | Zero runtime dependencies, no uploads, no account, no dashboard |
 
 ## How it works, in plain words
@@ -163,29 +166,9 @@ export default {
 } satisfies UserConfig;
 ```
 
-### Per-story viewports
-
-Override widths with a story tag rather than a map kept somewhere else — the story index
-serialises `tags` but not `parameters`, so an external map drifts silently and nobody notices.
-
-```ts
-export const WideOnly = { tags: ['diopsis:1280'] };      // this story, at 1280 only
-export const Handheld = { tags: ['diopsis:mobile'] };    // a named set from your config
-export const Untestable = { tags: ['diopsis:skip'] };    // never captured
-```
-
-A tag naming neither a width nor a configured set warns and falls back to the default widths. A
-typo should not quietly stop watching a story.
-
-### Excluding genuinely random pixels
-
-Mark the element with `data-diopsis-ignore` — a map tile, a video, a canvas. That is the only
-ignore attribute Diopsis recognises.
-
-Prefer deleting an annotation to renaming one. Because the clock is frozen, anything that
-existed only to hide a date or a changing year does not need to be masked at all. And a mask is
-weaker than it looks: it hides content from the reviewer, and it still fails the comparison when
-the masked element's own bounding box moves.
+Every key, and the settings a story sets for itself with a tag (widths, modes, hover and focus
+states, tolerance, skipping), are in
+[docs/configuration.md](https://github.com/fleetorders/diopsis/blob/main/docs/configuration.md).
 
 ## Everyday use
 
@@ -195,23 +178,56 @@ the masked element's own bounding box moves.
 is one self-contained HTML file, so it also opens straight from a CI artifact with nothing
 beside it, and it follows whichever theme your system is set to. Every capture offers the same
 pair four ways: **diff-highlight overlay** — the default, because it answers "what changed?"
-with no interaction — plus side-by-side, swipe, and onion-skin. Click a capture to stop fitting
+with no interaction — plus side-by-side, swipe, and onion-skin. In the overlay each changed
+region is outlined, and `n` and `N` step through them. The toolbar switches every
+capture at once, and each capture can still be switched on its own. Click a capture to stop fitting
 it to the page and see it at actual size, which is the only way a one-pixel shift survives
 being looked at. Unchanged stories stay collapsed, the largest change leads, and each changed
 story carries the exact command to accept it.
 
 A few hundred captures are meant to be worked through rather than scrolled past, so the report
-filters by story, remembers which captures you have already ticked off, and gives every story
+opens with an overview — a thumbnail of every capture that needs review, click one to jump to
+it — and filters by story, remembers which captures you have already ticked off, and gives every story
 its own link to paste into the review. From the keyboard: `/` filters, `j` and `k` move between
-captures, `1`–`4` switch how the pair is compared, and `r` ticks one off.
+captures, `1`–`4` switch how the pair is compared, `Shift`+`1`–`4` switch every capture at
+once, `o` shows or hides the overview, and `r` ticks one off. Once something is ticked, one
+button copies a single `accept` command for exactly the stories you reviewed — and warns when
+one of them still has a changed capture you have not ticked, because accepting a story adopts
+all of it. Side by side, the two renders scroll and zoom together.
 
 **Accept** — `npx diopsis accept` adopts the whole run, or `npx diopsis accept card--default`
-adopts one story. Both copy the new images over the baselines and stage them for review.
+adopts one story; name several to adopt them together. Only changed and new captures are
+adopted — one that failed to render has nothing worth keeping — and nothing is copied unless
+every image the run left behind is present. The new images replace the baselines and are
+staged for review.
 
 **Regenerate** — `npx diopsis update` rewrites baselines wholesale, for when you already know
 everything changed.
 
-Add `--grep <text>` to any of these to limit the run to stories whose id contains `<text>`.
+**Capture only what a change affects** — build Storybook with `--stats-json` and run
+`npx diopsis run --changed`. Diopsis reads the module graph the build wrote, walks it from the
+files your branch changed (against `origin/main`, or a ref you name) to the stories that import
+them, and captures only those; every other story is carried from its baseline and listed as
+carried. Anything it cannot prove harmless — Storybook's config, a lockfile, a builder config, a
+file outside the graph, a missing stats file — runs everything, and says why. Baselines and
+run output are never counted as changes.
+`npx diopsis trace <file>` shows the chain from a file to the stories it reaches.
+
+**Split a large run across machines** — `npx diopsis run --shard 2/4` captures one quarter of
+the matrix, split by story so a story's review is never divided, into its own directory. Download
+every shard into one place and `npx diopsis merge` writes one report and gives the verdict a
+single run would; `npx diopsis accept --from .diopsis/merged` accepts from it.
+
+**Review a branch's baselines** — a pull request that accepts changes shows its reviewers two
+opaque PNGs per file. `npx diopsis diff` renders the same report straight from git instead:
+every baseline the branch changed, added or deleted against `origin/main` (or a ref you name),
+with the same comparison views and changed regions, and no browser run at all. It always exits
+0 — it is for looking, not gating.
+
+Add `--grep <text>` to `run` or `update` to limit them to stories whose id contains `<text>`.
+Anything after `--` goes to Playwright unchanged, e.g. `npx diopsis run -- --workers=2`.
+Playwright's own `--shard` is refused — it splits by test, not by story, and would divide a
+story's review across machines.
 
 ## Reference
 
@@ -220,142 +236,20 @@ Add `--grep <text>` to any of these to limit the run to stories whose id contain
 | `diopsis init` | Scaffold config, git settings and a CI recipe; print what the matrix costs |
 | `diopsis run` | Verify against committed baselines *(default command)* |
 | `diopsis update` | Regenerate baselines |
-| `diopsis accept [story-id]` | Adopt the last run's output, per story or wholesale |
+| `diopsis accept [story-id...]` | Adopt the last run's output, for the named stories or wholesale |
 | `diopsis report` | Open the last report |
 | `diopsis doctor` | Audit the setup |
+| `diopsis prune` | List baselines no capture would write any more; `--yes` deletes and stages them |
+| `diopsis merge [dir…]` | Merge sharded runs into one report and one verdict |
+| `diopsis trace <file…>` | Show which stories a file reaches, or why it forces a full run |
+| `diopsis diff [base]` | Report the baseline changes this branch makes against `base` (default `origin/main`) |
+| `diopsis --version` | Print the installed version |
 
-| Flag | Applies to | Effect |
-|---|---|---|
-| `--grep <text>` | `run`, `update` | Only stories whose id contains `<text>` |
-| `--keep` | `run`, `update` | Keep the generated Playwright project for inspection |
-| `--force` | `init` | Overwrite an existing config |
-| `--lfs` | `init` | Set the baselines up for Git LFS |
-| `--no-stage` | `accept` | Write the files without staging them in git |
-
-| Config key | Default | Meaning |
-|---|---|---|
-| `storybookDir` | `storybook-static` | The built Storybook to read |
-| `snapshotDir` | `__screenshots__` | Where baselines are committed |
-| `viewports` | `{ default: [320, 1280] }` | Named sets of widths; `default` applies to untagged stories |
-| `viewportHeight` | `900` | Viewport height; captures are full-page |
-| `fullPage` | `true` | Capture the whole scrollable page rather than the viewport |
-| `image` | Playwright's Jammy image | The one image name baseline generation and CI must share |
-| `stabilize.freezeClock` | `2026-01-15T12:00:00Z` | Fixed wall-clock time, or `false` |
-| `stabilize.waitForNetworkIdle` | `true` | Wait for the network to settle |
-| `stabilize.disableAnimations` | `true` | Zero out animations and transitions |
-| `stabilize.waitForFonts` | `true` | Wait for `document.fonts.ready` |
-| `stabilize.waitForImages` | `true` | Wait for every image to decode |
-| `stabilize.waitForLoadingStates` | `true` | Wait for `aria-busy` and progressbars to clear |
-| `stabilize.settleTimeout` | `15000` | Ceiling on the whole stabilization sequence, ms |
-| `mask` | `['[data-diopsis-ignore]']` | Selectors painted over before comparison |
-| `compare.threshold` | `0.2` | Per-pixel colour tolerance, 0–1 |
-| `compare.maxDiffPixelRatio` | `0.001` | Share of differing pixels tolerated |
-| `timeout` | `30000` | Per-capture timeout, ms |
-| `workers` | Playwright's default | Parallel workers |
-| `outputDir` | `.diopsis` | Where the report and summary are written |
-
-`diopsis doctor` audits all of it:
-
-```console
-$ npx diopsis doctor
-
-Diopsis doctor
-
-  · Baseline image is pinned
-      mcr.microsoft.com/playwright:v1.62.1-jammy — the CI job must name this exact image.
-  · 7 stories → 13 captures
-      Widths default: 320, 1280
-  · 13 baselines, 116 KB
-      Every intentional change adds another set to history permanently — this figure only grows.
-  · Every baseline carries a platform and architecture
-      This machine writes darwin-arm64.
-  · No orphaned baselines for this platform
-  · Baselines are marked unmergeable in .gitattributes
-
-Everything checks out.
-```
-
-It also reports baselines for stories that no longer exist, baselines missing a platform suffix,
-a `.gitignore` that excludes your baselines, and another tool's ignore attribute left behind by
-a migration.
-
-## Programmatic use
-
-`diopsis run` exits `0` when every capture matched its baseline and `1` otherwise — a changed
-capture, a missing baseline, a story that failed to render, or nothing to capture at all. That
-single code is the whole CI contract; everything richer is in `summary.json`.
-
-### `summary.json`
-
-Written beside the report on every run. This is the contract to build against — a PR bot, a
-dashboard, or an agent wiring Diopsis into something else reads this, not the terminal.
-
-```json
-{
-  "diopsis": 1,
-  "createdAt": "2026-08-06T20:22:16.947Z",
-  "platform": "darwin",
-  "arch": "arm64",
-  "mode": "run",
-  "snapshotDir": "__screenshots__",
-  "totals": {
-    "stories": 7, "captures": 13,
-    "unchanged": 8, "changed": 5, "new": 0, "renderFailed": 0, "failed": 0
-  },
-  "changedStories": ["card--default", "card--long", "card--wide-only"],
-  "captures": [
-    {
-      "storyId": "card--default",
-      "storyTitle": "Card",
-      "storyName": "Default",
-      "width": 320,
-      "status": "changed",
-      "snapshotPath": "card--default/320w-darwin-arm64.png",
-      "diffPixels": 2684,
-      "diffRatio": 0.03,
-      "error": "Error: expect(page).toHaveScreenshot(expected) failed\n\n  2684 pixels ...",
-      "artifacts": {
-        "actual": "test-results/diopsis-card--default-320-chromium/card--default/320w-darwin-arm64-actual.png",
-        "diff": "test-results/diopsis-card--default-320-chromium/card--default/320w-darwin-arm64-diff.png",
-        "expected": "../__screenshots__/card--default/320w-darwin-arm64.png"
-      }
-    },
-    {
-      "storyId": "nondeterminism--animation",
-      "storyTitle": "Nondeterminism",
-      "storyName": "Animation",
-      "width": 320,
-      "status": "unchanged",
-      "snapshotPath": "nondeterminism--animation/320w-darwin-arm64.png",
-      "artifacts": {
-        "expected": "../__screenshots__/nondeterminism--animation/320w-darwin-arm64.png"
-      }
-    }
-  ]
-}
-```
-
-| Field | Type | Notes |
-|---|---|---|
-| `diopsis` | `1` | Format version. Bumped only on a breaking change to this shape |
-| `createdAt` | ISO-8601 string | When the run started |
-| `platform` / `arch` | string | The `process.platform` and `process.arch` that produced the run — the same pair in every `snapshotPath` |
-| `mode` | `"run"` \| `"update"` | Whether baselines were verified or regenerated |
-| `snapshotDir` | string | The configured baseline directory, as written |
-| `totals` | object | Counts per status, plus `captures` and the distinct `stories` behind them |
-| `changedStories` | string[] | Story ids with at least one capture needing review, sorted. Usually all a bot needs |
-| `captures` | object[] | **Every capture the run planned**, in plan order — not only the interesting ones |
-
-Per capture: `status` is one of `unchanged`, `changed`, `new`, `render-failed`, `failed`.
-`diffPixels` and `diffRatio` appear only when the comparator reported them, `error` only when
-something failed, and `artifacts` holds whichever of `expected`, `actual` and `diff` exist, as
-paths **relative to `outputDir`** so a run stays portable when the directory is moved or
-downloaded from CI.
-
-Two things are deliberate. `captures` lists the full set rather than only the changed ones, so a
-consumer can diff one run's coverage against another's. And `status` is not Playwright's
-pass/fail: "a baseline did not exist yet" and "this looks different" both present as a failing
-test and call for opposite responses, so they are separate states here.
+Every flag, every config key and the `doctor` output are in
+[docs/reference.md](https://github.com/fleetorders/diopsis/blob/main/docs/reference.md) and
+[docs/configuration.md](https://github.com/fleetorders/diopsis/blob/main/docs/configuration.md).
+The exit code and `summary.json`, the contract a CI bot builds against, are in
+[docs/summary-json.md](https://github.com/fleetorders/diopsis/blob/main/docs/summary-json.md).
 
 ## Troubleshooting
 
@@ -383,10 +277,22 @@ It must be the output directory of `storybook build`, containing `index.json` an
 and images. A custom loading state with none of those markers is invisible to it — put
 `aria-busy="true"` on the container while it loads.
 
+## Development
+
+`npm test` typechecks and runs the suites; `npm run check:report` and `npm run check:stabilize`
+drive the report and the capture waits in a real browser. The git hooks under `.githooks/` and
+the `.etymd/` config come from [etymd](https://www.npmjs.com/package/etymd) and do nothing
+where it is not installed; `.githooks/*.local` runs a gitignored `local/` directory for
+machine-specific checks. The design record is
+[docs/decisions.md](https://github.com/fleetorders/diopsis/blob/main/docs/decisions.md).
+
 ## Roadmap
 
-What's next lives in [ROADMAP.md](ROADMAP.md); every design decision, and what was
-deliberately ruled out, is recorded in [DECISIONS.md](DECISIONS.md).
+- A check on the pull request: the run's verdict and changed stories as a status check, with a
+  link to the report, built from the summary Diopsis already writes.
+- A second browser engine as a smoke pass, with its own baselines and coarse tolerances, for
+  layout breakage rather than pixel parity, once the single-browser path has proven itself in
+  many real projects.
 
 ## License
 

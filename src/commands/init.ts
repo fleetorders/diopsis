@@ -2,7 +2,14 @@ import { existsSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { defaultConfig, findConfigFile, supportsTypeStripping } from '../config.ts';
+import {
+  defaultConfig,
+  findConfigFile,
+  formatBytes,
+  loadConfig,
+  supportsTypeStripping,
+  type DiopsisConfig,
+} from '../config.ts';
 import { resolveMatrix } from '../matrix.ts';
 import { readStoryIndex } from '../story-index.ts';
 
@@ -22,10 +29,40 @@ export interface InitOptions {
  */
 const ESTIMATED_BYTES_PER_CAPTURE = 80 * 1024;
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+/** Top-level fields the template writes in its own commented layout. */
+const TEMPLATE_FIELDS = new Set<string>([
+  'storybookDir', 'snapshotDir', 'outputDir', 'viewports', 'viewportHeight', 'image',
+  'stabilize', 'mask', 'compare',
+]);
+
+/** A config value as source, quoted like the template: every field a config holds is plain data. */
+function literal(value: unknown): string {
+  if (typeof value === 'string') {
+    const escaped = value
+      .replace(/\\/g, '\\\\')
+      .replace(/'/g, "\\'")
+      .replace(/\r/g, '\\r')
+      .replace(/\n/g, '\\n')
+      .replace(/\u2028/g, '\\u2028')
+      .replace(/\u2029/g, '\\u2029');
+    return `'${escaped}'`;
+  }
+  if (Array.isArray(value)) return `[${value.map(literal).join(', ')}]`;
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value).filter(([, entry]) => entry !== undefined);
+    const key = (name: string) => (/^[A-Za-z_$][\w$]*$/.test(name) ? name : literal(name));
+    return `{ ${entries.map(([name, entry]) => `${key(name)}: ${literal(entry)}`).join(', ')} }`;
+  }
+  return String(value);
+}
+
+/** The entries of `values` that differ from `defaults`, as `key: value` source lines. */
+function differing(values: object, defaults: object, skip: Set<string> = new Set()): string[] {
+  const base = defaults as Record<string, unknown>;
+  return Object.entries(values)
+    .filter(([key, value]) => !skip.has(key) && value !== undefined)
+    .filter(([key, value]) => literal(value) !== literal(base[key]))
+    .map(([key, value]) => `${key}: ${literal(value)}`);
 }
 
 /**
@@ -33,35 +70,54 @@ function formatBytes(bytes: number): string {
  * erases along with the annotation. Nothing is imported at runtime, so the config still loads
  * when the package cannot be resolved from here — under `npx`, or before `npm install` has run.
  */
-function configSource(typescript: boolean): string {
+function configSource(typescript: boolean, config: DiopsisConfig): string {
   const header = typescript
     ? "import type { UserConfig } from 'diopsis';\n\nexport default {"
     : "/** @type {import('diopsis').UserConfig} */\nexport default {";
   const footer = typescript ? '} satisfies UserConfig;' : '};';
+  // The template's own stabilize and compare keys always, then whatever else the config
+  // set; any other field is written only when it is not the default, so a fresh config stays
+  // short and a replaced one keeps every value it had.
+  const shown = ['freezeClock', 'waitForNetworkIdle', 'disableAnimations'] as const;
+  const stabilize = [
+    ...shown.map((key) => `${key}: ${literal(config.stabilize[key])}`),
+    ...differing(config.stabilize, defaultConfig.stabilize, new Set(shown)),
+  ];
+  const compare = [
+    `threshold: ${config.compare.threshold}`,
+    `maxDiffPixelRatio: ${config.compare.maxDiffPixelRatio}`,
+    ...differing(
+      config.compare,
+      defaultConfig.compare,
+      new Set(['threshold', 'maxDiffPixelRatio']),
+    ),
+  ];
+  const rest = differing(config, defaultConfig, TEMPLATE_FIELDS);
 
   return `${header}
-  storybookDir: '${defaultConfig.storybookDir}',
-  snapshotDir: '${defaultConfig.snapshotDir}',
+  storybookDir: ${literal(config.storybookDir)},
+  snapshotDir: ${literal(config.snapshotDir)},
+  outputDir: ${literal(config.outputDir)},
 
   // Every width multiplies the whole story set. Two widths cost half of what four do,
   // in runtime, repository weight and flake surface alike.
-  viewports: { default: [320, 1280] },
+  viewports: ${literal(config.viewports)},
+
+  viewportHeight: ${config.viewportHeight},
 
   // One image name, read by both baseline generation and the CI job.
-  image: '${defaultConfig.image}',
+  image: ${literal(config.image)},
 
   stabilize: {
-    freezeClock: '${defaultConfig.stabilize.freezeClock as string}',
-    waitForNetworkIdle: true,
-    disableAnimations: true,
+${stabilize.map((line) => `    ${line},`).join('\n')}
   },
 
   // Regions excluded from comparison. Prefer deleting the annotation over masking:
   // the clock is frozen, so anything that only hid a date no longer needs to.
-  mask: ['[data-diopsis-ignore]'],
+  mask: ${literal(config.mask)},
 
-  compare: { threshold: ${defaultConfig.compare.threshold}, maxDiffPixelRatio: ${defaultConfig.compare.maxDiffPixelRatio} },
-${footer}
+  compare: { ${compare.join(', ')} },
+${rest.map((line) => `  ${line},\n`).join('')}${footer}
 `;
 }
 
@@ -87,6 +143,8 @@ export function ciRecipe(image: string, snapshotDir: string): string {
   return `# Verify visual regressions in the same image the baselines were generated in.
 # The image below must stay identical to \`image\` in diopsis.config — \`diopsis doctor\`
 # fails when they drift apart.
+# Long builds can split instead: \`npx diopsis run --shard <i>/<n>\` in parallel jobs, then
+# \`npx diopsis merge\` over the downloaded shard-* directories for one review.
 jobs:
   visual:
     image: ${image}
@@ -113,18 +171,45 @@ export async function initCommand(options: InitOptions): Promise<number> {
     return 1;
   }
 
+  // With --force, the config being replaced still decides everything downstream of it:
+  // its snapshotDir and outputDir are what .gitattributes and .gitignore must keep
+  // guarding, its widths and image are what the cost table and the CI recipe describe,
+  // and every value it sets is what the rewritten config carries — a re-run must not
+  // quietly repoint git settings, or reset the config itself, to the defaults. A config
+  // that cannot be loaded is refused rather than replaced: rewriting it from the defaults
+  // would destroy the one copy of settings that may be a small fix away from loading.
+  let config = defaultConfig;
+  if (existing) {
+    try {
+      config = (await loadConfig(options.root)).config;
+    } catch (error) {
+      process.stderr.write(
+        `${error instanceof Error ? error.message : String(error)}\n` +
+          `init --force rewrites a config from its own values, so it will not replace one ` +
+          `it cannot read. Fix ${path.basename(existing)}, or delete it to start from the ` +
+          'defaults.\n',
+      );
+      return 1;
+    }
+  }
+
   const typescript = supportsTypeStripping();
-  const configName = typescript ? 'diopsis.config.ts' : 'diopsis.config.mjs';
-  await writeFile(path.join(options.root, configName), configSource(typescript), 'utf8');
+  // A replaced config is rewritten where it lives, in the form it already had: writing the
+  // default name beside it would leave two config files, whichever discovery finds first
+  // winning, and a TypeScript form written into a .mjs would not even parse.
+  const target =
+    existing ?? path.join(options.root, typescript ? 'diopsis.config.ts' : 'diopsis.config.mjs');
+  await writeFile(target, configSource(/\.(ts|mts)$/.test(target), config), 'utf8');
+  const configName = path.basename(target);
 
   const wroteAttributes = await appendLines(
     path.join(options.root, '.gitattributes'),
-    gitattributesLines(defaultConfig.snapshotDir, options.lfs ?? false),
+    gitattributesLines(config.snapshotDir, options.lfs ?? false),
     'Diopsis baselines: binary, and never auto-merged.',
   );
   const wroteIgnore = await appendLines(
     path.join(options.root, '.gitignore'),
-    [`${defaultConfig.outputDir}/`],
+    [`${config.outputDir}/`],
     'Diopsis run output (the report and its artifacts) is not committed.',
   );
 
@@ -132,11 +217,12 @@ export async function initCommand(options: InitOptions): Promise<number> {
     '',
     `Wrote ${configName}`,
     ...(wroteAttributes ? ['Wrote .gitattributes entries for the baselines'] : []),
-    ...(wroteIgnore ? [`Wrote .gitignore entry for ${defaultConfig.outputDir}/`] : []),
+    ...(wroteIgnore ? [`Wrote .gitignore entry for ${config.outputDir}/`] : []),
     '',
   ];
 
-  if (!typescript) {
+  // Said only when the runtime dictated the form: a replaced config keeps the one it had.
+  if (!typescript && !existing) {
     lines.push(
       `Node ${process.versions.node} cannot read a TypeScript config, so the JavaScript form`,
       'was written instead. On Node 22.18 or newer, diopsis.config.ts works with no extra setup.',
@@ -145,22 +231,33 @@ export async function initCommand(options: InitOptions): Promise<number> {
   }
 
   // The cost of the matrix, before it is inherited rather than chosen.
-  const storybookDir = path.resolve(options.root, defaultConfig.storybookDir);
+  const storybookDir = path.resolve(options.root, config.storybookDir);
   if (existsSync(storybookDir)) {
     try {
       const stories = await readStoryIndex(storybookDir);
       lines.push('Cost of the matrix, for this Storybook:', '');
       lines.push('  widths                     captures    estimated weight');
-      for (const widths of [[1280], [320, 1280], [320, 768, 1024, 1280]]) {
+      const sameWidths = (a: number[], b: number[]) =>
+        a.length === b.length && a.every((width, i) => width === b[i]);
+      const configured = config.viewports.default ?? [];
+      // The configured widths are one of the standard rows when they can be; otherwise
+      // they get a row of their own, so "(configured)" always marks this project's real
+      // widths rather than whichever preset happens to have two entries.
+      const rows: number[][] = [[1280], [320, 1280], [320, 768, 1024, 1280]];
+      if (!rows.some((widths) => sameWidths(widths, configured))) rows.push(configured);
+      const modeNames = config.modes ? Object.keys(config.modes) : [];
+      for (const widths of rows) {
         const matrix = resolveMatrix(stories, {
           viewports: { default: widths },
-          viewportHeight: defaultConfig.viewportHeight,
+          viewportHeight: config.viewportHeight,
+          capture: 'page',
+          ...(config.modes ? { modes: config.modes } : {}),
         });
         const label = widths.join(', ').padEnd(25);
         const count = String(matrix.captures.length).padStart(8);
         const weight = formatBytes(matrix.captures.length * ESTIMATED_BYTES_PER_CAPTURE);
         lines.push(
-          `  ${label}${count}    ${weight}${widths.length === 2 ? '   (configured)' : ''}`,
+          `  ${label}${count}    ${weight}${sameWidths(widths, configured) ? '   (configured)' : ''}`,
         );
       }
       lines.push(
@@ -168,14 +265,22 @@ export async function initCommand(options: InitOptions): Promise<number> {
         `  ${stories.length} stories. Weight assumes ${formatBytes(ESTIMATED_BYTES_PER_CAPTURE)} per capture;`,
         '  `diopsis doctor` reports the real figure once baselines exist. Every intentional',
         '  change adds another full set to history, permanently.',
+        // The table's rows stay widths, as ever; with modes configured the counts above are
+        // the multiplied ones, so the note says what the multiplier is.
+        ...(modeNames.length
+          ? [
+              `  Counts include the configured modes (${modeNames.join(', ')}): every capture`,
+              '  runs once more per mode, with its own baselines.',
+            ]
+          : []),
         '',
       );
     } catch {
-      lines.push(`Could not read the story index in ${defaultConfig.storybookDir}.`, '');
+      lines.push(`Could not read the story index in ${config.storybookDir}.`, '');
     }
   } else {
     lines.push(
-      `No build at ${defaultConfig.storybookDir} yet, so the capture count could not be`,
+      `No build at ${config.storybookDir} yet, so the capture count could not be`,
       'estimated. Build the Storybook and run `diopsis doctor` to see it.',
       '',
     );
@@ -184,7 +289,7 @@ export async function initCommand(options: InitOptions): Promise<number> {
   lines.push(
     'CI recipe:',
     '',
-    ...ciRecipe(defaultConfig.image, defaultConfig.snapshotDir)
+    ...ciRecipe(config.image, config.snapshotDir)
       .trimEnd()
       .split('\n')
       .map((line) => `  ${line}`),

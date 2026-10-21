@@ -6,7 +6,7 @@ import path from 'node:path';
 /**
  * Locate the Playwright test CLI installed in the project under test.
  *
- * `@playwright/test` is a peer dependency (DECISIONS.md §6), so it is resolved from the
+ * `@playwright/test` is a peer dependency (docs/decisions.md, D-015), so it is resolved from the
  * project rather than bundled — one browser download, one version, no duplicate.
  */
 export function resolvePlaywrightCli(root: string): string {
