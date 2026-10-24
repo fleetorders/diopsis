@@ -736,3 +736,21 @@ baselines and stages them; committing them is the review's durable record.
 test and call for opposite responses, so they must be separate states. Keeping acceptance as a
 committed file is what makes the baseline set reviewable in the pull request, with no state
 anywhere else (D-001).
+
+## D-049 — Agent instructions live in AGENTS.md alone
+
+**Decision:** The repository ships one instruction file, `AGENTS.md`, and no `CLAUDE.md`
+re-exporting it — no `.cursorrules`, `.windsurfrules` or other client-specific pointer
+exists at the root either.
+
+**Why:** the agents that matter read `AGENTS.md` natively, so one file serves every agent
+and a second file whose only job is to re-export the first is pure drift surface. The cost
+is explicit: an agent that does not read `AGENTS.md` gets no project instructions from
+this repository, silently. Keeping a pointer would preserve such agents but perpetuates a
+client-specific artifact to serve outdated versions of one client. A
+`CLAUDE.md → AGENTS.md` symlink keeps name-keyed discovery with zero content drift, but on
+checkouts without symlink support it materialises as a regular file containing the path
+`AGENTS.md` — and because `CLAUDE.md` takes precedence over `AGENTS.md`, that one-word
+file then replaces the instructions for every agent on such a checkout: a silent failure
+strictly worse than the one it avoids. Should such agents ever matter, the pointer file is
+the shape to restore, not the symlink.

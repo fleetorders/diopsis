@@ -1,11 +1,16 @@
 #!/usr/bin/env sh
 # Machine-local companion checks, when this machine has any: local/hooks/pre-push at the main
-# checkout's root, gitignored and never tracked. It runs first, with this hook's arguments and
-# stdin; a contributor without one proceeds exactly as before.
+# checkout's root, gitignored and never tracked. It gets this hook's arguments AND the ref list
+# on stdin, unread — nothing here consumes either first, so a companion that screens what the
+# push publishes sees every ref. A checkout without a companion tree runs no extra checks: what
+# it would run is private to the machine that wrote it. (published-surface stub)
 COMMON_DIR=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || COMMON_DIR=""
+# The companion path derivation, and the layouts it covers, are documented in commit-msg.local.
 COMPANION="${COMMON_DIR%/.git}/local/hooks/pre-push"
-if [ -n "$COMMON_DIR" ] && [ -x "$COMPANION" ]; then
+if [ -x "$COMPANION" ]; then
   "$COMPANION" "$@" || exit 1
+elif [ -e "$COMPANION" ]; then
+  echo "warning: $COMPANION exists but is not executable — skipped" >&2
 fi
 
 exit 0
