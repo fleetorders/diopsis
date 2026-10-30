@@ -10,6 +10,7 @@ import {
   type AcceptedAccessibility,
   type RawA11yViolation,
 } from './accessibility.ts';
+import type { LayoutFinding } from './layout.ts';
 import type {
   FullConfig,
   FullResult,
@@ -84,6 +85,9 @@ export function artifactsOf(
     const base = path.basename(attachment.path);
     if (base.endsWith('-expected.png')) artifacts.expected = relative;
     else if (base.endsWith('-diff.png')) artifacts.diff = relative;
+    // The layout audit's evidence shot has its own slot: it must never read as a render
+    // the comparison produced, or `accept` would offer it as a baseline.
+    else if (base === 'layout-shot.png') artifacts.shot = relative;
     else artifacts.actual = relative;
   }
   return artifacts;
@@ -135,6 +139,22 @@ function a11yViolationsOf(result: TestResult): RawA11yViolation[] | undefined {
   try {
     const parsed: unknown = JSON.parse(description);
     return Array.isArray(parsed) ? (parsed as RawA11yViolation[]) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The layout audit's findings for one width, recorded the same way as the accessibility
+ * audit's. Present only on a capture the run measured, findings or not; an unreadable
+ * payload reads as unmeasured, never as clean.
+ */
+function layoutFindingsOf(result: TestResult): LayoutFinding[] | undefined {
+  const description = result.annotations.find((a) => a.type === 'diopsis-layout')?.description;
+  if (!description) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(description);
+    return Array.isArray(parsed) ? (parsed as LayoutFinding[]) : undefined;
   } catch {
     return undefined;
   }
@@ -250,6 +270,7 @@ export default class DiopsisReporter implements Reporter {
     const marked = audited
       ? markViolations(audited, acceptedFor(this.acceptedA11y, planned.storyId, planned.mode))
       : undefined;
+    const layout = layoutFindingsOf(result);
     const capture: CaptureResult = {
       storyId: planned.storyId,
       storyTitle: planned.storyTitle,
@@ -270,6 +291,8 @@ export default class DiopsisReporter implements Reporter {
       ...(marked
         ? { accessibility: { violations: marked.violations, new: marked.newCount } }
         : {}),
+      // The layout record follows the same rule per width: measured-clean is a fact.
+      ...(layout !== undefined ? { layout: { findings: layout } } : {}),
       artifacts,
     };
 
@@ -398,6 +421,13 @@ export default class DiopsisReporter implements Reporter {
         .filter((capture) => (capture.accessibility?.new ?? 0) > 0)
         .map((capture) => capture.storyId),
     );
+    // The layout audit has no accepted set: every finding is new, so its line counts
+    // findings, and only when there are any.
+    const layoutStories = new Set(
+      ordered
+        .filter((capture) => (capture.layout?.findings.length ?? 0) > 0)
+        .map((capture) => capture.storyId),
+    );
 
     // The run header already ends in a blank line; opening with another printed two.
     const lines = [
@@ -414,15 +444,22 @@ export default class DiopsisReporter implements Reporter {
               `in ${a11yStories.size} ${a11yStories.size === 1 ? 'story' : 'stories'}`,
           ]
         : []),
+      ...(layoutStories.size > 0
+        ? [
+            `  layout    ${totals.layoutFindings} ${totals.layoutFindings === 1 ? 'finding' : 'findings'} ` +
+              `in ${layoutStories.size} ${layoutStories.size === 1 ? 'story' : 'stories'}`,
+          ]
+        : []),
       '',
     ];
 
     for (const capture of ordered) {
       const newFindings = capture.accessibility?.new ?? 0;
-      // A capture that neither needs review nor carries new findings prints nothing; an
+      const layoutCount = capture.layout?.findings.length ?? 0;
+      // A capture that neither needs review nor carries findings prints nothing; an
       // audited capture in 'report' mode still prints its findings even when its pixels
       // matched, because the findings are the review.
-      if (capture.status === 'unchanged' && !capture.unstable && newFindings === 0) continue;
+      if (capture.status === 'unchanged' && !capture.unstable && newFindings === 0 && layoutCount === 0) continue;
       if (capture.status !== 'unchanged' || capture.unstable) {
         // A pinned locale, not the machine's: the same run must print the same figures on
         // every machine it is pasted from.
@@ -458,9 +495,23 @@ export default class DiopsisReporter implements Reporter {
           }
         }
       }
+      // The layout audit's line carries the width, because the same story can be broken at
+      // one width and clean at another — that difference is the finding.
+      if (layoutCount > 0) {
+        const kinds = new Map<string, number>();
+        for (const finding of capture.layout?.findings ?? []) {
+          kinds.set(finding.kind, (kinds.get(finding.kind) ?? 0) + 1);
+        }
+        const summary = [...kinds.entries()].map(([kind, n]) => `${kind} ×${n}`).join(', ');
+        lines.push(
+          `  ! ${capture.storyId}${capture.mode ? `[@${capture.mode}]` : ''} @${capture.width}  ${summary}`,
+        );
+      }
     }
 
-    if (counts.length > 1 || totals.unstable > 0 || a11yStories.size > 0) lines.push('');
+    if (counts.length > 1 || totals.unstable > 0 || a11yStories.size > 0 || layoutStories.size > 0) {
+      lines.push('');
+    }
     lines.push(`  report   ${show(reportPath)}`, `  summary  ${show(summaryPath)}`);
 
     if (summary.changedStories.length > 0 && summary.mode === 'run') {

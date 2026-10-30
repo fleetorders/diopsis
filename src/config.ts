@@ -3,6 +3,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import type { AccessibilityMode } from './accessibility.ts';
+import type { LayoutMode } from './layout.ts';
 
 /**
  * Stabilization defaults. Every one of these is on by default: a guarantee that has to be
@@ -45,6 +46,20 @@ export interface CompareOptions {
    * stricter of the two.
    */
   maxDiffPixels?: number;
+}
+
+/** What the layout audit does with its findings, mirroring the accessibility audit (D-042). */
+export interface LayoutOptions {
+  /**
+   * `'off'` never measures; `'report'` records findings and never touches the exit code;
+   * `'fail'` fails a capture with findings like a change (docs/decisions.md, D-050).
+   */
+  mode: LayoutMode;
+  /**
+   * Widths measured in addition to every story's capture widths — a design system's
+   * breakpoints, say — where the audit looks and no baseline is ever written.
+   */
+  widths: number[];
 }
 
 export interface DiopsisConfig {
@@ -98,6 +113,11 @@ export interface DiopsisConfig {
    * code; `'fail'` fails a run with new findings like a change (docs/decisions.md, D-042).
    */
   accessibility: AccessibilityMode;
+  /**
+   * Measures where text, controls and images sit at each width and reports overlaps,
+   * cut-off text and sideways scrolling beside the pixels (docs/decisions.md, D-050).
+   */
+  layout: LayoutOptions;
   /** Per-capture timeout in ms. */
   timeout: number;
   /**
@@ -114,7 +134,9 @@ export type UserConfig = {
     ? Partial<StabilizeOptions>
     : K extends 'compare'
       ? Partial<CompareOptions>
-      : DiopsisConfig[K];
+      : K extends 'layout'
+        ? Partial<LayoutOptions>
+        : DiopsisConfig[K];
 };
 
 export const defaultConfig: DiopsisConfig = {
@@ -141,6 +163,7 @@ export const defaultConfig: DiopsisConfig = {
   compress: 'off',
   affected: 'all',
   accessibility: 'off',
+  layout: { mode: 'off', widths: [] },
   timeout: 30_000,
   outputDir: '.diopsis',
 };
@@ -157,6 +180,7 @@ export function resolveConfig(user: UserConfig = {}): DiopsisConfig {
     viewports: user.viewports ?? defaultConfig.viewports,
     stabilize: { ...defaultConfig.stabilize, ...user.stabilize },
     compare: { ...defaultConfig.compare, ...user.compare },
+    layout: { ...defaultConfig.layout, ...user.layout },
     ...(user.budget ? { budget: { ...user.budget } } : {}),
   };
 }
@@ -356,6 +380,20 @@ export function validateConfig(config: DiopsisConfig): string[] {
     problems.push(
       `accessibility must be "off", "report" or "fail" (got ${show(config.accessibility)})`,
     );
+  }
+  if (!isPlainObject(config.layout)) {
+    problems.push(`layout must be an object of { mode, widths } (got ${show(config.layout)})`);
+  } else {
+    if (!['off', 'report', 'fail'].includes(config.layout.mode)) {
+      problems.push(
+        `layout.mode must be "off", "report" or "fail" (got ${show(config.layout.mode)})`,
+      );
+    }
+    if (!isPositiveIntegers(config.layout.widths)) {
+      problems.push(
+        `layout.widths must be an array of positive integer widths (got ${show(config.layout.widths)})`,
+      );
+    }
   }
   const freezeClock = config.stabilize.freezeClock;
   if (

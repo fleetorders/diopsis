@@ -1,6 +1,7 @@
 import type { Locator, Page } from '@playwright/test';
 import type { RawA11yViolation } from '../accessibility.ts';
 import type { StabilizeOptions } from '../config.ts';
+import type { MeasuredElement, PageGeometry } from '../layout.ts';
 import type { InteractionState } from '../matrix.ts';
 
 /** Storybook 7+ renders into `#storybook-root`; v6 used `#root`. */
@@ -513,6 +514,128 @@ export async function componentClip(page: Page): Promise<ComponentClip | undefin
       };
     },
     { roots: RENDER_ROOTS, padding: COMPONENT_PADDING, limit: MAX_WALKED_ELEMENTS },
+  );
+}
+
+/** The layout audit's page-side walk: what it collected, and the page's own geometry. */
+export interface LayoutMeasurement {
+  elements: MeasuredElement[];
+  page: PageGeometry;
+}
+
+/**
+ * Walk the story's render root and report where its content sits, as plain data for
+ * `analyzeLayout` (docs/decisions.md, D-050).
+ *
+ * The walk collects only what a layout finding can be about: elements with text of their
+ * own, controls, media, and boxes that hide more content than they show. It reads and
+ * never writes, which is also why it can run after the screenshot without touching the
+ * pixels the comparison just judged. Nothing is decided here — thresholds and pair rules
+ * live in the pure module, so the same measurements always yield the same findings.
+ *
+ * Ancestors are recorded as indices into the returned list, collected ancestors only, so
+ * the analysis can tell a child inside its parent from two elements colliding; the
+ * `data-diopsis-overlap` marking is read here because it is a property of the tree, not of
+ * the boxes.
+ */
+export async function measureLayout(page: Page): Promise<LayoutMeasurement> {
+  return page.evaluate(
+    ({ roots, limit }: { roots: readonly string[]; limit: number }) => {
+      const MEDIA_TAGS = new Set(['img', 'video', 'canvas', 'svg', 'picture', 'iframe']);
+      const CONTROL_TAGS = new Set([
+        'button', 'a', 'input', 'select', 'textarea', 'label', 'summary',
+      ]);
+      const selectorOf = (element: Element): string => {
+        let selector = element.tagName.toLowerCase();
+        if (element.id) {
+          selector += '#' + element.id;
+        } else if (element.classList.length > 0) {
+          selector += '.' + Array.from(element.classList).slice(0, 2).join('.');
+        }
+        return selector.length > 60 ? selector.slice(0, 60) : selector;
+      };
+      const hasOwnText = (element: Element): boolean => {
+        for (const node of Array.from(element.childNodes)) {
+          if (node.nodeType === Node.TEXT_NODE && node.textContent?.trim()) return true;
+        }
+        return false;
+      };
+      const clipOf = (element: Element): MeasuredElement['clip'] | undefined => {
+        const style = window.getComputedStyle(element);
+        const hiddenX = Math.max(0, element.scrollWidth - element.clientWidth);
+        const hiddenY = Math.max(0, element.scrollHeight - element.clientHeight);
+        if (hiddenX <= 1 && hiddenY <= 1) return undefined;
+        const clipsX = style.overflowX === 'hidden' || style.overflowX === 'clip';
+        const clipsY = style.overflowY === 'hidden' || style.overflowY === 'clip';
+        if (!clipsX && !clipsY) return undefined;
+        return {
+          x: clipsX ? hiddenX : 0,
+          y: clipsY ? hiddenY : 0,
+          ellipsis: style.textOverflow.includes('ellipsis'),
+          lineClamp: (style as unknown as Record<string, string>).webkitLineClamp !== 'none',
+        };
+      };
+
+      const elements: MeasuredElement[] = [];
+      let walked = 0;
+      // An explicit stack, not recursion: the walk is bounded in element count, and a deep
+      // chain must not be able to trade that bound for a call-stack overflow.
+      const stack: Array<{ element: Element; collectedAncestors: number[] }> = [];
+      for (const selector of roots) {
+        const root = document.querySelector(selector);
+        if (root) stack.push({ element: root, collectedAncestors: [] });
+      }
+      while (stack.length > 0 && walked < limit) {
+        const { element, collectedAncestors } = stack.pop()!;
+        walked += 1;
+        const rect = element.getBoundingClientRect();
+        let ancestorsForChildren = collectedAncestors;
+        if (rect.width > 0 && rect.height > 0) {
+          const style = window.getComputedStyle(element);
+          const visible =
+            style.visibility !== 'hidden' && style.opacity !== '0' && style.display !== 'none';
+          const tag = element.tagName.toLowerCase();
+          const kind = MEDIA_TAGS.has(tag)
+            ? ('media' as const)
+            : CONTROL_TAGS.has(tag)
+              ? ('control' as const)
+              : hasOwnText(element)
+                ? ('text' as const)
+                : ('container' as const);
+          const clip = clipOf(element);
+          if (visible && (kind !== 'container' || clip !== undefined)) {
+            const index = elements.length;
+            const x = Math.round(rect.left);
+            const y = Math.round(rect.top);
+            elements.push({
+              selector: selectorOf(element),
+              kind,
+              box: {
+                x,
+                y,
+                width: Math.round(rect.right) - x,
+                height: Math.round(rect.bottom) - y,
+              },
+              ancestors: collectedAncestors,
+              ...(clip ? { clip } : {}),
+              ...(element.closest('[data-diopsis-overlap]') ? { intended: true as const } : {}),
+            });
+            ancestorsForChildren = [...collectedAncestors, index];
+          }
+        }
+        // Reversed so children are visited in document order out of the stack.
+        for (const child of Array.from(element.children).reverse()) {
+          stack.push({ element: child, collectedAncestors: ancestorsForChildren });
+        }
+      }
+
+      const layoutViewport = document.documentElement.clientWidth;
+      const scrollWidth = document.scrollingElement
+        ? document.scrollingElement.scrollWidth
+        : document.documentElement.scrollWidth;
+      return { elements, page: { viewportWidth: layoutViewport, scrollWidth } };
+    },
+    { roots: RENDER_ROOTS, limit: MAX_WALKED_ELEMENTS },
   );
 }
 
