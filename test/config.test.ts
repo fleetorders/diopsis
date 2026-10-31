@@ -469,3 +469,40 @@ describe('parseSize', () => {
     assert.equal(parseSize(''), undefined);
   });
 });
+
+describe('validateConfig layout', () => {
+  function configWith(layout: unknown): DiopsisConfig {
+    return { ...resolveConfig(), layout } as DiopsisConfig;
+  }
+
+  it('accepts the modes and widths, and off by default', () => {
+    assert.deepEqual(resolveConfig().layout, { mode: 'off', widths: [] });
+    assert.deepEqual(
+      validateConfig(configWith({ mode: 'fail', widths: [320, 768] })),
+      [],
+    );
+  });
+
+  it('rejects a mode outside the three', () => {
+    const problems = validateConfig(configWith({ mode: 'warn', widths: [] }));
+    assert.equal(problems.length, 1);
+    assert.match(problems[0] ?? '', /layout\.mode must be "off", "report" or "fail" \(got "warn"\)/);
+  });
+
+  it('rejects widths that are not positive integers', () => {
+    const problems = validateConfig(configWith({ mode: 'report', widths: [320, 0, 1.5, 'wide'] }));
+    assert.equal(problems.length, 1);
+    assert.match(problems[0] ?? '', /layout\.widths must be an array of positive integer widths/);
+  });
+
+  it('rejects a layout that is not the object of { mode, widths }', () => {
+    const problems = validateConfig(configWith('report'));
+    assert.equal(problems.length, 1);
+    assert.match(problems[0] ?? '', /layout must be an object of \{ mode, widths \} \(got "report"\)/);
+  });
+
+  it('merges a partial layout over the defaults, like stabilize and compare', () => {
+    const user: UserConfig = { layout: { mode: 'report' } };
+    assert.deepEqual(resolveConfig(user).layout, { mode: 'report', widths: [] });
+  });
+});

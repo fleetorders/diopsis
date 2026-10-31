@@ -866,3 +866,74 @@ describe('DiopsisReporter with the accessibility audit', () => {
     assert.equal((await summaryAt(outputDir)).totals.a11yNew, 0);
   });
 });
+
+describe('the reporter and the layout audit', () => {
+  const overlap = {
+    kind: 'overlap',
+    covered: { selector: 'h1.title', kind: 'text', box: { x: 0, y: 0, width: 200, height: 30 } },
+    covering: { selector: 'img.car', kind: 'media', box: { x: 0, y: 0, width: 200, height: 120 } },
+    overlap: { width: 200, height: 30 },
+  };
+  const clip = {
+    kind: 'text-clip',
+    element: { selector: 'p.body', kind: 'text', box: { x: 0, y: 40, width: 100, height: 20 } },
+    axis: 'x',
+    hidden: 30,
+  };
+
+  const measured = (findings: unknown[]) =>
+    result({
+      annotations: [
+        { type: 'diopsis-baseline', description: 'present' },
+        { type: 'diopsis-layout', description: JSON.stringify(findings) },
+      ],
+    });
+
+  it('records a width\'s findings, with the width on the line', async () => {
+    const { reporter, outputDir } = await setup();
+    const { out } = await withCapturedStdout(async () => {
+      reporter.onTestEnd(testTitled('a--one @320'), measured([overlap, clip]));
+      await reporter.onEnd({ status: 'passed' } as FullResult);
+    });
+
+    const summary = await summaryAt(outputDir);
+    const capture = summary.captures.find((c) => c.storyId === 'a--one');
+    assert.deepEqual(capture?.layout?.findings, [overlap, clip]);
+    assert.equal(summary.totals.layoutFindings, 2);
+    // 'report' mode never touched the exit code, and the line carries the width — the same
+    // story can be broken at one width and clean at another.
+    assert.equal(capture?.status, 'unchanged');
+    assert.match(out, /  layout    2 findings in 1 story/);
+    assert.match(out, /  ! a--one @320  overlap ×1, text-clip ×1/);
+  });
+
+  it('keeps a measured-clean width on the record — clean is a fact, not an absence', async () => {
+    const { reporter, outputDir } = await setup();
+    await withCapturedStdout(async () => {
+      reporter.onTestEnd(testTitled('a--one @320'), measured([]));
+      await reporter.onEnd({ status: 'passed' } as FullResult);
+    });
+    const summary = await summaryAt(outputDir);
+    assert.deepEqual(summary.captures.find((c) => c.storyId === 'a--one')?.layout, { findings: [] });
+    assert.equal(summary.totals.layoutFindings, 0);
+  });
+
+  it('reads an unreadable payload as unmeasured, never as clean', async () => {
+    const { reporter, outputDir } = await setup();
+    await withCapturedStdout(async () => {
+      reporter.onTestEnd(
+        testTitled('a--one @320'),
+        result({
+          annotations: [
+            { type: 'diopsis-baseline', description: 'present' },
+            { type: 'diopsis-layout', description: '{"findings":' },
+          ],
+        }),
+      );
+      await reporter.onEnd({ status: 'passed' } as FullResult);
+    });
+    const summary = await summaryAt(outputDir);
+    assert.equal(summary.captures.find((c) => c.storyId === 'a--one')?.layout, undefined);
+    assert.equal('layoutFindings' in summary.totals, false);
+  });
+});
