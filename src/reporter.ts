@@ -262,7 +262,8 @@ export default class DiopsisReporter implements Reporter {
       passed: result.status === 'passed',
       errorText,
       timedOut: result.status === 'timedOut',
-      baseline: baselineOf(result),
+      // A layout-only capture compares nothing, so no baseline state can make it new.
+      baseline: planned.layoutOnly ? undefined : baselineOf(result),
     });
 
     const artifacts = this.artifactsFor(planned.snapshotPath, result);

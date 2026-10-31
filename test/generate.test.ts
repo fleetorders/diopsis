@@ -443,6 +443,9 @@ describe('generateProject with the layout audit', () => {
     assert.match(spec, /if \(plan\.layout === 'fail'\)/);
     // A layout-only capture navigates and measures, and never compares.
     assert.match(spec, /if \(capture\.layoutOnly\)/);
+    // Nor does it record a baseline state: its placeholder path never exists, and
+    // "missing" would classify its findings as a new story.
+    assert.match(spec, /if \(!capture\.layoutOnly\) \{\s*test\.info\(\)\.annotations\.push\(\{\s*type: 'diopsis-baseline'/);
   });
 
   it('titles a layout-only capture so its review reads it as such', () => {

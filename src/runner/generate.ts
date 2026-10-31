@@ -268,11 +268,15 @@ const it = test.extend({
 for (const capture of plan.captures) {
   it(capture.title, async ({ page }) => {
     // Baseline existence decides "new" against "changed"; Playwright words a missing
-    // snapshot differently per mode and version, while the filesystem does not.
-    test.info().annotations.push({
-      type: 'diopsis-baseline',
-      description: existsSync(capture.baselinePath) ? 'present' : 'missing',
-    });
+    // snapshot differently per mode and version, while the filesystem does not. A
+    // layout-only capture records none: its placeholder path never exists, and "missing"
+    // would classify its findings as a new story rather than a layout to look at.
+    if (!capture.layoutOnly) {
+      test.info().annotations.push({
+        type: 'diopsis-baseline',
+        description: existsSync(capture.baselinePath) ? 'present' : 'missing',
+      });
+    }
 
     await page.setViewportSize({ width: capture.width, height: capture.height });
     await openStory(page, storyUrlFor(plan.baseUrl, capture.storyId, capture.globals), plan.stabilize);
