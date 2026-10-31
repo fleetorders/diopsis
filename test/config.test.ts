@@ -505,4 +505,21 @@ describe('validateConfig layout', () => {
     const user: UserConfig = { layout: { mode: 'report' } };
     assert.deepEqual(resolveConfig(user).layout, { mode: 'report', widths: [] });
   });
+
+  // Through resolveConfig, as a config file reaches validation: spreading a string into the
+  // group would leave the defaults standing and the audit silently off.
+  it('rejects a bare-string layout written in a config file, not just one built by hand', () => {
+    const problems = validateConfig(resolveConfig({ layout: 'fail' } as unknown as UserConfig));
+    assert.equal(problems.length, 1);
+    assert.match(problems[0] ?? '', /layout must be an object of \{ mode, widths \} \(got "fail"\)/);
+  });
+
+  it('rejects a scalar in place of the stabilize or compare group, once each', () => {
+    const compare = validateConfig(resolveConfig({ compare: 0.1 } as unknown as UserConfig));
+    assert.equal(compare.length, 1);
+    assert.match(compare[0] ?? '', /compare must be an object .*\(got 0\.1\)/);
+    const stabilize = validateConfig(resolveConfig({ stabilize: null } as unknown as UserConfig));
+    assert.equal(stabilize.length, 1);
+    assert.match(stabilize[0] ?? '', /stabilize must be an object .*\(got null\)/);
+  });
 });

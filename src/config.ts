@@ -178,15 +178,26 @@ export function resolveConfig(user: UserConfig = {}): DiopsisConfig {
     ...defaultConfig,
     ...user,
     viewports: user.viewports ?? defaultConfig.viewports,
-    stabilize: { ...defaultConfig.stabilize, ...user.stabilize },
-    compare: { ...defaultConfig.compare, ...user.compare },
-    layout: { ...defaultConfig.layout, ...user.layout },
+    stabilize: mergeGroup(defaultConfig.stabilize, user.stabilize),
+    compare: mergeGroup(defaultConfig.compare, user.compare),
+    layout: mergeGroup(defaultConfig.layout, user.layout),
     ...(user.budget ? { budget: { ...user.budget } } : {}),
   };
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * An option group merged over its defaults. A value that is not an object is kept as
+ * written so `validateConfig` names it: spreading `layout: 'report'` would scatter the
+ * string's characters into the group and leave every default standing — the audit off,
+ * and nothing said.
+ */
+function mergeGroup<T extends object>(defaults: T, value: unknown): T {
+  if (value === undefined) return { ...defaults };
+  return isPlainObject(value) ? { ...defaults, ...value } : (value as T);
 }
 
 /** JSON formatting keeps strings quoted and numbers bare — the value as it was written. */
@@ -319,41 +330,55 @@ export function validateConfig(config: DiopsisConfig): string[] {
   if (!Number.isInteger(config.viewportHeight) || config.viewportHeight <= 0) {
     problems.push(`viewportHeight must be a positive integer (got ${show(config.viewportHeight)})`);
   }
-  if (!isUnitInterval(config.compare.threshold)) {
+  if (!isPlainObject(config.compare)) {
     problems.push(
-      `compare.threshold must be a number between 0 and 1 (got ${show(config.compare.threshold)})`,
+      `compare must be an object of { threshold, maxDiffPixelRatio, maxDiffPixels } ` +
+        `(got ${show(config.compare)})`,
     );
-  }
-  if (!isUnitInterval(config.compare.maxDiffPixelRatio)) {
-    problems.push(
-      `compare.maxDiffPixelRatio must be a number between 0 and 1 ` +
-        `(got ${show(config.compare.maxDiffPixelRatio)})`,
-    );
-  }
-  if (
-    config.compare.maxDiffPixels !== undefined &&
-    !(Number.isInteger(config.compare.maxDiffPixels) && config.compare.maxDiffPixels >= 0)
-  ) {
-    problems.push(
-      `compare.maxDiffPixels must be a non-negative integer ` +
-        `(got ${show(config.compare.maxDiffPixels)})`,
-    );
+  } else {
+    if (!isUnitInterval(config.compare.threshold)) {
+      problems.push(
+        `compare.threshold must be a number between 0 and 1 (got ${show(config.compare.threshold)})`,
+      );
+    }
+    if (!isUnitInterval(config.compare.maxDiffPixelRatio)) {
+      problems.push(
+        `compare.maxDiffPixelRatio must be a number between 0 and 1 ` +
+          `(got ${show(config.compare.maxDiffPixelRatio)})`,
+      );
+    }
+    if (
+      config.compare.maxDiffPixels !== undefined &&
+      !(Number.isInteger(config.compare.maxDiffPixels) && config.compare.maxDiffPixels >= 0)
+    ) {
+      problems.push(
+        `compare.maxDiffPixels must be a non-negative integer ` +
+          `(got ${show(config.compare.maxDiffPixels)})`,
+      );
+    }
   }
   if (typeof config.timeout !== 'number' || !Number.isFinite(config.timeout) || config.timeout <= 0) {
     problems.push(`timeout must be a positive number (got ${show(config.timeout)})`);
   }
-  const settleTimeout = config.stabilize.settleTimeout;
-  if (typeof settleTimeout !== 'number' || !Number.isFinite(settleTimeout) || settleTimeout <= 0) {
-    problems.push(`stabilize.settleTimeout must be a positive number (got ${show(settleTimeout)})`);
-  }
-  if (typeof config.stabilize.waitForPlay !== 'boolean') {
-    problems.push(
-      `stabilize.waitForPlay must be true or false (got ${show(config.stabilize.waitForPlay)})`,
-    );
-  }
-  const retries = config.stabilize.retries;
-  if (!Number.isInteger(retries) || retries < 0) {
-    problems.push(`stabilize.retries must be a non-negative integer (got ${show(retries)})`);
+  // The stabilize group's own keys are checked only once it is an object; a scalar in its
+  // place is one problem, not one per key it lacks.
+  const stabilize = isPlainObject(config.stabilize) ? config.stabilize : undefined;
+  if (!stabilize) {
+    problems.push(`stabilize must be an object of stabilization options (got ${show(config.stabilize)})`);
+  } else {
+    const settleTimeout = config.stabilize.settleTimeout;
+    if (typeof settleTimeout !== 'number' || !Number.isFinite(settleTimeout) || settleTimeout <= 0) {
+      problems.push(`stabilize.settleTimeout must be a positive number (got ${show(settleTimeout)})`);
+    }
+    if (typeof config.stabilize.waitForPlay !== 'boolean') {
+      problems.push(
+        `stabilize.waitForPlay must be true or false (got ${show(config.stabilize.waitForPlay)})`,
+      );
+    }
+    const retries = config.stabilize.retries;
+    if (!Number.isInteger(retries) || retries < 0) {
+      problems.push(`stabilize.retries must be a non-negative integer (got ${show(retries)})`);
+    }
   }
   if (
     config.workers !== undefined &&
@@ -395,8 +420,9 @@ export function validateConfig(config: DiopsisConfig): string[] {
       );
     }
   }
-  const freezeClock = config.stabilize.freezeClock;
+  const freezeClock = config.stabilize?.freezeClock;
   if (
+    stabilize &&
     freezeClock !== false &&
     (typeof freezeClock !== 'string' || Number.isNaN(Date.parse(freezeClock)))
   ) {
