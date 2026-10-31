@@ -38,11 +38,11 @@ const { defaultConfig } = await import('../src/config.ts');
 
 const work = await mkdtemp(path.join(os.tmpdir(), 'diopsis-layout-check-'));
 
-// The planted overlap: below 800 px the image is drawn over the title; wide, it floats
-// beside it. The title is inline-block so its box is its text, not the whole line —
-// otherwise a block heading would "overlap" anything on the row.
+// The planted overlap: below 800 px the image is drawn over the title; wide, it sits
+// beside it. The title is a plain block heading: text is judged by its line boxes, so the
+// rest of its row is free space, not title.
 await writeFile(path.join(work, 'car-over-title.html'), `<!doctype html><meta charset=utf-8>
-<style>body{margin:0}h1{display:inline-block;width:200px;margin:0}
+<style>body{margin:0}h1{width:200px;margin:0;font-size:24px}
 #car{position:absolute;top:0;width:220px;height:120px}
 @media (max-width:799px){#car{left:0}}
 @media (min-width:800px){#car{left:260px}}</style>
@@ -86,14 +86,49 @@ await writeFile(path.join(work, 'clamped.html'), `<!doctype html><meta charset=u
 </div>`);
 
 // A page that scrolls sideways because an element reaches past the right edge: the audit
-// names the element that reaches furthest.
-// A page that scrolls sideways because an element reaches past the right edge: the audit
 // names the element that reaches furthest. Body margin zeroed so the reach asserted below
 // is exact.
 await writeFile(path.join(work, 'sideways.html'), `<!doctype html><meta charset=utf-8>
 <style>body{margin:0}</style>
 <div id="storybook-root">
   <p id="wide" style="width:1500px;margin:0">a row the viewport cannot hold</p>
+</div>`);
+
+// Ordinary layouts a block box would misread, every one clean: an icon button labelled by
+// screen-reader-only text, a paragraph wrapping round a floated image, a close button laid
+// at the end of a heading's row, and a card that crops its tall image under a caption in
+// full view.
+const pixel =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+await writeFile(path.join(work, 'ordinary.html'), `<!doctype html><meta charset=utf-8>
+<style>body{margin:0;font:16px/20px sans-serif}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
+  clip:rect(0,0,0,0);white-space:nowrap;border:0}
+section{margin-bottom:24px}</style>
+<div id="storybook-root">
+  <section><button id="icon" style="width:32px;height:32px;padding:0">
+    <svg width="16" height="16" viewBox="0 0 16 16"><path d="M2 2l12 12M14 2L2 14" stroke="#000"/></svg>
+    <span class="sr-only">Close the dialog</span></button></section>
+  <section style="width:400px"><img id="float" alt="" src="${pixel}"
+    style="float:left;width:100px;height:100px;margin-right:8px">
+    <p id="wrap" style="margin:0">A paragraph long enough to wrap beside the floated image and
+    then carry on underneath it, line after line, the way an article body sits next to its
+    picture. Its block runs under the float; its words never do. One more sentence to make
+    sure the text reaches below the image.</p></section>
+  <section style="position:relative;width:400px"><h2 id="heading" style="margin:0;font-size:20px;line-height:32px">Dialog title</h2>
+    <button id="close" style="position:absolute;top:0;right:0;width:32px;height:32px">×</button></section>
+  <section id="card" style="width:200px;height:120px;overflow:hidden">
+    <p style="margin:0">Caption</p>
+    <img alt="" src="${pixel}" style="display:block;width:200px;height:160px"></section>
+</div>`);
+
+// The card's true positive: the same crop with the caption under the image, past the edge.
+await writeFile(path.join(work, 'card-cuts-caption.html'), `<!doctype html><meta charset=utf-8>
+<style>body{margin:0;font:16px/20px sans-serif}</style>
+<div id="storybook-root">
+  <div id="card" style="width:200px;height:120px;overflow:hidden">
+    <img alt="" src="${pixel}" style="display:block;width:200px;height:110px">
+    <p style="margin:0;white-space:nowrap">Cut caption</p></div>
 </div>`);
 
 // Nothing wrong anywhere: a paragraph and an image in normal flow.
@@ -193,6 +228,28 @@ try {
       overflow.element.selector === 'p#wide' &&
       overflow.beyond === 900,
     JSON.stringify(sideways.findings),
+  );
+
+  const ordinary = await audit('ordinary.html', 'ordinary', 600);
+  check(
+    'screen-reader text, a float, a close button on a heading row and a cropped image are not findings',
+    ordinary.findings.length === 0,
+    JSON.stringify(ordinary.findings),
+  );
+
+  const caption = await audit('card-cuts-caption.html', 'card-cuts-caption', 600);
+  const [cutCaption] = caption.findings;
+  check(
+    'a card cutting off its caption is a text-clip finding, sized by the text past the edge',
+    // The line reaches 10 px past the edge at its line height; its glyph box ends a pixel
+    // or two sooner, depending on the font, so the reach is a range rather than one number.
+    caption.findings.length === 1 &&
+      cutCaption?.kind === 'text-clip' &&
+      cutCaption.element.selector === 'div#card' &&
+      cutCaption.axis === 'y' &&
+      cutCaption.hidden > 4 &&
+      cutCaption.hidden <= 10,
+    JSON.stringify(caption.findings),
   );
 
   const plain = await audit('clean.html', 'clean', 600);

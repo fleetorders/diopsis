@@ -72,6 +72,37 @@ describe('analyzeLayout — overlaps', () => {
     assert.deepEqual(analyzeLayout([title, image], page()), []);
   });
 
+  it('judges text by its line boxes: a paragraph wrapping round a float is not under it', () => {
+    // The paragraph's block runs under the float, but its lines start beside the image and
+    // continue below it.
+    const image = element('img.float', { x: 0, y: 0, width: 100, height: 100 }, { kind: 'media' });
+    const paragraph = element('p.body', { x: 0, y: 0, width: 400, height: 140 }, {
+      text: [
+        { x: 108, y: 0, width: 292, height: 20 },
+        { x: 108, y: 20, width: 292, height: 20 },
+        { x: 108, y: 40, width: 292, height: 20 },
+        { x: 108, y: 60, width: 292, height: 20 },
+        { x: 108, y: 80, width: 292, height: 20 },
+        { x: 0, y: 100, width: 400, height: 20 },
+        { x: 0, y: 120, width: 180, height: 20 },
+      ],
+    });
+    assert.deepEqual(analyzeLayout([image, paragraph], page()), []);
+  });
+
+  it('judges a block heading by its words, not the row it spans', () => {
+    // A close button laid over the end of a heading's row, clear of the title itself.
+    const heading = element('h2.title', { x: 0, y: 0, width: 400, height: 32 }, {
+      text: [{ x: 0, y: 4, width: 140, height: 24 }],
+    });
+    const close = element('button.close', { x: 368, y: 0, width: 32, height: 32 }, { kind: 'control' });
+    assert.deepEqual(analyzeLayout([heading, close], page()), []);
+    // The same button over the words is a collision.
+    const over = element('button.close', { x: 100, y: 0, width: 32, height: 32 }, { kind: 'control' });
+    const [finding] = analyzeLayout([heading, over], page());
+    assert.deepEqual(finding && finding.kind === 'overlap' ? finding.overlap : undefined, { width: 32, height: 24 });
+  });
+
   it('never pairs a container — only content elements collide', () => {
     // Two containers sharing every pixel, unrelated: not a finding, and not a crash.
     const a = element('div.a', { x: 0, y: 0, width: 100, height: 100 }, { kind: 'container' });
@@ -81,8 +112,13 @@ describe('analyzeLayout — overlaps', () => {
 });
 
 describe('analyzeLayout — text clips', () => {
+  // Its words run 30 px past the right edge and 60 px past the bottom; what each case
+  // reports is decided by what the box says it hides.
   const clipping = (clip: MeasuredElement['clip']): MeasuredElement =>
-    element('p.cut', { x: 0, y: 0, width: 100, height: 20 }, { clip });
+    element('p.cut', { x: 0, y: 0, width: 100, height: 20 }, {
+      clip,
+      text: [{ x: 0, y: 0, width: 130, height: 80 }],
+    });
 
   it('reports text the element\'s own box hides, on the axis that hides more', () => {
     const [finding] = analyzeLayout(
@@ -129,9 +165,59 @@ describe('analyzeLayout — text clips', () => {
     );
     // The same box hiding a line of text is a cut-off.
     assert.equal(
-      analyzeLayout(container(element('p.caption', { x: 0, y: 0, width: 80, height: 40 })), page()).length,
+      analyzeLayout(
+        container(element('p.caption', { x: 0, y: 0, width: 80, height: 40 }, {
+          text: [{ x: 0, y: 0, width: 120, height: 20 }],
+        })),
+        page(),
+      ).length,
       1,
     );
+  });
+
+  // A card hiding 58 px of overflow: a tall image is what overflows, and its caption is
+  // where the case decides.
+  const card = (captionY: number): MeasuredElement[] => [
+    element('div.card', { x: 0, y: 0, width: 200, height: 120 }, {
+      kind: 'container',
+      clip: { x: 0, y: 58, ellipsis: false, lineClamp: false },
+    }),
+    element('p.caption', { x: 0, y: captionY, width: 200, height: 18 }, {
+      ancestors: [0],
+      text: [{ x: 0, y: captionY, width: 60, height: 18 }],
+    }),
+    element('img.photo', { x: 0, y: 18, width: 200, height: 160 }, { kind: 'media', ancestors: [0] }),
+  ];
+
+  it('stays silent on a card that crops its image while its text sits in full view', () => {
+    assert.deepEqual(analyzeLayout(card(0), page()), []);
+  });
+
+  it('reports the card once its text is past the edge, by how far the text reaches', () => {
+    // The caption's line ends 8 px past the bottom; the box hides more than that, but only
+    // the 8 px are text.
+    const finding = analyzeLayout(card(110), page()).find((f) => f.kind === 'text-clip');
+    assert.deepEqual(
+      finding && finding.kind === 'text-clip'
+        ? { selector: finding.element.selector, axis: finding.axis, hidden: finding.hidden }
+        : undefined,
+      { selector: 'div.card', axis: 'y', hidden: 8 },
+    );
+  });
+
+  it('leaves text a nearer clipping box already hides to that box', () => {
+    const frame = element('div.frame', { x: 0, y: 0, width: 100, height: 40 }, {
+      kind: 'container',
+      clip: { x: 60, y: 0, ellipsis: false, lineClamp: false },
+    });
+    const ellipsized = element('span.name', { x: 0, y: 0, width: 100, height: 20 }, {
+      ancestors: [0],
+      clip: { x: 60, y: 0, ellipsis: true, lineClamp: false },
+      text: [{ x: 0, y: 0, width: 160, height: 20 }],
+    });
+    // The span truncates its own words with an ellipsis; the frame around it hides nothing
+    // the span had not already hidden.
+    assert.deepEqual(analyzeLayout([frame, ellipsized], page()), []);
   });
 });
 

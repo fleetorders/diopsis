@@ -140,14 +140,17 @@ breakpoints, say — Diopsis walks the laid-out story and reports, as text in `s
 and the report:
 
 - two unrelated content elements overlapping (an image over a title), when the shared area
-  covers at least a quarter of the smaller element;
-- text or a control the element's own box hides, beyond 4 px, unless an ellipsis or a line
-  clamp says the truncation is the design;
+  covers at least a quarter of the smaller element — text counts where its words are, so a
+  paragraph wrapping round a float is not under it;
+- text or a control reaching more than 4 px past the edge of a box that hides its overflow,
+  unless an ellipsis or a line clamp says the truncation is the design — a card cropping its
+  image is not a finding;
 - the page scrolling sideways, naming the element that reaches furthest past the right edge.
 
 `report` records findings and never touches the exit code; `fail` fails the capture like a
 change, except in `update`, which measures and records only. A screenshot is kept only of a
 capture with findings, and interaction-state captures are never measured — a tooltip overlaps
-on purpose. A story opts out with `diopsis:layout=off`, and an element whose overlaps are the
+on purpose. Screen-reader-only text, the 1 px visually-hidden pattern, is never measured
+either. A story opts out with `diopsis:layout=off`, and an element whose overlaps are the
 design — an image laid partly over free space — marks them intended with
 `data-diopsis-overlap`, the same register as the `data-diopsis-ignore` mask.

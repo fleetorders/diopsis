@@ -1,7 +1,7 @@
 import type { Locator, Page } from '@playwright/test';
 import type { RawA11yViolation } from '../accessibility.ts';
 import type { StabilizeOptions } from '../config.ts';
-import type { MeasuredElement, PageGeometry } from '../layout.ts';
+import type { Box, MeasuredElement, PageGeometry } from '../layout.ts';
 import type { InteractionState } from '../matrix.ts';
 
 /** Storybook 7+ renders into `#storybook-root`; v6 used `#root`. */
@@ -437,6 +437,12 @@ export const COMPONENT_PADDING = 8;
 /** The descendant walk stops here, so clipping cannot become a scan of a pathological page. */
 const MAX_WALKED_ELEMENTS = 5000;
 
+/**
+ * Line boxes kept per element's own text: enough to follow a paragraph round a float, few
+ * enough that a long one stays a short list; past it, consecutive lines fold into bands.
+ */
+const MAX_TEXT_BOXES = 32;
+
 /** A clip rectangle in document coordinates, whole CSS pixels. */
 export interface ComponentClip {
   x: number;
@@ -540,7 +546,7 @@ export interface LayoutMeasurement {
  */
 export async function measureLayout(page: Page): Promise<LayoutMeasurement> {
   return page.evaluate(
-    ({ roots, limit }: { roots: readonly string[]; limit: number }) => {
+    ({ roots, limit, textBoxLimit }: { roots: readonly string[]; limit: number; textBoxLimit: number }) => {
       const MEDIA_TAGS = new Set(['img', 'video', 'canvas', 'svg', 'picture', 'iframe']);
       const CONTROL_TAGS = new Set([
         'button', 'a', 'input', 'select', 'textarea', 'label', 'summary',
@@ -554,12 +560,49 @@ export async function measureLayout(page: Page): Promise<LayoutMeasurement> {
         }
         return selector.length > 60 ? selector.slice(0, 60) : selector;
       };
-      const hasOwnText = (element: Element): boolean => {
+      // Where an element's own words sit: one box per line fragment of each text node, so a
+      // paragraph wrapping round a float, or a heading whose block runs on past its words,
+      // is judged by its text and not by its whole box. A long paragraph is folded into
+      // consecutive bands to stay a bounded list; bands still follow the lines they hold.
+      const textOf = (element: Element): Box[] | undefined => {
+        const boxes: Box[] = [];
         for (const node of Array.from(element.childNodes)) {
-          if (node.nodeType === Node.TEXT_NODE && node.textContent?.trim()) return true;
+          if (node.nodeType !== Node.TEXT_NODE || !node.textContent?.trim()) continue;
+          const range = document.createRange();
+          range.selectNodeContents(node);
+          for (const fragment of Array.from(range.getClientRects())) {
+            const x = Math.round(fragment.left);
+            const y = Math.round(fragment.top);
+            const width = Math.round(fragment.right) - x;
+            const height = Math.round(fragment.bottom) - y;
+            if (width > 0 && height > 0) boxes.push({ x, y, width, height });
+          }
         }
-        return false;
+        if (boxes.length === 0) return undefined;
+        if (boxes.length <= textBoxLimit) return boxes;
+        const per = Math.ceil(boxes.length / textBoxLimit);
+        const bands: Box[] = [];
+        for (let start = 0; start < boxes.length; start += per) {
+          const group = boxes.slice(start, start + per);
+          const left = Math.min(...group.map((box) => box.x));
+          const top = Math.min(...group.map((box) => box.y));
+          const right = Math.max(...group.map((box) => box.x + box.width));
+          const bottom = Math.max(...group.map((box) => box.y + box.height));
+          bands.push({ x: left, y: top, width: right - left, height: bottom - top });
+        }
+        return bands;
       };
+      // Screen-reader-only text is hidden from sight on purpose, and so is everything else
+      // inside such a box: a box 1 px or less on an axis that clips that axis shows nothing
+      // it holds — the visually-hidden pattern every design system ships — and a legacy
+      // `clip` rectangle on a positioned element exists for that pattern alone. `clip-path`
+      // is not read: a rounded or angled crop of a card is a common design whose content
+      // still shows.
+      const visuallyHidden = (rect: DOMRect, style: CSSStyleDeclaration): boolean =>
+        (rect.width <= 1 && style.overflowX !== 'visible') ||
+        (rect.height <= 1 && style.overflowY !== 'visible') ||
+        (style.clip !== 'auto' && style.clip !== '' &&
+          (style.position === 'absolute' || style.position === 'fixed'));
       const clipOf = (element: Element): MeasuredElement['clip'] | undefined => {
         const style = window.getComputedStyle(element);
         const hiddenX = Math.max(0, element.scrollWidth - element.clientWidth);
@@ -589,17 +632,20 @@ export async function measureLayout(page: Page): Promise<LayoutMeasurement> {
         const { element, collectedAncestors } = stack.pop()!;
         walked += 1;
         const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        // Nothing below a visually hidden box is seen, so nothing below it is collected.
+        if (visuallyHidden(rect, style)) continue;
         let ancestorsForChildren = collectedAncestors;
         if (rect.width > 0 && rect.height > 0) {
-          const style = window.getComputedStyle(element);
           const visible =
             style.visibility !== 'hidden' && style.opacity !== '0' && style.display !== 'none';
           const tag = element.tagName.toLowerCase();
+          const text = MEDIA_TAGS.has(tag) ? undefined : textOf(element);
           const kind = MEDIA_TAGS.has(tag)
             ? ('media' as const)
             : CONTROL_TAGS.has(tag)
               ? ('control' as const)
-              : hasOwnText(element)
+              : text
                 ? ('text' as const)
                 : ('container' as const);
           const clip = clipOf(element);
@@ -617,6 +663,7 @@ export async function measureLayout(page: Page): Promise<LayoutMeasurement> {
                 height: Math.round(rect.bottom) - y,
               },
               ancestors: collectedAncestors,
+              ...(text ? { text } : {}),
               ...(clip ? { clip } : {}),
               ...(element.closest('[data-diopsis-overlap]') ? { intended: true as const } : {}),
             });
@@ -635,7 +682,7 @@ export async function measureLayout(page: Page): Promise<LayoutMeasurement> {
         : document.documentElement.scrollWidth;
       return { elements, page: { viewportWidth: layoutViewport, scrollWidth } };
     },
-    { roots: RENDER_ROOTS, limit: MAX_WALKED_ELEMENTS },
+    { roots: RENDER_ROOTS, limit: MAX_WALKED_ELEMENTS, textBoxLimit: MAX_TEXT_BOXES },
   );
 }
 

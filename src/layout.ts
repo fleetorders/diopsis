@@ -37,11 +37,18 @@ export interface LayoutElementRef {
 /** One element the walk collected, trimmed to what the analysis reads. */
 export interface MeasuredElement extends LayoutElementRef {
   /**
-   * Indices of this element's collected ancestors, closest first. Overlap is judged between
-   * unrelated elements only — a child inside its parent is layout, not collision — and this
-   * is the whole ancestry the walk needs to say so.
+   * Indices of this element's collected ancestors, outermost first. Overlap is judged
+   * between unrelated elements only — a child inside its parent is layout, not collision —
+   * and this is the whole ancestry the walk needs to say so.
    */
   ancestors: number[];
+  /**
+   * Where the element's own text sits: one box per line fragment of its text nodes, in the
+   * same coordinates as `box`. A text element is judged by these rather than by its block,
+   * so a paragraph wrapping round a float is not "under" the float. Present when the
+   * element has text of its own.
+   */
+  text?: Box[];
   /**
    * How much of the element's own content its box hides, per axis, in CSS pixels, with
    * whether the hiding is a deliberate truncation style (ellipsis on the axis,
@@ -130,27 +137,82 @@ function related(elements: MeasuredElement[], a: number, b: number): boolean {
 }
 
 /** The intersection of two boxes, or undefined when they do not touch. */
-function intersection(a: Box, b: Box): { width: number; height: number } | undefined {
-  const width = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
-  const height = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
-  return width > 0 && height > 0 ? { width, height } : undefined;
+function intersection(a: Box, b: Box): Box | undefined {
+  const x = Math.max(a.x, b.x);
+  const y = Math.max(a.y, b.y);
+  const width = Math.min(a.x + a.width, b.x + b.width) - x;
+  const height = Math.min(a.y + a.height, b.y + b.height) - y;
+  return width > 0 && height > 0 ? { x, y, width, height } : undefined;
+}
+
+/** The smallest box holding every one given; the list is never empty. */
+function bounds(boxes: Box[]): Box {
+  const x = Math.min(...boxes.map((box) => box.x));
+  const y = Math.min(...boxes.map((box) => box.y));
+  const right = Math.max(...boxes.map((box) => box.x + box.width));
+  const bottom = Math.max(...boxes.map((box) => box.y + box.height));
+  return { x, y, width: right - x, height: bottom - y };
 }
 
 /**
- * Whether a clipping element holds something the review cares about: its own text, or text
- * or a control anywhere below it. Media crops are excluded on purpose — a thumbnail that
- * crops its image is the design working, where cut-off text is the design broken.
+ * The boxes an element occupies for the overlap check: a text element's line boxes, where
+ * its words actually are, and every other element's box. A block heading's box runs the
+ * width of its row, and a paragraph's box runs under a float its lines wrap round; judging
+ * either by its box reads ordinary layout as a collision.
  */
-function clipsReadableContent(
+function shapeOf(element: MeasuredElement): Box[] {
+  return element.kind === 'text' && element.text && element.text.length > 0
+    ? element.text
+    : [element.box];
+}
+
+/** The boxes a clipping element's readable content occupies: words for text, boxes for controls. */
+function readableShapeOf(element: MeasuredElement): Box[] {
+  if (element.kind === 'control') return [element.box];
+  return element.kind === 'text' ? shapeOf(element) : [];
+}
+
+/** A box's extent on one axis, as start and end. */
+function span(box: Box, axis: 'x' | 'y'): [number, number] {
+  return axis === 'x' ? [box.x, box.x + box.width] : [box.y, box.y + box.height];
+}
+
+/**
+ * How far readable content reaches past a clipping element's edges on one axis: its own
+ * words, and the text and controls collected below it, each first cut to any nearer box
+ * that clips the same axis — one between them, or the descendant's own — since that box
+ * hides the overflow before this one can. Media is not counted on purpose — a card cropping a tall image while its caption
+ * sits in full view is the design working, where cut-off text is the design broken.
+ */
+function readableReach(
   element: MeasuredElement,
   index: number,
   elements: MeasuredElement[],
-): boolean {
-  if (element.kind === 'text' || element.kind === 'control') return true;
-  return elements.some(
-    (other) =>
-      (other.kind === 'text' || other.kind === 'control') && other.ancestors.includes(index),
-  );
+  axis: 'x' | 'y',
+): number {
+  const [start, end] = span(element.box, axis);
+  let reach = 0;
+  const measure = (boxes: Box[], nearer: number[]): void => {
+    for (const box of boxes) {
+      let [from, to] = span(box, axis);
+      for (const ancestor of nearer) {
+        const clip = elements[ancestor]!.clip;
+        if (!clip || (axis === 'x' ? clip.x : clip.y) <= 0) continue;
+        const [clipFrom, clipTo] = span(elements[ancestor]!.box, axis);
+        from = Math.max(from, clipFrom);
+        to = Math.min(to, clipTo);
+      }
+      if (to > from) reach = Math.max(reach, start - from, to - end);
+    }
+  };
+  if (element.text) measure(element.text, []);
+  for (let other = index + 1; other < elements.length; other++) {
+    const ancestors = elements[other]!.ancestors;
+    const at = ancestors.indexOf(index);
+    if (at === -1) continue;
+    measure(readableShapeOf(elements[other]!), [...ancestors.slice(at + 1), other]);
+  }
+  return reach;
 }
 
 /**
@@ -187,14 +249,23 @@ export function analyzeLayout(elements: MeasuredElement[], page: PageGeometry): 
     }
   }
 
-  // Cut-off content: hidden overflow with more content than the box shows. An ellipsis on
-  // the horizontal axis is a deliberate truncation, and a line clamp is the vertical
-  // equivalent; neither is a finding even though both hide text.
+  // Cut-off content: a box hiding overflow while its text or controls reach past its edge.
+  // The hidden amount is the smaller of how far that content reaches and how much the box
+  // hides — content positioned out of the box's clipping reaches without being hidden, and
+  // a cropped image is hidden without being content. An ellipsis on the horizontal axis is
+  // a deliberate truncation, and a line clamp is the vertical equivalent; neither is a
+  // finding even though both hide text.
   for (const [index, element] of elements.entries()) {
     const clip = element.clip;
-    if (!clip || !clipsReadableContent(element, index, elements)) continue;
-    const xHidden = clip.x > CLIP_MIN_PX && !clip.ellipsis ? clip.x : 0;
-    const yHidden = clip.y > CLIP_MIN_PX && !clip.lineClamp ? clip.y : 0;
+    if (!clip) continue;
+    const hiddenOn = (axis: 'x' | 'y'): number => {
+      const amount = axis === 'x' ? clip.x : clip.y;
+      if (amount <= CLIP_MIN_PX || (axis === 'x' ? clip.ellipsis : clip.lineClamp)) return 0;
+      const hidden = Math.min(amount, readableReach(element, index, elements, axis));
+      return hidden > CLIP_MIN_PX ? hidden : 0;
+    };
+    const xHidden = hiddenOn('x');
+    const yHidden = hiddenOn('y');
     const axis: 'x' | 'y' | undefined =
       xHidden >= yHidden && xHidden > 0 ? 'x' : yHidden > 0 ? 'y' : undefined;
     if (axis) {
@@ -202,7 +273,7 @@ export function analyzeLayout(elements: MeasuredElement[], page: PageGeometry): 
         kind: 'text-clip',
         element: refOf(element),
         axis,
-        hidden: Math.round(axis === 'x' ? clip.x : clip.y),
+        hidden: Math.round(axis === 'x' ? xHidden : yHidden),
       });
     }
   }
@@ -211,8 +282,20 @@ export function analyzeLayout(elements: MeasuredElement[], page: PageGeometry): 
   // one's area. Two media elements are excluded — stacked images are a technique, not a
   // lost reading — while any pair involving text or a control is exactly what the audit
   // exists to catch. Marked elements never take part.
+  // Each element is judged by its shape — a text element by its line boxes — so the shared
+  // area is the sum over line boxes, and the overlap reported is the extent of what they
+  // share.
   const candidates = elements
-    .map((element, index) => ({ element, index }))
+    .map((element, index) => {
+      const shape = shapeOf(element);
+      return {
+        element,
+        index,
+        shape,
+        extent: bounds(shape),
+        area: shape.reduce((sum, box) => sum + area(box), 0),
+      };
+    })
     .filter(
       ({ element }) =>
         element.kind !== 'container' && !element.intended && area(element.box) > 0,
@@ -224,21 +307,25 @@ export function analyzeLayout(elements: MeasuredElement[], page: PageGeometry): 
       const second = candidates[j]!;
       if (first.element.kind === 'media' && second.element.kind === 'media') continue;
       if (related(elements, first.index, second.index)) continue;
-      const overlap = intersection(first.element.box, second.element.box);
-      if (!overlap) continue;
-      const shared = overlap.width * overlap.height;
+      if (!intersection(first.extent, second.extent)) continue;
+      const cuts: Box[] = [];
+      for (const a of first.shape) {
+        for (const b of second.shape) {
+          const cut = intersection(a, b);
+          if (cut) cuts.push(cut);
+        }
+      }
+      if (cuts.length === 0) continue;
+      const shared = cuts.reduce((sum, cut) => sum + area(cut), 0);
       if (shared < OVERLAP_MIN_AREA) continue;
-      if (
-        shared / Math.min(area(first.element.box), area(second.element.box)) <
-        OVERLAP_SHARE
-      )
-        continue;
+      if (shared / Math.min(first.area, second.area) < OVERLAP_SHARE) continue;
+      const extent = bounds(cuts);
       overlaps.push({
         kind: 'overlap',
         // Document order approximates paint order: the later element is the one on top.
         covered: refOf(first.element),
         covering: refOf(second.element),
-        overlap: { width: Math.round(overlap.width), height: Math.round(overlap.height) },
+        overlap: { width: Math.round(extent.width), height: Math.round(extent.height) },
       });
     }
   }

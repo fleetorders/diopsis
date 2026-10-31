@@ -762,9 +762,13 @@ validated) measures, at every capture's width, where text, controls and images s
 reports three findings as text in `summary.json` (`captures[].layout.findings`,
 `totals.layoutFindings`) and the report: overlapping boxes (two unrelated content elements
 sharing at least 25% of the smaller's area; media pairs excluded), text cut off by its
-container (hidden overflow beyond 4 px, unless ellipsis or line clamping says the
-truncation is the design), and sideways scrolling (the page scrolls because an element
-reaches past the right edge). `layout.widths` are measured in addition to every story's
+container (a box hiding overflow while its text or controls reach more than 4 px past its
+edge, unless ellipsis or line clamping says the truncation is the design), and sideways
+scrolling (the page scrolls because an element reaches past the right edge). Text is
+judged by its line boxes, not its block, so a paragraph wrapping round a float or a
+heading whose row a button shares is not a collision; a visually hidden subtree (a box
+1 px or less on an axis it clips, or a legacy `clip` rectangle) is not measured at all,
+because screen-reader-only text is hidden from sight on purpose. `layout.widths` are measured in addition to every story's
 capture widths — breakpoints, say — as layout-only captures that navigate and never
 compare, so no baseline is ever written for them; their snapshot path is the placeholder
 mode `diopsis-layout`, which the path parser reads and no run writes. A screenshot is
