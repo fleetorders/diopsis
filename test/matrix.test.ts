@@ -800,3 +800,98 @@ describe('the accessibility audit slot', () => {
     assert.equal(matrix.captures[0]?.a11y, true);
   });
 });
+
+describe('the layout audit slot', () => {
+  const config = (over: Partial<DiopsisConfig> = {}): Parameters<typeof resolveMatrix>[1] => ({
+    viewports,
+    viewportHeight: 900,
+    capture: 'page',
+    ...over,
+  });
+
+  it('marks every capture a state is not holding, and no state capture', () => {
+    const matrix = resolveMatrix(
+      [story('a--one', ['diopsis:hover=button']), story('b--two')],
+      config({ modes: { dark: { theme: 'dark' } }, viewports: { default: [320, 1280] }, layout: { mode: 'report', widths: [] } }),
+      'linux-x64',
+    );
+    // A width is where a layout breaks, so every width and mode is measured; the held
+    // interaction states sit out, their overlaps being the point.
+    const marked = matrix.captures.filter((capture) => capture.layout).map((capture) => capture.snapshotPath);
+    assert.deepEqual(marked, [
+      'a--one/320w-linux-x64.png',
+      'a--one/320w-dark-linux-x64.png',
+      'a--one/1280w-linux-x64.png',
+      'a--one/1280w-dark-linux-x64.png',
+      'b--two/320w-linux-x64.png',
+      'b--two/320w-dark-linux-x64.png',
+      'b--two/1280w-linux-x64.png',
+      'b--two/1280w-dark-linux-x64.png',
+    ]);
+  });
+
+  it('marks nothing when the audit is off, widths or no widths', () => {
+    const matrix = resolveMatrix(
+      [story('a--one')],
+      config({ layout: { mode: 'off', widths: [480] } }),
+      'linux-x64',
+    );
+    assert.equal(matrix.captures.some((capture) => capture.layout || capture.layoutOnly), false);
+  });
+
+  it('adds layout-only captures at the audit\'s own widths, and at no width a baseline lives at', () => {
+    const matrix = resolveMatrix(
+      [story('a--one')],
+      config({ layout: { mode: 'report', widths: [768, 320, 480, 768] } }),
+      'linux-x64',
+    );
+    const layoutOnly = matrix.captures.filter((capture) => capture.layoutOnly);
+    // Sorted, deduplicated, and 320 skipped because a baseline capture already sits there.
+    assert.deepEqual(
+      layoutOnly.map((capture) => ({ width: capture.width, path: capture.snapshotPath })),
+      [
+        { width: 480, path: 'a--one/480w-diopsis-layout-linux-x64.png' },
+        { width: 768, path: 'a--one/768w-diopsis-layout-linux-x64.png' },
+      ],
+    );
+    // A layout-only capture is measured like any other and never compared.
+    assert.ok(layoutOnly.every((capture) => capture.layout === true));
+  });
+
+  it('reads the layout-only path back as a mode the matrix never writes', () => {
+    assert.deepEqual(parseSnapshotPath('a--one/480w-diopsis-layout-linux-x64.png'), {
+      storyId: 'a--one',
+      width: 480,
+      mode: 'diopsis-layout',
+      platform: 'linux-x64',
+    });
+  });
+
+  it('excludes a story tagged diopsis:layout=off from the audit entirely', () => {
+    const matrix = resolveMatrix(
+      [story('a--quiet', ['diopsis:layout=off']), story('b--two')],
+      config({ layout: { mode: 'report', widths: [480] } }),
+      'linux-x64',
+    );
+    const audited = matrix.captures.filter((capture) => capture.layout).map((capture) => capture.storyId);
+    // b--two is measured at both its baseline widths and once more at the audit's own 480.
+    assert.deepEqual(audited, ['b--two', 'b--two', 'b--two']);
+  });
+
+  it('treats the layout tag as a directive that names no width', () => {
+    const result = widthsForStory(story('a--one', ['diopsis:layout=off']), viewports);
+    assert.deepEqual(result.widths, [320, 1280]);
+    assert.deepEqual(result.warnings, []);
+  });
+
+  it('warns about a layout tag naming any other value, and measures anyway', () => {
+    const matrix = resolveMatrix(
+      [story('a--one', ['diopsis:layout=quiet'])],
+      config({ layout: { mode: 'report', widths: [] } }),
+      'linux-x64',
+    );
+    assert.equal(matrix.warnings.length, 1);
+    assert.match(matrix.warnings[0] ?? '', /diopsis:layout=quiet.*ignored/);
+    assert.equal(matrix.captures[0]?.layout, true);
+  });
+});

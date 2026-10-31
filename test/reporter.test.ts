@@ -6,7 +6,7 @@ import { afterEach, describe, it } from 'node:test';
 import type { FullConfig, FullResult, TestCase, TestResult } from '@playwright/test/reporter';
 import { deflateSync } from 'node:zlib';
 
-import { resolveConfig } from '../src/config.ts';
+import { resolveConfig, type UserConfig } from '../src/config.ts';
 import { resolveMatrix } from '../src/matrix.ts';
 import DiopsisReporter, { errorTextOf, type DiopsisReporterOptions } from '../src/reporter.ts';
 import { NOT_RUN, type RunSummary } from '../src/report/summary.ts';
@@ -30,10 +30,12 @@ async function setup(
   retries = 0,
   /** Extra reporter options, for the surfaces only some runs carry. */
   extra: Partial<DiopsisReporterOptions> = {},
+  /** Config the plan is resolved with, for the captures only some configs plan. */
+  user: UserConfig = {},
 ): Promise<{ reporter: DiopsisReporter; outputDir: string }> {
   const root = await mkdtemp(path.join(tmpdir(), 'diopsis-reporter-'));
   temporaries.push(root);
-  const config = resolveConfig();
+  const config = resolveConfig(user);
   const { captures } = resolveMatrix(withStories, config, 'linux-x64');
   const planned = planCaptures(captures, path.join(root, '__screenshots__'));
   const outputDir = path.join(root, '.diopsis');
@@ -864,5 +866,102 @@ describe('DiopsisReporter with the accessibility audit', () => {
     });
     assert.doesNotMatch(out, /^  a11y /m);
     assert.equal((await summaryAt(outputDir)).totals.a11yNew, 0);
+  });
+});
+
+describe('the reporter and the layout audit', () => {
+  const overlap = {
+    kind: 'overlap',
+    covered: { selector: 'h1.title', kind: 'text', box: { x: 0, y: 0, width: 200, height: 30 } },
+    covering: { selector: 'img.car', kind: 'media', box: { x: 0, y: 0, width: 200, height: 120 } },
+    overlap: { width: 200, height: 30 },
+  };
+  const clip = {
+    kind: 'text-clip',
+    element: { selector: 'p.body', kind: 'text', box: { x: 0, y: 40, width: 100, height: 20 } },
+    axis: 'x',
+    hidden: 30,
+  };
+
+  const measured = (findings: unknown[]) =>
+    result({
+      annotations: [
+        { type: 'diopsis-baseline', description: 'present' },
+        { type: 'diopsis-layout', description: JSON.stringify(findings) },
+      ],
+    });
+
+  it('records a width\'s findings, with the width on the line', async () => {
+    const { reporter, outputDir } = await setup();
+    const { out } = await withCapturedStdout(async () => {
+      reporter.onTestEnd(testTitled('a--one @320'), measured([overlap, clip]));
+      await reporter.onEnd({ status: 'passed' } as FullResult);
+    });
+
+    const summary = await summaryAt(outputDir);
+    const capture = summary.captures.find((c) => c.storyId === 'a--one');
+    assert.deepEqual(capture?.layout?.findings, [overlap, clip]);
+    assert.equal(summary.totals.layoutFindings, 2);
+    // 'report' mode never touched the exit code, and the line carries the width — the same
+    // story can be broken at one width and clean at another.
+    assert.equal(capture?.status, 'unchanged');
+    assert.match(out, /  layout    2 findings in 1 story/);
+    assert.match(out, /  ! a--one @320  overlap ×1, text-clip ×1/);
+  });
+
+  it('keeps a measured-clean width on the record — clean is a fact, not an absence', async () => {
+    const { reporter, outputDir } = await setup();
+    await withCapturedStdout(async () => {
+      reporter.onTestEnd(testTitled('a--one @320'), measured([]));
+      await reporter.onEnd({ status: 'passed' } as FullResult);
+    });
+    const summary = await summaryAt(outputDir);
+    assert.deepEqual(summary.captures.find((c) => c.storyId === 'a--one')?.layout, { findings: [] });
+    assert.equal(summary.totals.layoutFindings, 0);
+  });
+
+  it('reads a failed layout-only capture as a layout to look at, never as a new story', async () => {
+    const { reporter, outputDir } = await setup(stories, 0, {}, {
+      layout: { mode: 'fail', widths: [480] },
+    });
+    await withCapturedStdout(async () => {
+      reporter.onTestEnd(
+        testTitled('a--one @480 [layout]'),
+        result({
+          status: 'failed',
+          errors: [{ message: 'Error: New layout findings: 1 in a--one @480 (overlap ×1)' }],
+          // The placeholder path of a layout-only capture never exists; a "missing" record
+          // for it must not decide the verdict.
+          annotations: [
+            { type: 'diopsis-baseline', description: 'missing' },
+            { type: 'diopsis-layout', description: JSON.stringify([overlap]) },
+          ],
+        }),
+      );
+      await reporter.onEnd({ status: 'failed' } as FullResult);
+    });
+    const summary = await summaryAt(outputDir);
+    const capture = summary.captures.find((c) => c.storyId === 'a--one' && c.width === 480);
+    assert.equal(capture?.status, 'changed');
+    assert.equal(summary.totals.new, 0);
+  });
+
+  it('reads an unreadable payload as unmeasured, never as clean', async () => {
+    const { reporter, outputDir } = await setup();
+    await withCapturedStdout(async () => {
+      reporter.onTestEnd(
+        testTitled('a--one @320'),
+        result({
+          annotations: [
+            { type: 'diopsis-baseline', description: 'present' },
+            { type: 'diopsis-layout', description: '{"findings":' },
+          ],
+        }),
+      );
+      await reporter.onEnd({ status: 'passed' } as FullResult);
+    });
+    const summary = await summaryAt(outputDir);
+    assert.equal(summary.captures.find((c) => c.storyId === 'a--one')?.layout, undefined);
+    assert.equal('layoutFindings' in summary.totals, false);
   });
 });

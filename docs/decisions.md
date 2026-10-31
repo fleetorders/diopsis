@@ -754,3 +754,47 @@ checkouts without symlink support it materialises as a regular file containing t
 file then replaces the instructions for every agent on such a checkout: a silent failure
 strictly worse than the one it avoids. Should such agents ever matter, the pointer file is
 the shape to restore, not the symlink.
+
+## D-050 — A layout audit that finds breaks a pixel diff cannot see
+
+**Decision:** `layout: { mode: 'off' | 'report' | 'fail', widths: [] }` (default `'off'`,
+validated) measures, at every capture's width, where text, controls and images sit, and
+reports three findings as text in `summary.json` (`captures[].layout.findings`,
+`totals.layoutFindings`) and the report: overlapping boxes (two unrelated content elements
+sharing at least 25% of the smaller's area; media pairs excluded), text cut off by its
+container (a box hiding overflow while its text or controls reach more than 4 px past its
+edge, unless ellipsis or line clamping says the truncation is the design), and sideways
+scrolling (the page scrolls because an element reaches past the right edge). Text is
+judged by its line boxes, not its block, so a paragraph wrapping round a float or a
+heading whose row a button shares is not a collision; a visually hidden subtree (a box
+1 px or less on an axis it clips, or a legacy `clip` rectangle) is not measured at all,
+because screen-reader-only text is hidden from sight on purpose. `layout.widths` are measured in addition to every story's
+capture widths — breakpoints, say — as layout-only captures that navigate and never
+compare, so no baseline is ever written for them; their snapshot path is the placeholder
+mode `diopsis-layout`, which the path parser reads and no run writes. A screenshot is
+taken only of a flagged capture, attached as `layout-shot.png` and carried as
+`artifacts.shot` — deliberately not `actual`, so `accept` can never offer it as a
+baseline. A story opts out with `diopsis:layout=off`; an element whose overlaps are
+intended is marked with `data-diopsis-overlap`, the same register as
+`data-diopsis-ignore` (D-008). `'fail'` fails a capture with findings like a change,
+except in an update, which measures and records only.
+
+**Why:** a pixel diff can only see what it has a baseline for, and a layout break is
+usually invisible to one: a car image grown over a title at one width renders that way in
+the baseline too, and the baseline widths are exactly where nobody looks between them. The
+measurement is geometry the page already knows — boxes, overflow, scroll — so it needs no
+library (D-015) and no baseline, which is also what lets it run at widths nothing else
+does. Thresholds sit in a pure module over the walk's data so findings are deterministic
+and unit-testable, rather than judgements made in a browser. Accepting pixels cannot fix a
+layout, so findings have no accepted-findings file: the response is fixing the markup or
+marking the overlap intended, and in `'fail'` mode a story stays failing until one of
+those happens.
+
+**Consequences:** the audit measures only where the comparison passed, like the
+accessibility audit (D-042), so a story with both a pixel change and a layout finding
+reports the pixels first and the layout on the next run. Interaction-state captures are
+never measured: tooltips and overlays overlap on purpose. Paint order is approximated by
+document order, so a deliberately stacked pair without a marking is reported and the
+marking is the answer, not z-index analysis. Layout-only captures are captures for every
+cost that matters (D-046) and write nothing to the baseline set. `scripts/layout-check.mjs`
+drives the whole pipeline in a real browser.

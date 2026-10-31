@@ -1,6 +1,7 @@
 import type { Locator, Page } from '@playwright/test';
 import type { RawA11yViolation } from '../accessibility.ts';
 import type { StabilizeOptions } from '../config.ts';
+import type { Box, MeasuredElement, PageGeometry } from '../layout.ts';
 import type { InteractionState } from '../matrix.ts';
 
 /** Storybook 7+ renders into `#storybook-root`; v6 used `#root`. */
@@ -436,6 +437,12 @@ export const COMPONENT_PADDING = 8;
 /** The descendant walk stops here, so clipping cannot become a scan of a pathological page. */
 const MAX_WALKED_ELEMENTS = 5000;
 
+/**
+ * Line boxes kept per element's own text: enough to follow a paragraph round a float, few
+ * enough that a long one stays a short list; past it, consecutive lines fold into bands.
+ */
+const MAX_TEXT_BOXES = 32;
+
 /** A clip rectangle in document coordinates, whole CSS pixels. */
 export interface ComponentClip {
   x: number;
@@ -513,6 +520,169 @@ export async function componentClip(page: Page): Promise<ComponentClip | undefin
       };
     },
     { roots: RENDER_ROOTS, padding: COMPONENT_PADDING, limit: MAX_WALKED_ELEMENTS },
+  );
+}
+
+/** The layout audit's page-side walk: what it collected, and the page's own geometry. */
+export interface LayoutMeasurement {
+  elements: MeasuredElement[];
+  page: PageGeometry;
+}
+
+/**
+ * Walk the story's render root and report where its content sits, as plain data for
+ * `analyzeLayout` (docs/decisions.md, D-050).
+ *
+ * The walk collects only what a layout finding can be about: elements with text of their
+ * own, controls, media, and boxes that hide more content than they show. It reads and
+ * never writes, which is also why it can run after the screenshot without touching the
+ * pixels the comparison just judged. Nothing is decided here — thresholds and pair rules
+ * live in the pure module, so the same measurements always yield the same findings.
+ *
+ * Ancestors are recorded as indices into the returned list, collected ancestors only, so
+ * the analysis can tell a child inside its parent from two elements colliding; the
+ * `data-diopsis-overlap` marking is read here because it is a property of the tree, not of
+ * the boxes.
+ */
+export async function measureLayout(page: Page): Promise<LayoutMeasurement> {
+  return page.evaluate(
+    ({ roots, limit, textBoxLimit }: { roots: readonly string[]; limit: number; textBoxLimit: number }) => {
+      const MEDIA_TAGS = new Set(['img', 'video', 'canvas', 'svg', 'picture', 'iframe']);
+      const CONTROL_TAGS = new Set([
+        'button', 'a', 'input', 'select', 'textarea', 'label', 'summary',
+      ]);
+      const selectorOf = (element: Element): string => {
+        let selector = element.tagName.toLowerCase();
+        if (element.id) {
+          selector += '#' + element.id;
+        } else if (element.classList.length > 0) {
+          selector += '.' + Array.from(element.classList).slice(0, 2).join('.');
+        }
+        return selector.length > 60 ? selector.slice(0, 60) : selector;
+      };
+      // Where an element's own words sit: one box per line fragment of each text node, so a
+      // paragraph wrapping round a float, or a heading whose block runs on past its words,
+      // is judged by its text and not by its whole box. A long paragraph is folded into
+      // consecutive bands to stay a bounded list; bands still follow the lines they hold.
+      const textOf = (element: Element): Box[] | undefined => {
+        const boxes: Box[] = [];
+        for (const node of Array.from(element.childNodes)) {
+          if (node.nodeType !== Node.TEXT_NODE || !node.textContent?.trim()) continue;
+          const range = document.createRange();
+          range.selectNodeContents(node);
+          for (const fragment of Array.from(range.getClientRects())) {
+            const x = Math.round(fragment.left);
+            const y = Math.round(fragment.top);
+            const width = Math.round(fragment.right) - x;
+            const height = Math.round(fragment.bottom) - y;
+            if (width > 0 && height > 0) boxes.push({ x, y, width, height });
+          }
+        }
+        if (boxes.length === 0) return undefined;
+        if (boxes.length <= textBoxLimit) return boxes;
+        const per = Math.ceil(boxes.length / textBoxLimit);
+        const bands: Box[] = [];
+        for (let start = 0; start < boxes.length; start += per) {
+          const group = boxes.slice(start, start + per);
+          const left = Math.min(...group.map((box) => box.x));
+          const top = Math.min(...group.map((box) => box.y));
+          const right = Math.max(...group.map((box) => box.x + box.width));
+          const bottom = Math.max(...group.map((box) => box.y + box.height));
+          bands.push({ x: left, y: top, width: right - left, height: bottom - top });
+        }
+        return bands;
+      };
+      // Screen-reader-only text is hidden from sight on purpose, and so is everything else
+      // inside such a box: a box 1 px or less on an axis that clips that axis shows nothing
+      // it holds — the visually-hidden pattern every design system ships — and a legacy
+      // `clip` rectangle on a positioned element exists for that pattern alone. `clip-path`
+      // is not read: a rounded or angled crop of a card is a common design whose content
+      // still shows.
+      const visuallyHidden = (rect: DOMRect, style: CSSStyleDeclaration): boolean =>
+        (rect.width <= 1 && style.overflowX !== 'visible') ||
+        (rect.height <= 1 && style.overflowY !== 'visible') ||
+        (style.clip !== 'auto' && style.clip !== '' &&
+          (style.position === 'absolute' || style.position === 'fixed'));
+      const clipOf = (element: Element): MeasuredElement['clip'] | undefined => {
+        const style = window.getComputedStyle(element);
+        const hiddenX = Math.max(0, element.scrollWidth - element.clientWidth);
+        const hiddenY = Math.max(0, element.scrollHeight - element.clientHeight);
+        if (hiddenX <= 1 && hiddenY <= 1) return undefined;
+        const clipsX = style.overflowX === 'hidden' || style.overflowX === 'clip';
+        const clipsY = style.overflowY === 'hidden' || style.overflowY === 'clip';
+        if (!clipsX && !clipsY) return undefined;
+        return {
+          x: clipsX ? hiddenX : 0,
+          y: clipsY ? hiddenY : 0,
+          ellipsis: style.textOverflow.includes('ellipsis'),
+          lineClamp: (style as unknown as Record<string, string>).webkitLineClamp !== 'none',
+        };
+      };
+
+      const elements: MeasuredElement[] = [];
+      let walked = 0;
+      // An explicit stack, not recursion: the walk is bounded in element count, and a deep
+      // chain must not be able to trade that bound for a call-stack overflow.
+      const stack: Array<{ element: Element; collectedAncestors: number[] }> = [];
+      for (const selector of roots) {
+        const root = document.querySelector(selector);
+        if (root) stack.push({ element: root, collectedAncestors: [] });
+      }
+      while (stack.length > 0 && walked < limit) {
+        const { element, collectedAncestors } = stack.pop()!;
+        walked += 1;
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        // Nothing below a visually hidden box is seen, so nothing below it is collected.
+        if (visuallyHidden(rect, style)) continue;
+        let ancestorsForChildren = collectedAncestors;
+        if (rect.width > 0 && rect.height > 0) {
+          const visible =
+            style.visibility !== 'hidden' && style.opacity !== '0' && style.display !== 'none';
+          const tag = element.tagName.toLowerCase();
+          const text = MEDIA_TAGS.has(tag) ? undefined : textOf(element);
+          const kind = MEDIA_TAGS.has(tag)
+            ? ('media' as const)
+            : CONTROL_TAGS.has(tag)
+              ? ('control' as const)
+              : text
+                ? ('text' as const)
+                : ('container' as const);
+          const clip = clipOf(element);
+          if (visible && (kind !== 'container' || clip !== undefined)) {
+            const index = elements.length;
+            const x = Math.round(rect.left);
+            const y = Math.round(rect.top);
+            elements.push({
+              selector: selectorOf(element),
+              kind,
+              box: {
+                x,
+                y,
+                width: Math.round(rect.right) - x,
+                height: Math.round(rect.bottom) - y,
+              },
+              ancestors: collectedAncestors,
+              ...(text ? { text } : {}),
+              ...(clip ? { clip } : {}),
+              ...(element.closest('[data-diopsis-overlap]') ? { intended: true as const } : {}),
+            });
+            ancestorsForChildren = [...collectedAncestors, index];
+          }
+        }
+        // Reversed so children are visited in document order out of the stack.
+        for (const child of Array.from(element.children).reverse()) {
+          stack.push({ element: child, collectedAncestors: ancestorsForChildren });
+        }
+      }
+
+      const layoutViewport = document.documentElement.clientWidth;
+      const scrollWidth = document.scrollingElement
+        ? document.scrollingElement.scrollWidth
+        : document.documentElement.scrollWidth;
+      return { elements, page: { viewportWidth: layoutViewport, scrollWidth } };
+    },
+    { roots: RENDER_ROOTS, limit: MAX_WALKED_ELEMENTS, textBoxLimit: MAX_TEXT_BOXES },
   );
 }
 

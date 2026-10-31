@@ -19,7 +19,7 @@ interface EmbeddedCapture extends CaptureResult {
    * embedded once and shared — or a path to the file beside the report, for an image the
    * budget could not hold.
    */
-  images: { expected?: string; actual?: string; diff?: string };
+  images: { expected?: string; actual?: string; diff?: string; shot?: string };
 }
 
 /**
@@ -73,7 +73,11 @@ async function embed(
   >();
 
   for (const capture of reviewOrder(summary.captures)) {
-    if (!needsReview(capture.status)) continue;
+    // A capture the layout audit flagged carries its evidence shot even when its pixels
+    // matched: the shot is what there is to look at, so it joins the review's images
+    // without joining its statuses.
+    const flagged = (capture.layout?.findings.length ?? 0) > 0;
+    if (!needsReview(capture.status) && !flagged) continue;
 
     const images: EmbeddedCapture['images'] = {};
     // The summary carries the size once the reporter has read it; the header read below is
@@ -86,7 +90,7 @@ async function embed(
     // is all new captures, for images the single-column presentation never shows.
     const kinds = capture.status === 'new'
       ? (['actual'] as const)
-      : (['expected', 'actual', 'diff'] as const);
+      : (['expected', 'actual', 'diff', 'shot'] as const);
     for (const kind of kinds) {
       const relative = capture.artifacts[kind];
       if (!relative) continue;
@@ -98,8 +102,8 @@ async function embed(
       }
       // The file is read whatever happens to its bytes next — embedded or referenced — so
       // the pixel size is known either way and nothing downstream depends on what the
-      // budget allowed.
-      if (kind === 'actual' && !size) size = pngSizeOf(bytes);
+      // budget allowed. A flagged capture without a comparison has its shot to read.
+      if ((kind === 'actual' || kind === 'shot') && !size) size = pngSizeOf(bytes);
       // Size first, then the digest: files of different sizes differ without a hash ever
       // being computed, and identical bytes — duplicate stories, a baseline shared across
       // a story's modes — are embedded once and counted against the budget once.
@@ -580,6 +584,11 @@ if (unstableCount) filters.appendChild(chip('unstable', 'Unstable'));
 if (data.captures.some(c => c.accessibility && c.accessibility.violations.length)) {
   filters.appendChild(chip('a11y', 'Accessibility'));
 }
+/* The layout audit's findings get their own chip: they sit on widths rather than stories,
+   so a story can appear clean at one width and flagged at another. */
+if (data.captures.some(c => c.layout && c.layout.findings.length)) {
+  filters.appendChild(chip('layout', 'Layout'));
+}
 /* Carried captures are not in data.captures — they were never shot — so the chip counts the
    carried list itself and no capture can match its filter: the view it selects is the grey
    section under the list. */
@@ -624,6 +633,7 @@ function inFilter(c, key) {
     : key === 'review' ? REVIEW.has(c.status)
     : key === 'unstable' ? !!c.unstable
     : key === 'a11y' ? !!(c.accessibility && c.accessibility.violations.length)
+    : key === 'layout' ? !!(c.layout && c.layout.findings.length)
     : key === 'carried' ? false
     : c.status === key;
 }
@@ -692,6 +702,54 @@ function truncatedNote(capture, parent) {
   code.textContent = where || '';
   p.appendChild(code);
   parent.appendChild(p);
+}
+
+/* The layout audit's findings, one line each: what kind of break, which elements, by how
+   much. Selectors and numbers are plain text over code, matching the accessibility list's
+   register; colour still means status alone (D-020). */
+function layoutList(layout) {
+  const KINDS = {
+    'overlap': 'overlap',
+    'text-clip': 'text cut off',
+    'horizontal-overflow': 'sideways scroll',
+  };
+  const wrap = document.createElement('div');
+  wrap.className = 'a11y';
+  const list = document.createElement('ul');
+  for (const f of layout.findings) {
+    const item = document.createElement('li');
+    item.className = 'a11y-rule';
+    const head = document.createElement('div');
+    head.className = 'a11y-head';
+    const kind = document.createElement('code');
+    kind.textContent = KINDS[f.kind] || f.kind;
+    head.appendChild(kind);
+    item.appendChild(head);
+    const detail = document.createElement('ul');
+    detail.className = 'a11y-targets';
+    const line = document.createElement('li');
+    if (f.kind === 'overlap') {
+      const covered = document.createElement('code');
+      covered.textContent = f.covered.selector;
+      const covering = document.createElement('code');
+      covering.textContent = f.covering.selector;
+      line.append(covering, ' covers ', covered,
+        ' (' + f.overlap.width + '×' + f.overlap.height + ' px)');
+    } else if (f.kind === 'text-clip') {
+      const element = document.createElement('code');
+      element.textContent = f.element.selector;
+      line.append(element, ' hides ' + f.hidden + ' px of text on ' + f.axis);
+    } else {
+      const element = document.createElement('code');
+      element.textContent = f.element.selector;
+      line.append(element, ' reaches ' + f.beyond + ' px past the right edge');
+    }
+    detail.appendChild(line);
+    item.appendChild(detail);
+    list.appendChild(item);
+  }
+  wrap.appendChild(list);
+  return wrap;
 }
 
 /* The audit's findings, beside the pixels: each rule with its impact and its help, and
@@ -800,6 +858,22 @@ function stage(capture) {
     el.appendChild(fig);
     return { el, modes: null, setMode: null, nudge: null, jumpRegion: null };
   }
+  // The layout audit's evidence: a single column of the width as measured, the same
+  // register a new capture's one column uses — there is no pair to compare, and the
+  // findings listed beside it are what the shot is evidence of.
+  if (img.shot && !modesFor(capture).length) {
+    const fig = document.createElement('figure');
+    fig.className = 'solo';
+    const cap = document.createElement('figcaption');
+    cap.textContent = 'Layout evidence — this width as measured, not compared.';
+    const box = document.createElement('div');
+    box.className = 'stage';
+    zoomable(box);
+    box.appendChild(picture(img.shot, 'Layout evidence of ' + capture.storyId + ' at ' + capture.width + 'px'));
+    fig.append(cap, box);
+    el.appendChild(fig);
+    return { el, modes: null, setMode: null, nudge: null, jumpRegion: null };
+  }
   // The highlight overlay is the default: it answers "what changed?" without any interaction.
   const modes = modesFor(capture);
   if (!modes.length) {
@@ -807,7 +881,11 @@ function stage(capture) {
     // matrix reads as a fault report. Only an absence that needs explaining gets a line —
     // and a capture that failed on findings has its explanation already: the findings
     // listed beside the pixels are the content, no image was ever missing.
-    if (REVIEW.has(capture.status) && !(capture.accessibility && capture.accessibility.violations.length)) {
+    if (
+      REVIEW.has(capture.status) &&
+      !(capture.accessibility && capture.accessibility.violations.length) &&
+      !(capture.layout && capture.layout.findings.length)
+    ) {
       el.className = 'note';
       el.textContent = 'No image artifacts for this capture.';
     }
@@ -1434,6 +1512,11 @@ function buildAll() {
       // reads as the second verdict it is — beside the pixels, never under them.
       if (c.accessibility && c.accessibility.violations.length) {
         box.appendChild(a11yList(c.accessibility));
+      }
+      // The layout findings sit after the accessibility ones, both as text over the
+      // capture: the audits are siblings, never nested verdicts.
+      if (c.layout && c.layout.findings.length) {
+        box.appendChild(layoutList(c.layout));
       }
       det.appendChild(box);
       entries.push(entry);

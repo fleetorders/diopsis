@@ -26,6 +26,7 @@ Every config key, and the settings a story sets for itself with a `diopsis:` tag
 | `capture` | `page` | `component` photographs the rendered component instead of the whole canvas |
 | `modes` | none | Named sets of Storybook globals; each story is also captured in each set |
 | `accessibility` | `off` | `report` lists axe-core findings beside the pixels; `fail` fails a run on new findings |
+| `layout` | `{ mode: 'off', widths: [] }` | `report` records overlaps, cut-off text and sideways scrolling beside the pixels; `fail` fails a run on findings; `widths` are measured too, with no baselines ever written |
 | `budget` | none | `{ weight: '25 MB', captures: 800 }` — doctor fails past either, and warns at 90% |
 | `compress` | `off` | `auto` recompresses every baseline `update` and `accept` write, losslessly and verified pixel by pixel, when [oxipng](https://github.com/oxipng/oxipng) is installed |
 | `compare.threshold` | `0.2` | Per-pixel colour tolerance, 0–1 |
@@ -119,3 +120,37 @@ existed only to hide a date or a changing year does not need to be masked at all
 weaker than it looks: it hides content from the reviewer, and it still fails the comparison when
 the masked element's own bounding box moves.
 
+
+### The layout audit
+
+A pixel diff can only see what it has a baseline for, and a layout break usually renders that
+way in the baseline too: an image grown over a title at one width looks exactly as broken in
+the baseline, and the widths between your baselines are where nobody looks. `layout` measures
+what the pixels cannot say:
+
+```ts
+layout: {
+  mode: 'report',        // 'off' (default) | 'report' | 'fail'
+  widths: [375, 768],    // measured in addition; no baselines are ever written for them
+},
+```
+
+At every capture's width — and at each width in `layout.widths`, a design system's
+breakpoints, say — Diopsis walks the laid-out story and reports, as text in `summary.json`
+and the report:
+
+- two unrelated content elements overlapping (an image over a title), when the shared area
+  covers at least a quarter of the smaller element — text counts where its words are, so a
+  paragraph wrapping round a float is not under it;
+- text or a control reaching more than 4 px past the edge of a box that hides its overflow,
+  unless an ellipsis or a line clamp says the truncation is the design — a card cropping its
+  image is not a finding;
+- the page scrolling sideways, naming the element that reaches furthest past the right edge.
+
+`report` records findings and never touches the exit code; `fail` fails the capture like a
+change, except in `update`, which measures and records only. A screenshot is kept only of a
+capture with findings, and interaction-state captures are never measured — a tooltip overlaps
+on purpose. Screen-reader-only text, the 1 px visually-hidden pattern, is never measured
+either. A story opts out with `diopsis:layout=off`, and an element whose overlaps are the
+design — an image laid partly over free space — marks them intended with
+`data-diopsis-overlap`, the same register as the `data-diopsis-ignore` mask.

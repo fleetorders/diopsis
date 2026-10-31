@@ -128,7 +128,7 @@ export async function mergeCommand(options: MergeOptions): Promise<number> {
         typeof capture.snapshotPath !== 'string' ||
         !capture.artifacts ||
         typeof capture.artifacts !== 'object' ||
-        (['expected', 'actual', 'diff'] as const).some(
+        (['expected', 'actual', 'diff', 'shot'] as const).some(
           (kind) =>
             capture.artifacts[kind] !== undefined && typeof capture.artifacts[kind] !== 'string',
         ),
@@ -273,7 +273,7 @@ export async function mergeCommand(options: MergeOptions): Promise<number> {
     .flatMap((shard) =>
       shard.summary.captures.map((capture) => {
         const artifacts: CaptureArtifacts = {};
-        for (const kind of ['expected', 'actual', 'diff'] as const) {
+        for (const kind of ['expected', 'actual', 'diff', 'shot'] as const) {
           const relative = capture.artifacts[kind];
           if (relative !== undefined) artifacts[kind] = rewrite(shard.dir, relative);
         }

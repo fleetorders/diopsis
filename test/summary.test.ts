@@ -251,3 +251,52 @@ describe('accessibility findings in the summary', () => {
     );
   });
 });
+
+describe('classify and the layout audit', () => {
+  it('calls a layout finding a change: the response is a look at the report, not a re-run', () => {
+    const verdict = classify({
+      passed: false,
+      errorText: 'Error: New layout findings: 3 in card--default @320 (overlap ×2, text-clip ×1)',
+    });
+    assert.equal(verdict.status, 'changed');
+  });
+});
+
+describe('totalsFor with the layout audit', () => {
+  it('counts findings across measured captures', () => {
+    const totals = totalsFor([
+      capture({ layout: { findings: [{ kind: 'text-clip', element: { selector: 'p.body', kind: 'text', box: { x: 0, y: 0, width: 100, height: 20 } }, axis: 'x', hidden: 30 }] } }),
+      capture({
+        storyId: 'a--one',
+        width: 1280,
+        layout: {
+          findings: [
+            { kind: 'overlap', covered: { selector: 'h1.t', kind: 'text', box: { x: 0, y: 0, width: 100, height: 20 } }, covering: { selector: 'img.i', kind: 'media', box: { x: 0, y: 0, width: 100, height: 40 } }, overlap: { width: 100, height: 20 } },
+            { kind: 'horizontal-overflow', element: { selector: 'div.w', kind: 'container', box: { x: 0, y: 0, width: 400, height: 20 } }, beyond: 80 },
+          ],
+        },
+      }),
+    ]);
+    assert.equal(totals.layoutFindings, 3);
+  });
+
+  it('records a measured-clean run as zero, an unmeasured one as absent', () => {
+    assert.equal(totalsFor([capture({ layout: { findings: [] } })]).layoutFindings, 0);
+    assert.equal('layoutFindings' in totalsFor([capture({})]), false);
+  });
+});
+
+describe('artifactsOf with the layout evidence shot', () => {
+  const outputDir = '/repo/.diopsis';
+  const at = (name: string): string =>
+    path.join(outputDir, 'test-results', 'diopsis-a--one-320-chromium', 'a--one', name);
+
+  it('files the layout shot under its own slot, never as the actual a baseline came from', () => {
+    const artifacts = artifactsOf(
+      [{ name: 'diopsis-layout-shot', path: at('layout-shot.png'), contentType: 'image/png' }],
+      outputDir,
+    );
+    assert.match(artifacts.shot ?? '', /layout-shot\.png$/);
+    assert.equal(artifacts.actual, undefined);
+  });
+});
