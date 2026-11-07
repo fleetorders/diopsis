@@ -103,6 +103,53 @@ describe('analyzeLayout — overlaps', () => {
     assert.deepEqual(finding && finding.kind === 'overlap' ? finding.overlap : undefined, { width: 32, height: 24 });
   });
 
+  it('judges an image a card crops by what shows, not by what the card cuts off', () => {
+    // A 160 px image in a 120 px card; the heading below the card sits where the cut-off
+    // part of the image would have been.
+    const card = element('div.card', { x: 0, y: 0, width: 200, height: 120 }, {
+      kind: 'container',
+      clip: { x: 0, y: 40, ellipsis: false, lineClamp: false },
+    });
+    const image = element('img.photo', { x: 0, y: 0, width: 200, height: 160 }, { kind: 'media', ancestors: [0] });
+    const heading = element('h3.next', { x: 0, y: 120, width: 200, height: 20 }, {
+      text: [{ x: 0, y: 120, width: 132, height: 20 }],
+    });
+    assert.deepEqual(analyzeLayout([card, image, heading], page()), []);
+    // The same heading moved up into the card's view is a collision.
+    const inside = element('h3.next', { x: 0, y: 90, width: 200, height: 20 }, {
+      text: [{ x: 0, y: 90, width: 132, height: 20 }],
+    });
+    const [finding] = analyzeLayout([card, image, inside], page());
+    assert.deepEqual(finding && finding.kind === 'overlap' ? finding.overlap : undefined, { width: 132, height: 20 });
+  });
+
+  it('judges a label an ellipsis truncates by its words up to the ellipsis', () => {
+    // The name's words run on under its Edit button; the span's own box cuts them off.
+    const name = element('span.name', { x: 0, y: 0, width: 117, height: 20 }, {
+      clip: { x: 120, y: 0, ellipsis: true, lineClamp: false },
+      text: [{ x: 0, y: 0, width: 237, height: 18 }],
+    });
+    const edit = element('button.edit', { x: 121, y: 0, width: 39, height: 20 }, { kind: 'control' });
+    assert.deepEqual(analyzeLayout([name, edit], page()), []);
+  });
+
+  it('cuts content to a box that scrolls it, the way it cuts it to one that hides it', () => {
+    // A strip scrolling its slides sideways: the third slide is a scroll away, where a
+    // caption laid out past the strip's edge sits.
+    const strip = element('div.carousel', { x: 0, y: 0, width: 300, height: 60 }, {
+      kind: 'container',
+      crop: { x: true, y: true },
+    });
+    const slide = element('img.slide3', { x: 560, y: 0, width: 280, height: 60 }, { kind: 'media', ancestors: [0] });
+    const caption = element('p.aside', { x: 600, y: 0, width: 200, height: 20 }, {
+      text: [{ x: 600, y: 0, width: 200, height: 20 }],
+    });
+    // Without the strip cutting it, the slide is over the caption.
+    assert.equal(analyzeLayout([{ ...strip, crop: undefined }, slide, caption], page()).length, 1);
+    // Nor is the strip a cut-off: what it holds is a scroll away, not hidden.
+    assert.deepEqual(analyzeLayout([strip, slide, caption], page()), []);
+  });
+
   it('never pairs a container — only content elements collide', () => {
     // Two containers sharing every pixel, unrelated: not a finding, and not a crash.
     const a = element('div.a', { x: 0, y: 0, width: 100, height: 100 }, { kind: 'container' });
@@ -219,6 +266,25 @@ describe('analyzeLayout — text clips', () => {
     // the span had not already hidden.
     assert.deepEqual(analyzeLayout([frame, ellipsized], page()), []);
   });
+
+  it('leaves text a nearer scrolling box holds to that box', () => {
+    // A card hiding a tall image's overflow, holding a list that scrolls its own long text:
+    // the text past the card's edge is a scroll away inside the list, not cut off.
+    const card = element('div.card', { x: 0, y: 0, width: 200, height: 120 }, {
+      kind: 'container',
+      clip: { x: 0, y: 60, ellipsis: false, lineClamp: false },
+    });
+    const list = element('ul.list', { x: 0, y: 40, width: 200, height: 60 }, {
+      kind: 'container',
+      ancestors: [0],
+      crop: { x: false, y: true },
+    });
+    const item = element('li.item', { x: 0, y: 40, width: 200, height: 140 }, {
+      ancestors: [0, 1],
+      text: [{ x: 0, y: 40, width: 180, height: 140 }],
+    });
+    assert.deepEqual(analyzeLayout([card, list, item], page()), []);
+  });
 });
 
 describe('analyzeLayout — horizontal overflow', () => {
@@ -232,6 +298,24 @@ describe('analyzeLayout — horizontal overflow', () => {
         ? { selector: finding.element.selector, beyond: finding.beyond }
         : undefined,
       { selector: 'img.hero', beyond: 250 },
+    );
+  });
+
+  it('measures each element\'s reach by what shows, not by what a box around it holds out of view', () => {
+    // A carousel's third slide sits far past the edge inside a strip that scrolls it; the
+    // page scrolls because of the row below, which reaches 50 px past.
+    const strip = element('div.carousel', { x: 0, y: 0, width: 300, height: 60 }, {
+      kind: 'container',
+      crop: { x: true, y: true },
+    });
+    const slide = element('img.slide3', { x: 560, y: 0, width: 280, height: 60 }, { kind: 'media', ancestors: [0] });
+    const row = element('p.row', { x: 0, y: 60, width: 650, height: 20 });
+    const [finding] = analyzeLayout([strip, slide, row], page({ viewportWidth: 600, scrollWidth: 650 }));
+    assert.deepEqual(
+      finding && finding.kind === 'horizontal-overflow'
+        ? { selector: finding.element.selector, beyond: finding.beyond }
+        : undefined,
+      { selector: 'p.row', beyond: 50 },
     );
   });
 

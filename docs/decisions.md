@@ -766,9 +766,15 @@ container (a box hiding overflow while its text or controls reach more than 4 px
 edge, unless ellipsis or line clamping says the truncation is the design), and sideways
 scrolling (the page scrolls because an element reaches past the right edge). Text is
 judged by its line boxes, not its block, so a paragraph wrapping round a float or a
-heading whose row a button shares is not a collision; a visually hidden subtree (a box
-1 px or less on an axis it clips, or a legacy `clip` rectangle) is not measured at all,
-because screen-reader-only text is hidden from sight on purpose. `layout.widths` are measured in addition to every story's
+heading whose row a button shares is not a collision. Every shape is first cut to the boxes
+around it that hide or scroll their overflow, so a card's cropped image, a label past its
+ellipsis or a carousel's out-of-view slide neither collides nor reaches past the edge; a
+box that scrolls its overflow trims shapes the same way, but what it holds stays reachable,
+so it never reports cut-off text. A
+visually hidden subtree (a box 1 px or less on an axis it clips, or a legacy `clip`
+rectangle) is not measured at all, because screen-reader-only text is hidden from sight on
+purpose, and neither is a fully transparent one, since opacity — unlike `visibility` —
+cannot be set back by a child. `layout.widths` are measured in addition to every story's
 capture widths — breakpoints, say — as layout-only captures that navigate and never
 compare, so no baseline is ever written for them; their snapshot path is the placeholder
 mode `diopsis-layout`, which the path parser reads and no run writes. A screenshot is

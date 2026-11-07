@@ -55,6 +55,13 @@ export interface MeasuredElement extends LayoutElementRef {
    * line clamping). Present only when the element clips something.
    */
   clip?: { x: number; y: number; ellipsis: boolean; lineClamp: boolean };
+  /**
+   * The axes on which the element's box cuts off what its content draws past it: overflow
+   * `hidden` or `clip`, or `auto` or `scroll`, where the rest waits a scroll away. A
+   * descendant shows only inside every such box around it. Present only when the element
+   * cuts something off; an axis on which `clip` records hidden content is cut either way.
+   */
+  crop?: { x: boolean; y: boolean };
   /** The element, or an ancestor of it, carries `data-diopsis-overlap`. */
   intended?: true;
 }
@@ -177,12 +184,53 @@ function span(box: Box, axis: 'x' | 'y'): [number, number] {
   return axis === 'x' ? [box.x, box.x + box.width] : [box.y, box.y + box.height];
 }
 
+/** Whether an element's box cuts off what its content draws past it on one axis. */
+function cuts(element: MeasuredElement, axis: 'x' | 'y'): boolean {
+  if (element.crop?.[axis]) return true;
+  return element.clip !== undefined && (axis === 'x' ? element.clip.x : element.clip.y) > 0;
+}
+
+/**
+ * What of some boxes is in view: each one trimmed, on every axis a cropping element cuts,
+ * to that element's box, and dropped once nothing of it is left. A card's tall image shows
+ * only inside the card, a truncated label only up to its ellipsis, and a carousel's slides
+ * only inside the strip that scrolls them — none of them reaches anything past those edges.
+ */
+function inView(boxes: Box[], croppers: number[], elements: MeasuredElement[]): Box[] {
+  const kept: Box[] = [];
+  for (const box of boxes) {
+    let [left, right] = span(box, 'x');
+    let [top, bottom] = span(box, 'y');
+    for (const index of croppers) {
+      const cropper = elements[index]!;
+      if (cuts(cropper, 'x')) {
+        const [from, to] = span(cropper.box, 'x');
+        left = Math.max(left, from);
+        right = Math.min(right, to);
+      }
+      if (cuts(cropper, 'y')) {
+        const [from, to] = span(cropper.box, 'y');
+        top = Math.max(top, from);
+        bottom = Math.min(bottom, to);
+      }
+    }
+    if (right > left && bottom > top) kept.push({ x: left, y: top, width: right - left, height: bottom - top });
+  }
+  return kept;
+}
+
+/** The elements whose boxes can cut this one off: its collected ancestors, and itself. */
+function croppersOf(element: MeasuredElement, index: number): number[] {
+  return [...element.ancestors, index];
+}
+
 /**
  * How far readable content reaches past a clipping element's edges on one axis: its own
  * words, and the text and controls collected below it, each first cut to any nearer box
- * that clips the same axis — one between them, or the descendant's own — since that box
- * hides the overflow before this one can. Media is not counted on purpose — a card cropping a tall image while its caption
- * sits in full view is the design working, where cut-off text is the design broken.
+ * that cuts the same axis — one between them, or the descendant's own — since that box
+ * hides or scrolls the overflow before this one can. Media is not counted on purpose — a
+ * card cropping a tall image while its caption sits in full view is the design working,
+ * where cut-off text is the design broken.
  */
 function readableReach(
   element: MeasuredElement,
@@ -196,8 +244,7 @@ function readableReach(
     for (const box of boxes) {
       let [from, to] = span(box, axis);
       for (const ancestor of nearer) {
-        const clip = elements[ancestor]!.clip;
-        if (!clip || (axis === 'x' ? clip.x : clip.y) <= 0) continue;
+        if (!cuts(elements[ancestor]!, axis)) continue;
         const [clipFrom, clipTo] = span(elements[ancestor]!.box, axis);
         from = Math.max(from, clipFrom);
         to = Math.min(to, clipTo);
@@ -229,22 +276,23 @@ export function analyzeLayout(elements: MeasuredElement[], page: PageGeometry): 
   const overflows: HorizontalOverflowFinding[] = [];
 
   // Sideways scrolling: the page scrolls because something reaches past its right edge, and
-  // the element that reaches furthest is the one to name. A scroll with no collected element
-  // past the edge (a walk that hit its limit, say) reports nothing rather than a finding
-  // that points at nothing.
+  // the element that reaches furthest is the one to name. Each element reaches only as far
+  // as it shows: what a box around it cuts off — a carousel's later slides, say — adds
+  // nothing to the page's width. A scroll with no collected element past the edge (a walk
+  // that hit its limit, say) reports nothing rather than a finding that points at nothing.
   if (page.scrollWidth > page.viewportWidth + OVERFLOW_MIN_PX) {
-    let worst: MeasuredElement | undefined;
-    for (const element of elements) {
-      const beyond = element.box.x + element.box.width - page.viewportWidth;
-      if (beyond > OVERFLOW_MIN_PX && (!worst || beyond > worst.box.x + worst.box.width - page.viewportWidth)) {
-        worst = element;
-      }
+    let worst: { element: MeasuredElement; beyond: number } | undefined;
+    for (const [index, element] of elements.entries()) {
+      const [shown] = inView([element.box], croppersOf(element, index), elements);
+      if (!shown) continue;
+      const beyond = shown.x + shown.width - page.viewportWidth;
+      if (beyond > OVERFLOW_MIN_PX && (!worst || beyond > worst.beyond)) worst = { element, beyond };
     }
     if (worst) {
       overflows.push({
         kind: 'horizontal-overflow',
-        element: refOf(worst),
-        beyond: Math.round(worst.box.x + worst.box.width - page.viewportWidth),
+        element: refOf(worst.element),
+        beyond: Math.round(worst.beyond),
       });
     }
   }
@@ -282,25 +330,24 @@ export function analyzeLayout(elements: MeasuredElement[], page: PageGeometry): 
   // one's area. Two media elements are excluded — stacked images are a technique, not a
   // lost reading — while any pair involving text or a control is exactly what the audit
   // exists to catch. Marked elements never take part.
-  // Each element is judged by its shape — a text element by its line boxes — so the shared
-  // area is the sum over line boxes, and the overlap reported is the extent of what they
-  // share.
-  const candidates = elements
-    .map((element, index) => {
-      const shape = shapeOf(element);
-      return {
-        element,
-        index,
-        shape,
-        extent: bounds(shape),
-        area: shape.reduce((sum, box) => sum + area(box), 0),
-      };
-    })
-    .filter(
-      ({ element }) =>
-        element.kind !== 'container' && !element.intended && area(element.box) > 0,
-    )
-    .slice(0, MAX_OVERLAP_CANDIDATES);
+  // Each element is judged by its shape — a text element by its line boxes — cut to what
+  // the boxes around it leave in view, so the shared area is the sum over what shows, and
+  // the overlap reported is the extent of what they share. An image a card crops collides
+  // with nothing below the card, and a label truncated by an ellipsis with nothing past it.
+  const candidates: Array<{ element: MeasuredElement; index: number; shape: Box[]; extent: Box; area: number }> = [];
+  for (const [index, element] of elements.entries()) {
+    if (candidates.length === MAX_OVERLAP_CANDIDATES) break;
+    if (element.kind === 'container' || element.intended) continue;
+    const shape = inView(shapeOf(element), croppersOf(element, index), elements);
+    if (shape.length === 0) continue;
+    candidates.push({
+      element,
+      index,
+      shape,
+      extent: bounds(shape),
+      area: shape.reduce((sum, box) => sum + area(box), 0),
+    });
+  }
   for (let i = 0; i < candidates.length; i++) {
     const first = candidates[i]!;
     for (let j = i + 1; j < candidates.length; j++) {

@@ -131,6 +131,41 @@ await writeFile(path.join(work, 'card-cuts-caption.html'), `<!doctype html><meta
     <p style="margin:0;white-space:nowrap">Cut caption</p></div>
 </div>`);
 
+// Content cut off by a box around it shows only inside that box, so nothing past the edge
+// collides: a card cropping a tall image above the next heading, a name an ellipsis
+// truncates beside its Edit button, a caption that appears on hover inside a transparent
+// wrapper laid over its image, and a carousel whose later slides wait a scroll away.
+await writeFile(path.join(work, 'cropped.html'), `<!doctype html><meta charset=utf-8>
+<style>body{margin:0;font:16px/20px sans-serif}h3{margin:0;font-size:16px}
+section{margin-bottom:24px}</style>
+<div id="storybook-root">
+  <section><div style="width:200px;height:120px;overflow:hidden">
+    <img alt="" src="${pixel}" style="display:block;width:200px;height:160px"></div>
+    <h3 id="next">The next heading</h3></section>
+  <section style="display:flex;width:160px;gap:4px"><span id="name"
+    style="flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">A
+    name far too long for its row</span><button id="edit" style="flex:none">Edit</button></section>
+  <section style="position:relative;width:200px;height:120px">
+    <img alt="" src="${pixel}" style="display:block;width:200px;height:120px">
+    <div style="position:absolute;inset:0;opacity:0"><p id="hover" style="margin:0">Shown on hover</p></div></section>
+  <section id="carousel" style="width:300px;overflow-x:auto;display:flex">
+    <img alt="" src="${pixel}" style="flex:none;width:280px;height:60px">
+    <img alt="" src="${pixel}" style="flex:none;width:280px;height:60px">
+    <img id="slide3" alt="" src="${pixel}" style="flex:none;width:280px;height:60px"></section>
+</div>`);
+
+// The same carousel on a page a real culprit makes scroll sideways: the finding names the
+// element that reaches past the edge, not a slide its strip holds out of view.
+await writeFile(path.join(work, 'carousel-and-culprit.html'), `<!doctype html><meta charset=utf-8>
+<style>body{margin:0;font:16px/20px sans-serif}</style>
+<div id="storybook-root">
+  <section style="width:300px;overflow-x:auto;display:flex">
+    <img alt="" src="${pixel}" style="flex:none;width:280px;height:60px">
+    <img alt="" src="${pixel}" style="flex:none;width:280px;height:60px">
+    <img alt="" src="${pixel}" style="flex:none;width:280px;height:60px"></section>
+  <p id="culprit" style="width:650px;margin:0">a row 50 px wider than the viewport</p>
+</div>`);
+
 // Nothing wrong anywhere: a paragraph and an image in normal flow.
 await writeFile(path.join(work, 'clean.html'), `<!doctype html><meta charset=utf-8>
 <div id="storybook-root">
@@ -250,6 +285,24 @@ try {
       cutCaption.hidden > 4 &&
       cutCaption.hidden <= 10,
     JSON.stringify(caption.findings),
+  );
+
+  const cropped = await audit('cropped.html', 'cropped', 600);
+  check(
+    'a cropped image, an ellipsized name, a transparent hover caption and a carousel are not findings',
+    cropped.findings.length === 0,
+    JSON.stringify(cropped.findings),
+  );
+
+  const culprit = await audit('carousel-and-culprit.html', 'carousel-and-culprit', 600);
+  const [reach] = culprit.findings;
+  check(
+    'sideways scrolling names the element past the edge, not a slide its strip holds out of view',
+    culprit.findings.length === 1 &&
+      reach?.kind === 'horizontal-overflow' &&
+      reach.element.selector === 'p#culprit' &&
+      reach.beyond === 50,
+    JSON.stringify(culprit.findings),
   );
 
   const plain = await audit('clean.html', 'clean', 600);

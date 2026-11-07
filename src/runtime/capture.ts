@@ -603,19 +603,34 @@ export async function measureLayout(page: Page): Promise<LayoutMeasurement> {
         (rect.height <= 1 && style.overflowY !== 'visible') ||
         (style.clip !== 'auto' && style.clip !== '' &&
           (style.position === 'absolute' || style.position === 'fixed'));
-      const clipOf = (element: Element): MeasuredElement['clip'] | undefined => {
-        const style = window.getComputedStyle(element);
+      // What an element's box cuts off of its content: `crop` for every axis whose overflow
+      // is not visible — hidden and clipped content, and content a scroll away, all show only
+      // inside the box — and `clip` for what it hides outright, which only `hidden` and
+      // `clip` do; a scroll container's overflow is reachable, so it is never cut-off text.
+      const overflowOf = (
+        element: Element,
+        style: CSSStyleDeclaration,
+      ): Pick<MeasuredElement, 'clip' | 'crop'> => {
         const hiddenX = Math.max(0, element.scrollWidth - element.clientWidth);
         const hiddenY = Math.max(0, element.scrollHeight - element.clientHeight);
-        if (hiddenX <= 1 && hiddenY <= 1) return undefined;
+        if (hiddenX <= 1 && hiddenY <= 1) return {};
+        const cropX = style.overflowX !== 'visible';
+        const cropY = style.overflowY !== 'visible';
+        if (!cropX && !cropY) return {};
         const clipsX = style.overflowX === 'hidden' || style.overflowX === 'clip';
         const clipsY = style.overflowY === 'hidden' || style.overflowY === 'clip';
-        if (!clipsX && !clipsY) return undefined;
         return {
-          x: clipsX ? hiddenX : 0,
-          y: clipsY ? hiddenY : 0,
-          ellipsis: style.textOverflow.includes('ellipsis'),
-          lineClamp: (style as unknown as Record<string, string>).webkitLineClamp !== 'none',
+          crop: { x: cropX, y: cropY },
+          ...(clipsX || clipsY
+            ? {
+                clip: {
+                  x: clipsX ? hiddenX : 0,
+                  y: clipsY ? hiddenY : 0,
+                  ellipsis: style.textOverflow.includes('ellipsis'),
+                  lineClamp: (style as unknown as Record<string, string>).webkitLineClamp !== 'none',
+                },
+              }
+            : {}),
         };
       };
 
@@ -633,12 +648,14 @@ export async function measureLayout(page: Page): Promise<LayoutMeasurement> {
         walked += 1;
         const rect = element.getBoundingClientRect();
         const style = window.getComputedStyle(element);
-        // Nothing below a visually hidden box is seen, so nothing below it is collected.
-        if (visuallyHidden(rect, style)) continue;
+        // Nothing below a visually hidden box is seen, so nothing below it is collected. Nor
+        // is anything below a fully transparent one: unlike `visibility`, which a child can
+        // set back, opacity multiplies down the tree, so a caption inside a wrapper waiting
+        // to fade in on hover is as unseen as the wrapper.
+        if (visuallyHidden(rect, style) || style.opacity === '0') continue;
         let ancestorsForChildren = collectedAncestors;
         if (rect.width > 0 && rect.height > 0) {
-          const visible =
-            style.visibility !== 'hidden' && style.opacity !== '0' && style.display !== 'none';
+          const visible = style.visibility !== 'hidden' && style.display !== 'none';
           const tag = element.tagName.toLowerCase();
           const text = MEDIA_TAGS.has(tag) ? undefined : textOf(element);
           const kind = MEDIA_TAGS.has(tag)
@@ -648,8 +665,8 @@ export async function measureLayout(page: Page): Promise<LayoutMeasurement> {
               : text
                 ? ('text' as const)
                 : ('container' as const);
-          const clip = clipOf(element);
-          if (visible && (kind !== 'container' || clip !== undefined)) {
+          const { clip, crop } = overflowOf(element, style);
+          if (visible && (kind !== 'container' || crop !== undefined)) {
             const index = elements.length;
             const x = Math.round(rect.left);
             const y = Math.round(rect.top);
@@ -665,6 +682,7 @@ export async function measureLayout(page: Page): Promise<LayoutMeasurement> {
               ancestors: collectedAncestors,
               ...(text ? { text } : {}),
               ...(clip ? { clip } : {}),
+              ...(crop ? { crop } : {}),
               ...(element.closest('[data-diopsis-overlap]') ? { intended: true as const } : {}),
             });
             ancestorsForChildren = [...collectedAncestors, index];

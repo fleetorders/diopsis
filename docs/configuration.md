@@ -147,6 +147,11 @@ and the report:
   image is not a finding;
 - the page scrolling sideways, naming the element that reaches furthest past the right edge.
 
+Every element counts only where it shows: what a box around it hides or scrolls out of view —
+the cropped part of a card's image, a label past its ellipsis, a carousel's later slides —
+overlaps nothing and reaches past no edge, and a fully transparent element (`opacity: 0`),
+with everything inside it, is not measured.
+
 `report` records findings and never touches the exit code; `fail` fails the capture like a
 change, except in `update`, which measures and records only. A screenshot is kept only of a
 capture with findings, and interaction-state captures are never measured — a tooltip overlaps
