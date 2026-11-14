@@ -1,4 +1,4 @@
-import type { CompareOptions, DiopsisConfig } from './config.ts';
+import type { CompareOptions, DiopsisConfig, LayoutOptions } from './config.ts';
 import type { StoryEntry } from './story-index.ts';
 
 /**
@@ -38,6 +38,19 @@ export interface Capture {
    * story and mode — when the config switches it on (docs/decisions.md, D-042).
    */
   a11y?: true;
+  /**
+   * The layout audit measures this capture: every width of a story that did not opt out,
+   * never an interaction state, because a held pointer or focus is exactly when designs
+   * overlap on purpose (docs/decisions.md, D-050). Present whenever the audit is on.
+   */
+  layout?: true;
+  /**
+   * This capture exists only for the layout audit, at a width no baseline is written for.
+   * It navigates and measures, never compares, and its snapshot path is a placeholder that
+   * no run ever writes — `diopsis-layout` reads as the mode in the path, so the usual
+   * path tooling keeps parsing it.
+   */
+  layoutOnly?: true;
   /** Comparison overrides the story's tags set; only the keys a tag actually carried. */
   compare?: Partial<CompareOptions>;
   /** Baseline location, relative to `snapshotDir`. */
@@ -246,6 +259,37 @@ export function a11yForStory(story: StoryEntry): { excluded: boolean; warnings: 
   return { excluded: false, warnings: [] };
 }
 
+/**
+ * The layout directive: `diopsis:layout=off` opts a story out of the layout audit. It
+ * names no width and never takes part in width resolution.
+ */
+function layoutDirective(token: string): boolean {
+  return token.startsWith('layout=');
+}
+
+/**
+ * Whether a story's tags exclude it from the layout audit, warned the same way as every
+ * other unusable tag. Overlaps a story means to keep are marked per element with
+ * `data-diopsis-overlap` instead — the story-level tag is for stories the audit cannot
+ * usefully measure at all.
+ */
+export function layoutForStory(story: StoryEntry): { excluded: boolean; warnings: string[] } {
+  for (const directive of story.tags) {
+    if (!directive.startsWith(TAG_PREFIX)) continue;
+    const token = directive.slice(TAG_PREFIX.length);
+    if (!layoutDirective(token)) continue;
+    if (token === 'layout=off') return { excluded: true, warnings: [] };
+    return {
+      excluded: false,
+      warnings: [
+        `${story.id}: tag "${directive}" is not a layout setting — the one setting is ` +
+          'diopsis:layout=off — ignored.',
+      ],
+    };
+  }
+  return { excluded: false, warnings: [] };
+}
+
 /** One state directive, split into the action it asks for and the selector it aims at. */
 function stateDirective(
   token: string,
@@ -401,14 +445,16 @@ export function widthsForStory(
     }
     // A tolerance directive names a comparison knob, not a width; skipping it here is what
     // keeps a story carrying only tolerance tags on the default widths. The scope, mode,
-    // state and a11y directives are the same kind: they name what the camera frames, under
-    // which globals, holding which interaction, and whether the audit looks at the story.
+    // state, a11y and layout directives are the same kind: they name what the camera
+    // frames, under which globals, holding which interaction, and whether an audit looks
+    // at the story.
     if (
       toleranceDirective(token) ||
       SCOPE_TAGS[token] ||
       modesDirective(token) ||
       stateDirective(token) ||
-      a11yDirective(token)
+      a11yDirective(token) ||
+      layoutDirective(token)
     ) continue;
     if (/^\d+$/.test(token)) {
       widths.add(Number.parseInt(token, 10));
@@ -434,6 +480,13 @@ export function widthsForStory(
 }
 
 /**
+ * The path segment a layout-only capture's placeholder baseline is named through. It reads
+ * as a mode to the path parser, so `diff` and `prune` keep working, and no run ever writes
+ * a file at it — a layout-only capture has nothing to compare.
+ */
+export const LAYOUT_PATH_SEGMENT = 'diopsis-layout';
+
+/**
  * Expand stories into the full capture set.
  *
  * Returned as plain data, unfiltered, so change-aware capture (docs/decisions.md, D-036) is a
@@ -441,7 +494,8 @@ export function widthsForStory(
  */
 export function resolveMatrix(
   stories: StoryEntry[],
-  config: Pick<DiopsisConfig, 'viewports' | 'viewportHeight' | 'capture' | 'modes'>,
+  config: Pick<DiopsisConfig, 'viewports' | 'viewportHeight' | 'capture' | 'modes'> &
+    Partial<Pick<DiopsisConfig, 'layout'>>,
   platform: string = platformToken(),
 ): ResolvedMatrix {
   const captures: Capture[] = [];
@@ -453,6 +507,12 @@ export function resolveMatrix(
   // collision is an error the moment it happens, not a wrong diff months later.
   const owners = new Map<string, string>();
 
+  // The layout audit's shape: on or off, and the extra widths it measures at. A width the
+  // story is already captured at needs no second capture — the measurement rides the
+  // existing one — so the extras are per story.
+  const layout = config.layout ?? { mode: 'off' as const, widths: [] as number[] };
+  const layoutOn = layout.mode !== 'off';
+
   for (const story of stories) {
     const resolved = widthsForStory(story, config.viewports);
     const tolerance = toleranceForStory(story);
@@ -460,6 +520,7 @@ export function resolveMatrix(
     const modeSet = modesForStory(story, config.modes);
     const stateSet = statesForStory(story);
     const a11y = a11yForStory(story);
+    const layoutSet = layoutForStory(story);
     warnings.push(
       ...resolved.warnings,
       ...tolerance.warnings,
@@ -467,6 +528,7 @@ export function resolveMatrix(
       ...modeSet.warnings,
       ...stateSet.warnings,
       ...a11y.warnings,
+      ...layoutSet.warnings,
     );
     if (resolved.skip) {
       skipped.push(story.id);
@@ -492,6 +554,11 @@ export function resolveMatrix(
       // one slot per mode beside the base one. State captures are never audited: the audit
       // reads the story as rendered, not with an element held hovered or pressed.
       const audit = !a11y.excluded && index === 0 ? { a11y: true as const } : {};
+      // The layout audit reads every capture that is not a held interaction: a width is
+      // where a layout breaks, so no width goes unmeasured, and the state captures sit out
+      // for the same reason the audit's slot skips them.
+      const measure =
+        layoutOn && !layoutSet.excluded ? { layout: true as const } : {};
       const base = {
         storyId: story.id,
         storyName: story.name,
@@ -507,7 +574,12 @@ export function resolveMatrix(
       // can live at. A state multiplies the capture set like a width and a mode do, so the
       // plain capture always remains beside the ones holding an element hovered, focused
       // or pressed.
-      captures.push({ ...base, ...audit, snapshotPath: snapshotPathFor(story.id, width, platform) });
+      captures.push({
+        ...base,
+        ...audit,
+        ...measure,
+        snapshotPath: snapshotPathFor(story.id, width, platform),
+      });
       for (const state of stateSet.states) {
         captures.push({
           ...base,
@@ -519,6 +591,7 @@ export function resolveMatrix(
         captures.push({
           ...base,
           ...audit,
+          ...measure,
           mode,
           snapshotPath: snapshotPathFor(story.id, width, platform, mode),
         });
@@ -530,6 +603,29 @@ export function resolveMatrix(
             snapshotPath: snapshotPathFor(story.id, width, platform, mode, state.name),
           });
         }
+      }
+    }
+
+    // The layout audit's own widths: breakpoints no baseline lives at, measured once per
+    // story in its plain form. They come after the story's captures so the review list
+    // reads baselines first; they are captures for every cost that matters, and they write
+    // no baseline at all.
+    if (layoutOn && !layoutSet.excluded) {
+      const already = new Set(resolved.widths);
+      for (const width of [...new Set(layout.widths)].sort((a, b) => a - b)) {
+        if (already.has(width)) continue;
+        captures.push({
+          storyId: story.id,
+          storyName: story.name,
+          storyTitle: story.title,
+          ...(story.importPath ? { importPath: story.importPath } : {}),
+          width,
+          height: config.viewportHeight,
+          scope: scope.scope,
+          layout: true,
+          layoutOnly: true,
+          snapshotPath: snapshotPathFor(story.id, width, platform, LAYOUT_PATH_SEGMENT),
+        });
       }
     }
   }

@@ -12,6 +12,9 @@ if [ -x "$GATE" ]; then
       echo "etymd: this checker does not understand 'screen' (needs etymd 0.11+) — upgrade it, or set COMMIT_MSG_GATE to a checker that does." >&2
     exit 1
   fi
+elif [ -n "${COMMIT_MSG_GATE:-}" ]; then
+  echo "commit-msg: COMMIT_MSG_GATE is set but not usable: $GATE — point it at an executable etymd, or unset it (message screen refused)" >&2
+  exit 1
 fi
 
 # Message format — <type>[(scope)][!]: <summary>. Needs nothing installed, so it always runs.
@@ -45,4 +48,4 @@ if [ -x "$LOCAL" ]; then
 fi
 
 exit 0
-# etymd:generated pack-v18 d14772d43c4fd971
+# etymd:generated pack-v28 d84d4e3d730bdf73

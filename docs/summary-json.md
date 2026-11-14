@@ -63,7 +63,7 @@ dashboard, or an agent wiring Diopsis into something else reads this, not the te
 | `platform` / `arch` | string | The `process.platform` and `process.arch` that produced the run — the same pair in every `snapshotPath` |
 | `mode` | `"run"` \| `"update"` | Whether baselines were verified or regenerated |
 | `snapshotDir` | string | The configured baseline directory, as written |
-| `totals` | object | Counts per status, plus `captures` and the distinct `stories` behind them |
+| `totals` | object | Counts per status, plus `captures` and the distinct `stories` behind them; a run with the layout audit on adds `layoutFindings` |
 | `changedStories` | string[] | Story ids with at least one capture needing review, sorted. Usually all a bot needs |
 | `captures` | object[] | **Every capture the run shot**, in plan order — not only the interesting ones. A full run shoots every capture it planned; a change-aware run (`--changed`) shoots the affected ones and lists the rest under `carried` |
 | `carried` | object[] | Change-aware runs only: the planned captures the run did not shoot, each `{ storyId, width, mode?, state? }`; their baselines stand. `totals.carried` counts them |
@@ -73,9 +73,12 @@ Per capture: `status` is one of `unchanged`, `changed`, `new`, `render-failed`, 
 `diffPixels` and `diffRatio` appear only when the comparator reported them. A changed capture
 also carries `regions` — up to 20 boxes `{ x, y, width, height, pixels }` in image pixels,
 largest first, with `regionsDropped` counting any beyond that — and `size`, the dimensions of
-its render. `error` appears only when something failed, and `artifacts` holds whichever of `expected`, `actual` and `diff` exist, as
+its render. `error` appears only when something failed, and `artifacts` holds whichever of `expected`, `actual`, `diff` and `shot` exist, as
 paths **relative to `outputDir`** so a run stays portable when the directory is moved or
-downloaded from CI.
+downloaded from CI. A capture the layout audit measured carries
+`layout: { findings: [...] }` — present when it found nothing, too, so a measured-clean width
+is told apart from a width nothing measured; `shot` is that audit's evidence screenshot,
+taken only of a capture with findings and never adoptable as a baseline.
 
 Two things are deliberate. `captures` lists every capture the run shot rather than only the changed
 ones, so a consumer can diff one run's coverage against another's; for a change-aware run that
