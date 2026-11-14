@@ -11,6 +11,7 @@ import {
   type RawA11yViolation,
 } from './accessibility.ts';
 import type { LayoutFinding } from './layout.ts';
+import { LAYOUT_PATH_SEGMENT } from './matrix.ts';
 import type {
   FullConfig,
   FullResult,
@@ -87,7 +88,7 @@ export function artifactsOf(
     else if (base.endsWith('-diff.png')) artifacts.diff = relative;
     // The layout audit's evidence shot has its own slot: it must never read as a render
     // the comparison produced, or `accept` would offer it as a baseline.
-    else if (base === 'layout-shot.png') artifacts.shot = relative;
+    else if (attachment.name === `${LAYOUT_PATH_SEGMENT}-shot`) artifacts.shot = relative;
     else artifacts.actual = relative;
   }
   return artifacts;

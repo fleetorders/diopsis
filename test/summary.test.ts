@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 
+import { LAYOUT_PATH_SEGMENT } from '../src/matrix.ts';
 import { artifactsOf, stripAnsi } from '../src/reporter.ts';
 import {
   changedStoriesOf,
@@ -293,10 +294,10 @@ describe('artifactsOf with the layout evidence shot', () => {
 
   it('files the layout shot under its own slot, never as the actual a baseline came from', () => {
     const artifacts = artifactsOf(
-      [{ name: 'diopsis-layout-shot', path: at('layout-shot.png'), contentType: 'image/png' }],
+      [{ name: `${LAYOUT_PATH_SEGMENT}-shot`, path: at('attachments/layout-shot-0a1b2c.png'), contentType: 'image/png' }],
       outputDir,
     );
-    assert.match(artifacts.shot ?? '', /layout-shot\.png$/);
+    assert.match(artifacts.shot ?? '', /layout-shot-0a1b2c\.png$/);
     assert.equal(artifacts.actual, undefined);
   });
 });
