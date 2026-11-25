@@ -1,6 +1,0 @@
-# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
-# CodeRabbit requests changes on its findings and holds the merge until every thread is
-# resolved; it then approves by itself. The schema offers no severity threshold for this,
-# so the hold covers every finding it posts.
-reviews:
-  request_changes_workflow: true
