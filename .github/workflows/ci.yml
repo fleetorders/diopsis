@@ -61,8 +61,9 @@ jobs:
               throw new Error("expected 5 stories → 7 captures");
           ' "$RUNNER_TEMP/doctor.json"
 
-  # The report and the capture waits are client-side behaviour that only a real browser shows.
-  # Locally these run from the pre-commit hook when their sources change; here they run always.
+  # The report, the capture waits and the layout walk are client-side behaviour that only a
+  # real browser shows. Locally these run from the pre-commit hook when their sources change;
+  # here they run always.
   browser:
     runs-on: ubuntu-latest
     steps:
@@ -75,3 +76,4 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: npm run check:report
       - run: npm run check:stabilize
+      - run: npm run check:layout

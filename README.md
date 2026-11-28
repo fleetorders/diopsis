@@ -52,8 +52,9 @@ change, then each one with the changed region outlined, largest change first:
 Needs Node 18.11+, a built static Storybook, and `@playwright/test` as a peer dependency; runs on
 macOS, Windows and Linux, but baselines CI will agree with are generated in Linux via Docker.
 Chromium only — no cross-browser matrix and no interaction testing. An optional accessibility
-audit reports axe-core findings beside the pixels when you install `axe-core`; everything runs
-locally, with no hosted service of any kind.
+audit reports axe-core findings beside the pixels when you install `axe-core`, and an optional
+layout audit reports overlaps, cut-off text and sideways scrolling — including at widths
+between your baselines, where nobody looks. Everything runs locally, no hosted service.
 
 ## Your first run
 
@@ -279,12 +280,12 @@ and images. A custom loading state with none of those markers is invisible to it
 
 ## Development
 
-`npm test` typechecks and runs the suites; `npm run check:report` and `npm run check:stabilize`
-drive the report and the capture waits in a real browser. The git hooks under `.githooks/` and
-the `.etymd/` config come from [etymd](https://www.npmjs.com/package/etymd) and do nothing
-where it is not installed; `.githooks/*.local` runs a gitignored `local/` directory for
-machine-specific checks. The design record is
-[docs/decisions.md](https://github.com/fleetorders/diopsis/blob/main/docs/decisions.md).
+`npm test` typechecks and runs the suites; `npm run check:report`, `check:stabilize` and
+`check:layout` drive the report, the capture waits and the layout walk in a real browser.
+The git hooks under `.githooks/` and the `.etymd/` config come from
+[etymd](https://www.npmjs.com/package/etymd) and do nothing where it is not installed;
+`.githooks/*.local` runs a gitignored `local/` directory for machine-specific checks. The
+design record is [docs/decisions.md](https://github.com/fleetorders/diopsis/blob/main/docs/decisions.md).
 
 ## Roadmap
 

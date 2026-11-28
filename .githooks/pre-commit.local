@@ -32,4 +32,12 @@ if git diff --cached --name-only | grep -qE '^(src/runtime/|scripts/stabilize-ch
   npm run --silent check:stabilize || exit 1
 fi
 
+# And for the layout audit: whether the walk reports a real laid-out page as the boxes the
+# analysis judges is a browser fact too. The walk lives beside the waits in src/runtime/, so
+# a runtime change can break it while the waits stay green — both checks run there.
+if git diff --cached --name-only | grep -qE '^(src/layout\.ts|src/runtime/|scripts/layout-check\.mjs)'; then
+  echo "› layout audit changed — driving its walk in a browser"
+  npm run --silent check:layout || exit 1
+fi
+
 exit 0

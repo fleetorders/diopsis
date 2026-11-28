@@ -9,7 +9,7 @@
 # the changed paths that are symlinks or submodule entries. --commit reads the candidates
 # `git grep` found with a line starting `#!`, and classifies each by its FIRST line. Verdicts
 # land in the scratch: scripts (NUL-delimited matches) and one dot per decision into count /
-# zsh-count / skip-count, tallied by the hook after the pipeline. Each script found is written
+# zsh-count / other-count / skip-count, tallied by the hook after the pipeline. Each script found is written
 # into <tree> at its path, so the checker reads it there. With external-sources on, --context
 # then stages, as raw blobs, the files the staged scripts source.
 #
@@ -129,8 +129,11 @@ for entry do
     exit 1
   }
   head -n 1 "$work/head-bytes" > "$work/first-line" || exit 1
+  # Trailing whitespace after the interpreter name is still the interpreter: a tab before a
+  # flag (sh<TAB>-e) or a first line committed with a carriage return must classify, or the
+  # script leaves every bucket — unchecked, unexcluded, undisclosed.
   st=0
-  grep -qE "^#!.*[/ ](ba|da)?sh( |$)" "$work/first-line" || st=$?
+  grep -qE "^#!.*[/ ](ba|da)?sh([[:space:]].*)?$" "$work/first-line" || st=$?
   case $st in
     (0)
       case $file in
@@ -145,13 +148,24 @@ for entry do
       printf . >> "$work/count" || exit 1 ;;
     (1)
       st=0
-      grep -qE "^#!.*[/ ]zsh( |$)" "$work/first-line" || st=$?
+      grep -qE "^#!.*[/ ]zsh([[:space:]].*)?$" "$work/first-line" || st=$?
       case $st in
         (0) printf . >> "$work/zsh-count" || exit 1 ;;
-        (1) ;;
+        (1)
+          # Any other shebang (ksh, ash) is a script this gate cannot check; it gets its own
+          # bucket, announced by the hook like the zsh exclusion — a coverage hole that is
+          # silent is indistinguishable from coverage. A first line with no shebang at all is
+          # data, not a script, and lands in no bucket by design.
+          st=0
+          grep -qE "^#!" "$work/first-line" || st=$?
+          case $st in
+            (0) printf . >> "$work/other-count" || exit 1 ;;
+            (1) ;;
+            (*) exit 1 ;;
+          esac ;;
         (*) exit 1 ;;
       esac ;;
     (*) exit 1 ;;
   esac
 done
-# etymd:generated pack-v18 619e9b67bc644574
+# etymd:generated pack-v28 28ef73acfe6160b4

@@ -22,7 +22,7 @@ describe('printed and recorded paths', () => {
   it('go through displayPath, so none can carry a platform separator', () => {
     // A raw path.relative printed a backslash path on Windows in five places before this
     // guard existed. Containment checks compare, never print, and are the only exception.
-    const allowed = new Set(['src/paths.ts', 'src/commands/accept.ts']);
+    const allowed = new Set(['src/paths.ts', 'src/commands/accept.ts', 'src/commands/merge.ts']);
     const offenders: string[] = [];
     const walk = (dir: string): void => {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {

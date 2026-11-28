@@ -1,5 +1,6 @@
 import type { CompareOptions } from '../config.ts';
 import type { MarkedA11yViolation } from '../accessibility.ts';
+import type { LayoutFinding } from '../layout.ts';
 import type { Region } from '../regions.ts';
 import type { PlannedCapture } from '../runner/generate.ts';
 
@@ -24,6 +25,26 @@ export interface CaptureArtifacts {
   expected?: string;
   actual?: string;
   diff?: string;
+  /** The layout audit's evidence screenshot, present only on a capture it flagged. */
+  shot?: string;
+}
+
+/**
+ * The layout audit's record for one capture: the findings capped for the review's list, and
+ * the facts that keep the cap honest. `total` and `counts` are absent in summaries older
+ * than the audit's own totals; they fall back to the list itself.
+ */
+export interface CaptureLayout {
+  /** The findings, sorted and capped for reading. */
+  findings: LayoutFinding[];
+  /** Findings detected before the display cap — the number a count reports. */
+  total?: number;
+  /** Findings of each kind among all detected. */
+  counts?: Partial<Record<LayoutFinding['kind'], number>>;
+  /** The overlap candidates were capped: pairs past the cap were never judged. */
+  candidateCap?: true;
+  /** The walk stopped at its element limit: what it never reached was never judged. */
+  walkTruncated?: true;
 }
 
 export interface CaptureResult {
@@ -71,6 +92,12 @@ export interface CaptureResult {
    * audited-and-clean story from one the run never audited.
    */
   accessibility?: { violations: MarkedA11yViolation[]; new: number };
+  /**
+   * The layout audit's record at this capture's width, present only on a capture the run
+   * measured — including when it found nothing, so a measured-clean width is told apart
+   * from a width nothing measured (docs/decisions.md, D-050).
+   */
+  layout?: CaptureLayout;
   artifacts: CaptureArtifacts;
 }
 
@@ -100,6 +127,12 @@ export interface RunTotals {
    * one failed its capture like a change.
    */
   a11yNew?: number;
+  /**
+   * Layout findings across the run. Present only in a run that measured; in `'report'`
+   * mode it changes nothing but the report, in `'fail'` mode each finding failed its
+   * capture like a change.
+   */
+  layoutFindings?: number;
 }
 
 /** A capture a change-aware run planned but did not shoot; its baseline stands as it was. */
@@ -215,6 +248,10 @@ export function classify(input: ClassifyInput): {
   // lands in `changed` — the status whose response is accept.
   if (input.errorText.includes('New accessibility findings')) return { status: 'changed' };
 
+  // A layout finding failed it the same way, and for the same reason: the response is a
+  // look at the report, not a re-run.
+  if (input.errorText.includes('New layout findings')) return { status: 'changed' };
+
   const pixels = PIXELS_PATTERN.exec(input.errorText);
   if (pixels) {
     return {
@@ -245,6 +282,8 @@ export function totalsFor(captures: CaptureResult[]): RunTotals {
   };
   let a11yNew = 0;
   let audited = false;
+  let layoutCount = 0;
+  let measured = false;
   for (const capture of captures) {
     // Unstable captures are unchanged — the count sits beside it, not instead of it.
     if (capture.unstable) totals.unstable += 1;
@@ -259,10 +298,17 @@ export function totalsFor(captures: CaptureResult[]): RunTotals {
       audited = true;
       a11yNew += capture.accessibility.new;
     }
+    if (capture.layout) {
+      measured = true;
+      // The detected total, not the capped list: a count that shrinks to fit its display
+      // would read a partly-examined page as a cleaner one.
+      layoutCount += capture.layout.total ?? capture.layout.findings.length;
+    }
   }
   // Present only when the run audited: a zero on a run that never looked is not a clean
-  // bill of health, it is the audit being off.
+  // bill of health, it is the audit being off. The layout count follows the same rule.
   if (audited) totals.a11yNew = a11yNew;
+  if (measured) totals.layoutFindings = layoutCount;
   return totals;
 }
 

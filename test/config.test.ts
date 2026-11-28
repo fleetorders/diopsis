@@ -469,3 +469,57 @@ describe('parseSize', () => {
     assert.equal(parseSize(''), undefined);
   });
 });
+
+describe('validateConfig layout', () => {
+  function configWith(layout: unknown): DiopsisConfig {
+    return { ...resolveConfig(), layout } as DiopsisConfig;
+  }
+
+  it('accepts the modes and widths, and off by default', () => {
+    assert.deepEqual(resolveConfig().layout, { mode: 'off', widths: [] });
+    assert.deepEqual(
+      validateConfig(configWith({ mode: 'fail', widths: [320, 768] })),
+      [],
+    );
+  });
+
+  it('rejects a mode outside the three', () => {
+    const problems = validateConfig(configWith({ mode: 'warn', widths: [] }));
+    assert.equal(problems.length, 1);
+    assert.match(problems[0] ?? '', /layout\.mode must be "off", "report" or "fail" \(got "warn"\)/);
+  });
+
+  it('rejects widths that are not positive integers', () => {
+    const problems = validateConfig(configWith({ mode: 'report', widths: [320, 0, 1.5, 'wide'] }));
+    assert.equal(problems.length, 1);
+    assert.match(problems[0] ?? '', /layout\.widths must be an array of positive integer widths/);
+  });
+
+  it('rejects a layout that is not the object of { mode, widths }', () => {
+    const problems = validateConfig(configWith('report'));
+    assert.equal(problems.length, 1);
+    assert.match(problems[0] ?? '', /layout must be an object of \{ mode, widths \} \(got "report"\)/);
+  });
+
+  it('merges a partial layout over the defaults, like stabilize and compare', () => {
+    const user: UserConfig = { layout: { mode: 'report' } };
+    assert.deepEqual(resolveConfig(user).layout, { mode: 'report', widths: [] });
+  });
+
+  // Through resolveConfig, as a config file reaches validation: spreading a string into the
+  // group would leave the defaults standing and the audit silently off.
+  it('rejects a bare-string layout written in a config file, not just one built by hand', () => {
+    const problems = validateConfig(resolveConfig({ layout: 'fail' } as unknown as UserConfig));
+    assert.equal(problems.length, 1);
+    assert.match(problems[0] ?? '', /layout must be an object of \{ mode, widths \} \(got "fail"\)/);
+  });
+
+  it('rejects a scalar in place of the stabilize or compare group, once each', () => {
+    const compare = validateConfig(resolveConfig({ compare: 0.1 } as unknown as UserConfig));
+    assert.equal(compare.length, 1);
+    assert.match(compare[0] ?? '', /compare must be an object .*\(got 0\.1\)/);
+    const stabilize = validateConfig(resolveConfig({ stabilize: null } as unknown as UserConfig));
+    assert.equal(stabilize.length, 1);
+    assert.match(stabilize[0] ?? '', /stabilize must be an object .*\(got null\)/);
+  });
+});

@@ -423,3 +423,58 @@ describe('generateProject with the accessibility audit', () => {
     assert.equal(updatePlan.accessibility, 'report');
   });
 });
+
+describe('generateProject with the layout audit', () => {
+  it('carries the mode in the plan, and the measuring in the spec', async () => {
+    const root = await scratch();
+    const config = resolveConfig({ layout: { mode: 'report', widths: [480] } });
+    const { captures } = resolveMatrix(stories, config, 'linux-x64');
+    const project = await generateProject({ root, config, captures, baseUrl: 'http://x' });
+
+    const plan = JSON.parse(await readFile(project.planPath, 'utf8')) as { layout: string };
+    assert.equal(plan.layout, 'report');
+
+    // The spec measures every marked capture after the comparison, records the findings
+    // whether clean or not, and never decides anything itself: the plan says whether a
+    // finding fails the run.
+    const spec = await readFile(path.join(project.dir, 'diopsis.spec.js'), 'utf8');
+    assert.match(spec, /if \(capture\.layout && plan\.layout !== 'off'\)/);
+    assert.match(spec, /type: 'diopsis-layout'/);
+    assert.match(spec, /if \(plan\.layout === 'fail'\)/);
+    // A layout-only capture navigates and measures, and never compares.
+    assert.match(spec, /if \(capture\.layoutOnly\)/);
+    // Nor does it record a baseline state: its placeholder path never exists, and
+    // "missing" would classify its findings as a new story.
+    assert.match(spec, /if \(!capture\.layoutOnly\) \{\s*test\.info\(\)\.annotations\.push\(\{\s*type: 'diopsis-baseline'/);
+  });
+
+  it('titles a layout-only capture so its review reads it as such', () => {
+    const config = resolveConfig({ layout: { mode: 'report', widths: [480] } });
+    const { captures } = resolveMatrix(stories, config, 'linux-x64');
+    const planned = planCaptures(captures, '/repo/__screenshots__');
+    assert.deepEqual(
+      planned.map((capture) => capture.title),
+      [
+        'a--one @320',
+        'a--one @1280',
+        'a--one @480 [layout]',
+        'b--wide @1280',
+        'b--wide @480 [layout]',
+      ],
+    );
+    // The audit's own widths trail the story's captures, so the review list reads
+    // baselines first; a width the story already captures (1280 here) is not measured twice.
+    assert.equal(new Set(planned.map((capture) => capture.title)).size, planned.length);
+  });
+
+  it('never fails an update on findings, the same way the accessibility audit does not', async () => {
+    const root = await scratch();
+    const config = resolveConfig({ layout: { mode: 'fail', widths: [] } });
+    const { captures } = resolveMatrix(stories, config, 'linux-x64');
+    const project = await generateProject({ root, config, captures, baseUrl: 'http://x', mode: 'update' });
+    const plan = JSON.parse(await readFile(project.planPath, 'utf8')) as { layout: string };
+    // A regeneration measures and records; failing it on findings would be an update
+    // nothing can be accepted from.
+    assert.equal(plan.layout, 'report');
+  });
+});

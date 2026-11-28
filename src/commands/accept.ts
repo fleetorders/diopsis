@@ -89,10 +89,12 @@ export async function acceptCommand(options: AcceptOptions): Promise<number> {
   );
   const wanted = candidates.filter(adoptable);
   // A candidate that carries audit data failed on findings, not pixels — the comparison
-  // passed, there is no image to copy, and its findings are what this accept adopts. Only
-  // a capture with nothing adoptable about it is reported as skipped.
+  // passed, there is no image to copy, and its findings are what this accept adopts. A
+  // layout finding is the same shape with nothing to adopt at all: pixels cannot fix a
+  // layout, so the capture is neither copied nor reported as skipped. Only a capture with
+  // nothing adoptable about it is reported as skipped.
   const skipped = candidates.filter(
-    (capture) => !adoptable(capture) && !capture.accessibility,
+    (capture) => !adoptable(capture) && !capture.accessibility && !capture.layout,
   );
 
   // The audit's findings are adopted beside the images, for the same stories the accept
