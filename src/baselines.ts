@@ -77,6 +77,10 @@ export function expectedBaselines(
   const expected = new Set<string>();
   for (const platform of platforms) {
     for (const capture of captures) {
+      // A layout-only width writes no baseline at all (docs/decisions.md, D-050); counted
+      // here, it would expect its ordinary path — a baseline nothing writes, so `prune`
+      // keeps the stale PNG of a width the project moved to `layout.widths`.
+      if (capture.layoutOnly) continue;
       expected.add(
         snapshotPathFor(capture.storyId, capture.width, platform, capture.mode, capture.state?.name),
       );

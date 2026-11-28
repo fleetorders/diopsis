@@ -764,7 +764,9 @@ reports three findings as text in `summary.json` (`captures[].layout.findings`,
 sharing at least 25% of the smaller's area; media pairs excluded), text cut off by its
 container (a box hiding overflow while its text or controls reach more than 4 px past its
 edge, unless ellipsis or line clamping says the truncation is the design), and sideways
-scrolling (the page scrolls because an element reaches past the right edge). Text is
+scrolling (the page scrolls because an element reaches past the edge it scrolls towards —
+the right edge, or the left one in a right-to-left page — its box or its words, whichever
+runs further). Text is
 judged by its line boxes, not its block, so a paragraph wrapping round a float or a
 heading whose row a button shares is not a collision. Every shape is first cut to the boxes
 around it that hide or scroll their overflow, so a card's cropped image, a label past its
@@ -774,13 +776,22 @@ so it never reports cut-off text. A
 visually hidden subtree (a box 1 px or less on an axis it clips, or a legacy `clip`
 rectangle) is not measured at all, because screen-reader-only text is hidden from sight on
 purpose, and neither is a fully transparent one, since opacity — unlike `visibility` —
-cannot be set back by a child. `layout.widths` are measured in addition to every story's
+cannot be set back by a child. The walk follows light-DOM children and open shadow roots
+alike — a component's content is laid out like any other — and enters the first render
+root that matches, never several nested ones. Clipping is read from the overflow style,
+not from the scroll extents: scrollWidth and scrollHeight grow only rightward and
+downward, so a child past a box's left or top edge is clipped just as surely while
+measuring as if it showed. `layout.widths` are measured in addition to every story's
 capture widths — breakpoints, say — as layout-only captures that navigate and never
 compare, so no baseline is ever written for them; their snapshot path is the placeholder
 mode `diopsis-layout`, which the path parser reads and no run writes. A screenshot is
-taken only of a flagged capture, attached as `layout-shot.png` and carried as
-`artifacts.shot` — deliberately not `actual`, so `accept` can never offer it as a
-baseline. A story opts out with `diopsis:layout=off`; an element whose overlaps are
+taken only of a flagged capture, masked exactly like the compared capture so a region the
+project configured Diopsis to hide never reaches the review's artifacts, attached as
+`layout-shot.png` and carried as `artifacts.shot` — deliberately not `actual`, so `accept`
+can never offer it as a baseline. Findings are counted before the display list is capped,
+and a capped candidate list or a walk that stopped at its element limit is carried in the
+record, so a partly-judged page never reads as a clean one. A story opts out with
+`diopsis:layout=off`; an element whose overlaps are
 intended is marked with `data-diopsis-overlap`, the same register as
 `data-diopsis-ignore` (D-008). `'fail'` fails a capture with findings like a change,
 except in an update, which measures and records only.
@@ -798,7 +809,9 @@ those happens.
 
 **Consequences:** the audit measures only where the comparison passed, like the
 accessibility audit (D-042), so a story with both a pixel change and a layout finding
-reports the pixels first and the layout on the next run. Interaction-state captures are
+reports the pixels first and the layout on the next run; the accessibility audit is
+recorded before the layout one decides anything, so a capture both flag keeps both on its
+record. Interaction-state captures are
 never measured: tooltips and overlays overlap on purpose. Paint order is approximated by
 document order, so a deliberately stacked pair without a marking is reported and the
 marking is the answer, not z-index analysis. Layout-only captures are captures for every

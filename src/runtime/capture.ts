@@ -527,6 +527,8 @@ export async function componentClip(page: Page): Promise<ComponentClip | undefin
 export interface LayoutMeasurement {
   elements: MeasuredElement[];
   page: PageGeometry;
+  /** The walk stopped at its element limit with subtree left unvisited. */
+  truncated?: true;
 }
 
 /**
@@ -607,18 +609,20 @@ export async function measureLayout(page: Page): Promise<LayoutMeasurement> {
       // is not visible — hidden and clipped content, and content a scroll away, all show only
       // inside the box — and `clip` for what it hides outright, which only `hidden` and
       // `clip` do; a scroll container's overflow is reachable, so it is never cut-off text.
+      // `crop` is read from the style, never from the measured overflow: scrollWidth sees
+      // only content past the right and bottom edges, so a child past the LEFT or TOP edge of
+      // an `overflow: hidden` box — clipped just as surely — would otherwise look visible.
       const overflowOf = (
         element: Element,
         style: CSSStyleDeclaration,
       ): Pick<MeasuredElement, 'clip' | 'crop'> => {
-        const hiddenX = Math.max(0, element.scrollWidth - element.clientWidth);
-        const hiddenY = Math.max(0, element.scrollHeight - element.clientHeight);
-        if (hiddenX <= 1 && hiddenY <= 1) return {};
         const cropX = style.overflowX !== 'visible';
         const cropY = style.overflowY !== 'visible';
         if (!cropX && !cropY) return {};
-        const clipsX = style.overflowX === 'hidden' || style.overflowX === 'clip';
-        const clipsY = style.overflowY === 'hidden' || style.overflowY === 'clip';
+        const hiddenX = Math.max(0, element.scrollWidth - element.clientWidth);
+        const hiddenY = Math.max(0, element.scrollHeight - element.clientHeight);
+        const clipsX = (style.overflowX === 'hidden' || style.overflowX === 'clip') && hiddenX > 1;
+        const clipsY = (style.overflowY === 'hidden' || style.overflowY === 'clip') && hiddenY > 1;
         return {
           crop: { x: cropX, y: cropY },
           ...(clipsX || clipsY
@@ -634,15 +638,33 @@ export async function measureLayout(page: Page): Promise<LayoutMeasurement> {
         };
       };
 
+      // The intended-overlap marking, read across shadow boundaries: `closest` stops at a
+      // shadow root, so a marking on the host (or further up its light DOM) is looked for by
+      // walking hosts — otherwise content a story marked as designed would be reported.
+      const marked = (element: Element): boolean => {
+        for (let node: Node | null = element; node; ) {
+          if (node instanceof Element && node.hasAttribute('data-diopsis-overlap')) return true;
+          if (node.parentElement) node = node.parentElement;
+          else if (node.parentNode instanceof ShadowRoot) node = node.parentNode.host;
+          else break;
+        }
+        return false;
+      };
+
       const elements: MeasuredElement[] = [];
       let walked = 0;
       // An explicit stack, not recursion: the walk is bounded in element count, and a deep
       // chain must not be able to trade that bound for a call-stack overflow.
       const stack: Array<{ element: Element; collectedAncestors: number[] }> = [];
+      // The first render root that matches, never several: Storybook nests `#root` inside
+      // `#storybook-root`, and walking both would measure the same subtree twice — every
+      // element its own overlap. `componentClip` picks its root the same way.
+      let rootElement: Element | null = null;
       for (const selector of roots) {
-        const root = document.querySelector(selector);
-        if (root) stack.push({ element: root, collectedAncestors: [] });
+        rootElement = document.querySelector(selector);
+        if (rootElement) break;
       }
+      if (rootElement) stack.push({ element: rootElement, collectedAncestors: [] });
       while (stack.length > 0 && walked < limit) {
         const { element, collectedAncestors } = stack.pop()!;
         walked += 1;
@@ -683,13 +705,20 @@ export async function measureLayout(page: Page): Promise<LayoutMeasurement> {
               ...(text ? { text } : {}),
               ...(clip ? { clip } : {}),
               ...(crop ? { crop } : {}),
-              ...(element.closest('[data-diopsis-overlap]') ? { intended: true as const } : {}),
+              ...(marked(element) ? { intended: true as const } : {}),
             });
             ancestorsForChildren = [...collectedAncestors, index];
           }
         }
-        // Reversed so children are visited in document order out of the stack.
-        for (const child of Array.from(element.children).reverse()) {
+        // Light-DOM children first, then an open shadow root's — its content is laid out and
+        // painted like any other, and the host is its ancestor for the pairing rules. A
+        // closed root is unreachable by design: nothing can measure it. Reversed so children
+        // are visited in document order out of the stack.
+        const young = [
+          ...Array.from(element.children),
+          ...(element.shadowRoot ? Array.from(element.shadowRoot.children) : []),
+        ].reverse();
+        for (const child of young) {
           stack.push({ element: child, collectedAncestors: ancestorsForChildren });
         }
       }
@@ -698,7 +727,17 @@ export async function measureLayout(page: Page): Promise<LayoutMeasurement> {
       const scrollWidth = document.scrollingElement
         ? document.scrollingElement.scrollWidth
         : document.documentElement.scrollWidth;
-      return { elements, page: { viewportWidth: layoutViewport, scrollWidth } };
+      const direction =
+        getComputedStyle(document.scrollingElement ?? document.documentElement).direction === 'rtl'
+          ? ('rtl' as const)
+          : ('ltr' as const);
+      return {
+        elements,
+        page: { viewportWidth: layoutViewport, scrollWidth, direction },
+        // A walk that stopped at its limit examined part of the page; the analysis says so
+        // rather than letting a clean-looking half stand for the whole.
+        ...(stack.length > 0 ? { truncated: true as const } : {}),
+      };
     },
     { roots: RENDER_ROOTS, limit: MAX_WALKED_ELEMENTS, textBoxLimit: MAX_TEXT_BOXES },
   );

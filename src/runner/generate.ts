@@ -333,23 +333,33 @@ for (const capture of plan.captures) {
     // its first width, never an interaction state — and strictly after the screenshot, so
     // nothing it does can touch the pixels the comparison just judged. The findings ride
     // the result as an annotation; in 'fail' mode a new finding fails the capture like a
-    // change, which is why this throw sits outside the try above: the state is already
-    // released and the page's own verdict is already recorded.
+    // change. The failure is held rather than thrown here, outside the try above (the state
+    // is already released and the page's own verdict already recorded), so the layout audit
+    // below still records its findings before the capture's status is decided — one audit
+    // failing never hides what the other found.
+    let a11yFailure;
     if (capture.a11y && plan.accessibility !== 'off' && axeSource) {
       const violations = await auditAccessibility(page, axeSource);
       test.info().annotations.push({ type: 'diopsis-a11y', description: JSON.stringify(violations) });
       if (plan.accessibility === 'fail') {
-        const failure = a11yFailureOf(violations, acceptedA11y, capture.storyId, capture.mode);
-        if (failure) throw new Error(failure);
+        a11yFailure = a11yFailureOf(violations, acceptedA11y, capture.storyId, capture.mode);
       }
     }
 
-    // The layout audit, after both of the above for the same reason: it reads the laid-out
+    // The layout audit, after the screenshot for the same reason: it reads the laid-out
     // page, so it must not touch what the comparison judged, and it runs only where the
     // comparison passed — a capture that failed reports its own problem first, and the
     // next run measures the layout (D-050).
+    let layoutFailure;
     if (capture.layout && plan.layout !== 'off') {
-      await measureAndReport(page, capture);
+      layoutFailure = await measureAndReport(page, capture);
+    }
+
+    // Both audits recorded, the capture's status can fail: whichever audit found something
+    // says so in the message, so the classifier and the summary see every problem the run
+    // found, not just the first.
+    if (a11yFailure || layoutFailure) {
+      throw new Error([a11yFailure, layoutFailure].filter(Boolean).join('\n'));
     }
   });
 }
@@ -357,21 +367,28 @@ for (const capture of plan.captures) {
 // One width's layout measurement: walk the laid-out page, decide findings in the pure
 // module, record them whether clean or not — a measured-clean width and an unmeasured one
 // are different facts — and keep a screenshot only where there is something to see, as the
-// one artifact a layout finding has to offer.
+// one artifact a layout finding has to offer. The shot wears the same masks as the compared
+// capture: a region the project configured Diopsis to hide is hidden in the review's
+// artifacts too, not only in the pixels the comparison judged.
 async function measureAndReport(page, capture) {
   const measurement = await measureLayout(page);
-  const findings = analyzeLayout(measurement.elements, measurement.page);
-  test.info().annotations.push({ type: 'diopsis-layout', description: JSON.stringify(findings) });
-  if (findings.length === 0) return;
-  const shot = await page.screenshot({ fullPage: true, animations: 'disabled' });
+  const analysis = analyzeLayout(measurement.elements, measurement.page, measurement.truncated);
+  test.info().annotations.push({ type: 'diopsis-layout', description: JSON.stringify(analysis) });
+  if (analysis.findings.length === 0) return undefined;
+  const shot = await page.screenshot({
+    fullPage: true,
+    animations: 'disabled',
+    mask: plan.mask.map((selector) => page.locator(selector)),
+    maskColor: '#ff00ff',
+  });
   const file = test.info().outputPath('layout-shot.png');
   await mkdir(dirname(file), { recursive: true });
   await writeFile(file, shot);
   await test.info().attach('diopsis-layout-shot', { path: file });
   if (plan.layout === 'fail') {
-    const failure = layoutFailureOf(findings, capture.storyId, capture.width, capture.mode);
-    if (failure) throw new Error(failure);
+    return layoutFailureOf(analysis, capture.storyId, capture.width, capture.mode);
   }
+  return undefined;
 }
 `;
 }

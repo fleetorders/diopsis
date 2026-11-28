@@ -1,5 +1,24 @@
 # diopsis
 
+## Unreleased
+
+### Patch Changes
+
+- The layout audit sees the pages it was missing: content inside open shadow roots, sideways
+  scrolling from an unbreakable word or a right-to-left row, and elements past a container's
+  left or top edge (which the scroll extents cannot see) are all measured now, and nested
+  Storybook render roots are walked once instead of measured over themselves. The layout
+  evidence screenshot wears the masks the compared captures wear, so a region configured to
+  be hidden never reaches the report or CI artifacts. A capture both audits flag keeps both
+  on its record — an accessibility failure no longer hides the layout findings of the same
+  run. Findings are counted before the report's display cap, and an audit that judged only
+  part of the page (capped candidates, or a walk that stopped at its limit) says so instead
+  of reading as clean. Embedded layout screenshots resolve in the report again. `merge`
+  refuses a shard summary naming an artifact outside its own directory, and moving a width
+  from `viewports` to `layout.widths` lets `prune` clean up its now-obsolete baseline. The
+  pushed-commit audit no longer clobbers the caller's Git index when a push runs from a
+  linked worktree with Git environment names exported.
+
 ## 0.3.1
 
 ### Patch Changes

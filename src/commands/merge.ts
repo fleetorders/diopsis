@@ -262,6 +262,26 @@ export async function mergeCommand(options: MergeOptions): Promise<number> {
     }
   }
 
+  // An artifact is read back through the shard that recorded it, so the path it names must
+  // resolve inside that shard's directory: a summary naming a file elsewhere — a hand-edited
+  // shard, or a malicious one — would make the merged report read and embed the bytes of a
+  // file the run never wrote.
+  for (const shard of shards) {
+    for (const capture of shard.summary.captures) {
+      for (const kind of ['expected', 'actual', 'diff', 'shot'] as const) {
+        const relative = capture.artifacts[kind];
+        if (relative === undefined) continue;
+        const resolved = path.relative(shard.dir, path.resolve(shard.dir, relative));
+        if (resolved === '' || resolved.startsWith('..') || path.isAbsolute(resolved)) {
+          return fail(
+            `${say(shard.dir)}/summary.json names its ${kind} artifact for ` +
+              `${capture.storyId} @${capture.width} outside the shard directory: ${relative}.`,
+          );
+        }
+      }
+    }
+  }
+
   const first = shards[0]!;
   const mergedDir = path.resolve(options.root, config.outputDir, 'merged');
   // Artifacts are recorded relative to the summary that lists them; from the merged

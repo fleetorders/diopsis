@@ -174,6 +174,61 @@ await writeFile(path.join(work, 'clean.html'), `<!doctype html><meta charset=utf
     src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==">
 </div>`);
 
+// A word too unbroken for its paragraph: the paragraph's box stays narrow, its text runs on
+// past the viewport, and the page scrolls sideways because of the TEXT — an overflow judged
+// by border boxes alone never names it.
+await writeFile(path.join(work, 'unbroken-word.html'), `<!doctype html><meta charset=utf-8>
+<style>body{margin:0}</style>
+<div id="storybook-root">
+  <p id="unbroken" style="width:280px;margin:0">A
+    SupercalifragilisticexpialidociousSupercalifragilisticexpialidociousSupercalifragilisticexpialidocious</p>
+</div>`);
+
+// The right-to-left twin: the row is wider than the viewport and overflows to the LEFT —
+// the page scrolls towards negative x, where a left-to-right page scrolls past the right
+// edge. An audit that only looks right reports nothing.
+await writeFile(path.join(work, 'rtl-row.html'), `<!doctype html><meta charset=utf-8 dir=rtl>
+<style>body{margin:0}</style>
+<div id="storybook-root" style="display:flex">
+  <span style="flex:none;width:400px">first</span>
+  <span style="flex:none;width:400px">second</span>
+</div>`);
+
+// Content inside an open shadow root: laid out, painted and overlapping like any other —
+// a walk that follows only light-DOM children never measures it.
+await writeFile(path.join(work, 'shadow-card.html'), `<!doctype html><meta charset=utf-8>
+<style>body{margin:0}</style>
+<div id="storybook-root"><div id="card"></div></div>
+<script>
+  const root = document.getElementById('card').attachShadow({ mode: 'open' });
+  root.innerHTML = '<style>:host{position:relative;display:block;width:300px}</style>' +
+    '<h3 id="title" style="margin:0;font-size:16px">Card title</h3>' +
+    '<button id="over" style="position:absolute;left:0;top:0;width:120px;height:20px">×</button>';
+</script>`);
+
+// Storybook's own nesting: `#root` inside `#storybook-root`. Walking both roots measures
+// the same subtree twice, and every element reports as covering itself; the walk picks the
+// first root that matches, as the component clip already does.
+await writeFile(path.join(work, 'nested-roots.html'), `<!doctype html><meta charset=utf-8>
+<style>body{margin:0}</style>
+<div id="storybook-root"><div id="root">
+  <h1 style="margin:0">Reserve a car</h1>
+  <img alt="A car" width="60" height="40"
+    src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==">
+</div></div>`);
+
+// A button entirely past the LEFT edge of an overflow-hidden container: invisible, and
+// scrollWidth cannot see it (it only grows rightward and downward), so the walk must read
+// the clipping from the style or report the hidden button as overlapping the visible one.
+await writeFile(path.join(work, 'clipped-left.html'), `<!doctype html><meta charset=utf-8>
+<style>body{margin:0;position:relative}</style>
+<div id="storybook-root">
+  <div id="frame" style="position:relative;width:200px;height:60px;overflow:hidden">
+    <button id="hidden" style="position:absolute;left:-100px;top:0;width:40px;height:20px">✕</button>
+  </div>
+  <button id="visible" style="position:absolute;left:-100px;top:80px;width:40px;height:20px">✕</button>
+</div>`);
+
 const results = [];
 const check = (name, pass, detail) => results.push({ name, pass, detail });
 
@@ -196,11 +251,12 @@ async function audit(file, storyId, width) {
   const p = await context.newPage();
   await openStory(p, `${server.url}/${file}`, defaultConfig.stabilize);
   const measurement = await measureLayout(p);
-  const findings = analyzeLayout(measurement.elements, measurement.page);
+  const analysis = analyzeLayout(measurement.elements, measurement.page, measurement.truncated);
   await context.close();
   return {
-    findings,
-    failure: layoutFailureOf(findings, storyId, width),
+    findings: analysis.findings,
+    analysis,
+    failure: layoutFailureOf(analysis, storyId, width),
     measured: JSON.stringify(measurement),
   };
 }
@@ -308,6 +364,52 @@ try {
   const plain = await audit('clean.html', 'clean', 600);
   check('a page with nothing wrong reports nothing', plain.findings.length === 0,
     JSON.stringify(plain.findings));
+
+  const unbroken = await audit('unbroken-word.html', 'unbroken-word', 600);
+  const [word] = unbroken.findings;
+  check(
+    'an unbreakable word scrolling the page sideways is named by its text, not its box',
+    unbroken.findings.length === 1 &&
+      word?.kind === 'horizontal-overflow' &&
+      word.element.selector === 'p#unbroken',
+    JSON.stringify(unbroken.findings),
+  );
+
+  const rtl = await audit('rtl-row.html', 'rtl-row', 600);
+  const [leftward] = rtl.findings;
+  check(
+    'a right-to-left page overflowing to the left is named, sized by its leftward reach',
+    rtl.findings.length === 1 &&
+      leftward?.kind === 'horizontal-overflow' &&
+      leftward.beyond >= 199 &&
+      leftward.beyond <= 201,
+    JSON.stringify(rtl.findings),
+  );
+
+  const shadow = await audit('shadow-card.html', 'shadow-card', 600);
+  const [shadowed] = shadow.findings;
+  check(
+    'an overlap inside an open shadow root is measured like any other',
+    shadow.findings.length === 1 &&
+      shadowed?.kind === 'overlap' &&
+      shadowed.covered.selector === 'h3#title' &&
+      shadowed.covering.selector === 'button#over',
+    JSON.stringify(shadow.findings),
+  );
+
+  const nested = await audit('nested-roots.html', 'nested-roots', 600);
+  check(
+    'nested render roots are walked once, not measured over themselves',
+    nested.findings.length === 0,
+    JSON.stringify(nested.findings),
+  );
+
+  const clipped = await audit('clipped-left.html', 'clipped-left', 600);
+  check(
+    'a button past the left edge of an overflow-hidden box is invisible, not overlapping',
+    clipped.findings.length === 0,
+    JSON.stringify(clipped.findings),
+  );
 
   const again = await audit('car-over-title.html', 'car--over-title', 600);
   check(

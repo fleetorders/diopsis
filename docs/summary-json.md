@@ -76,9 +76,12 @@ largest first, with `regionsDropped` counting any beyond that — and `size`, th
 its render. `error` appears only when something failed, and `artifacts` holds whichever of `expected`, `actual`, `diff` and `shot` exist, as
 paths **relative to `outputDir`** so a run stays portable when the directory is moved or
 downloaded from CI. A capture the layout audit measured carries
-`layout: { findings: [...] }` — present when it found nothing, too, so a measured-clean width
-is told apart from a width nothing measured; `shot` is that audit's evidence screenshot,
-taken only of a capture with findings and never adoptable as a baseline.
+`layout: { findings: [...], total, counts, candidateCap?, walkTruncated? }` — present when
+it found nothing, too, so a measured-clean width is told apart from a width nothing
+measured. `findings` is capped for reading while `total` and `counts` cover everything
+detected, and `candidateCap` or `walkTruncated` mark an audit that judged only part of the
+page; `shot` is that audit's evidence screenshot, taken only of a capture with findings,
+masked like any other capture, and never adoptable as a baseline.
 
 Two things are deliberate. `captures` lists every capture the run shot rather than only the changed
 ones, so a consumer can diff one run's coverage against another's; for a change-aware run that

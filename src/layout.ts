@@ -72,6 +72,12 @@ export interface PageGeometry {
   viewportWidth: number;
   /** The page's full scrollable width; larger than the viewport means it scrolls sideways. */
   scrollWidth: number;
+  /**
+   * The direction the page's scrolling element lays out towards. A right-to-left page
+   * scrolls leftward: runaway content sits at negative x, where a left-to-right page's
+   * sits past the viewport's right edge. Absent means left-to-right.
+   */
+  direction?: 'ltr' | 'rtl';
 }
 
 /** Two content elements occupying the same pixels: the later one in document order covers the earlier. */
@@ -92,15 +98,33 @@ export interface TextClipFinding {
   hidden: number;
 }
 
-/** The page scrolls sideways; this element reaches furthest past the right edge. */
+/** The page scrolls sideways; this element reaches furthest past the edge it scrolls towards. */
 export interface HorizontalOverflowFinding {
   kind: 'horizontal-overflow';
   element: LayoutElementRef;
-  /** Pixels the element reaches past the layout viewport's right edge. */
+  /** Pixels the element reaches past the edge the page scrolls towards — right, or left in RTL. */
   beyond: number;
 }
 
 export type LayoutFinding = OverlapFinding | TextClipFinding | HorizontalOverflowFinding;
+
+/**
+ * One width's layout audit, as everything downstream reads it: the findings capped for the
+ * review's list, and the facts that keep the cap honest — how many were detected in total,
+ * what kind they were, and whether every element was actually judged.
+ */
+export interface LayoutAnalysis {
+  /** The findings, sorted and capped at `MAX_LAYOUT_FINDINGS`. */
+  findings: LayoutFinding[];
+  /** Findings detected before the display cap — the number every count reports. */
+  total: number;
+  /** Findings of each kind among all detected, so a count past the cap stays a fact. */
+  counts: Partial<Record<LayoutFinding['kind'], number>>;
+  /** The overlap candidates were capped: pairs past the cap were never judged. */
+  candidateCap?: true;
+  /** The walk stopped at its element limit: what it never reached was never judged. */
+  walkTruncated?: true;
+}
 
 /**
  * The share of the smaller element's area an overlap must cover before it is a finding.
@@ -263,30 +287,41 @@ function readableReach(
 }
 
 /**
- * Turn one width's measurements into its findings.
+ * Turn one width's measurements into its analysis.
  *
  * Deterministic by construction: the walk's order decides pair order and candidate caps, and
  * the result is sorted, so the same page at the same width yields the same findings on every
  * machine. Overlaps lead (they are the most likely to hide content), each kind sorted by
- * size, and the whole list is capped at `MAX_LAYOUT_FINDINGS`.
+ * size, and the display list is capped at `MAX_LAYOUT_FINDINGS` — with the total, the kind
+ * counts and any coverage cap carried beside it, so a capped audit never reads as complete.
  */
-export function analyzeLayout(elements: MeasuredElement[], page: PageGeometry): LayoutFinding[] {
+export function analyzeLayout(
+  elements: MeasuredElement[],
+  page: PageGeometry,
+  walkTruncated = false,
+): LayoutAnalysis {
   const overlaps: OverlapFinding[] = [];
   const clips: TextClipFinding[] = [];
   const overflows: HorizontalOverflowFinding[] = [];
 
-  // Sideways scrolling: the page scrolls because something reaches past its right edge, and
-  // the element that reaches furthest is the one to name. Each element reaches only as far
-  // as it shows: what a box around it cuts off — a carousel's later slides, say — adds
-  // nothing to the page's width. A scroll with no collected element past the edge (a walk
-  // that hit its limit, say) reports nothing rather than a finding that points at nothing.
+  // Sideways scrolling: the page scrolls because something reaches past the edge it scrolls
+  // towards — the right edge, or the left one in a right-to-left page — and the element
+  // that reaches furthest is the one to name. An element reaches only as far as it shows:
+  // its shape, so a paragraph's unbroken words count past the box its block keeps, cut to
+  // what the boxes around it leave in view, so a carousel's later slides add nothing to the
+  // page's width. A scroll with no collected element past the edge (a walk that hit its
+  // limit, say) reports nothing rather than a finding that points at nothing.
   if (page.scrollWidth > page.viewportWidth + OVERFLOW_MIN_PX) {
+    const rtl = page.direction === 'rtl';
     let worst: { element: MeasuredElement; beyond: number } | undefined;
     for (const [index, element] of elements.entries()) {
-      const [shown] = inView([element.box], croppersOf(element, index), elements);
-      if (!shown) continue;
-      const beyond = shown.x + shown.width - page.viewportWidth;
-      if (beyond > OVERFLOW_MIN_PX && (!worst || beyond > worst.beyond)) worst = { element, beyond };
+      // The box a wide row keeps and the words an unbreakable one runs on: whichever of the
+      // two reaches further is what pushes the page past its edge.
+      const reach = inView([element.box, ...shapeOf(element)], croppersOf(element, index), elements);
+      for (const shown of reach) {
+        const beyond = rtl ? -shown.x : shown.x + shown.width - page.viewportWidth;
+        if (beyond > OVERFLOW_MIN_PX && (!worst || beyond > worst.beyond)) worst = { element, beyond };
+      }
     }
     if (worst) {
       overflows.push({
@@ -335,8 +370,12 @@ export function analyzeLayout(elements: MeasuredElement[], page: PageGeometry): 
   // the overlap reported is the extent of what they share. An image a card crops collides
   // with nothing below the card, and a label truncated by an ellipsis with nothing past it.
   const candidates: Array<{ element: MeasuredElement; index: number; shape: Box[]; extent: Box; area: number }> = [];
+  let candidateCap = false;
   for (const [index, element] of elements.entries()) {
-    if (candidates.length === MAX_OVERLAP_CANDIDATES) break;
+    if (candidates.length === MAX_OVERLAP_CANDIDATES) {
+      candidateCap = true;
+      break;
+    }
     if (element.kind === 'container' || element.intended) continue;
     const shape = inView(shapeOf(element), croppersOf(element, index), elements);
     if (shape.length === 0) continue;
@@ -388,13 +427,22 @@ export function analyzeLayout(elements: MeasuredElement[], page: PageGeometry): 
   const selectorOf = (finding: LayoutFinding): string =>
     finding.kind === 'overlap' ? finding.covered.selector : finding.element.selector;
 
-  return [...overlaps, ...clips, ...overflows]
-    .sort(
-      (a, b) =>
-        a.kind.localeCompare(b.kind) || size(b) - size(a) ||
-        selectorOf(a).localeCompare(selectorOf(b)),
-    )
-    .slice(0, MAX_LAYOUT_FINDINGS);
+  // Counted before the trim: a summary that says 20 when 25 were detected would read as a
+  // complete audit of a page it only half examined.
+  const all = [...overlaps, ...clips, ...overflows].sort(
+    (a, b) =>
+      a.kind.localeCompare(b.kind) || size(b) - size(a) ||
+      selectorOf(a).localeCompare(selectorOf(b)),
+  );
+  const counts: Partial<Record<LayoutFinding['kind'], number>> = {};
+  for (const finding of all) counts[finding.kind] = (counts[finding.kind] ?? 0) + 1;
+  return {
+    findings: all.slice(0, MAX_LAYOUT_FINDINGS),
+    total: all.length,
+    counts,
+    ...(candidateCap ? { candidateCap: true as const } : {}),
+    ...(walkTruncated ? { walkTruncated: true as const } : {}),
+  };
 }
 
 /**
@@ -402,17 +450,20 @@ export function analyzeLayout(elements: MeasuredElement[], page: PageGeometry): 
  * The opening words are the classifier's marker, so they are load-bearing.
  */
 export function layoutFailureOf(
-  findings: LayoutFinding[],
+  analysis: LayoutAnalysis,
   storyId: string,
   width: number,
   mode?: string,
 ): string | undefined {
-  if (findings.length === 0) return undefined;
-  const counts = new Map<string, number>();
-  for (const finding of findings) counts.set(finding.kind, (counts.get(finding.kind) ?? 0) + 1);
-  const kinds = [...counts.entries()].map(([kind, n]) => `${kind} ×${n}`).join(', ');
+  if (analysis.total === 0) return undefined;
+  const kinds = Object.entries(analysis.counts).map(([kind, n]) => `${kind} ×${n}`).join(', ');
+  const coverage = [
+    ...(analysis.candidateCap ? [`coverage capped at ${MAX_OVERLAP_CANDIDATES} elements`] : []),
+    ...(analysis.walkTruncated ? ['walk stopped at its element limit'] : []),
+  ];
   return (
-    `New layout findings: ${findings.length} in ` +
-    `${mode === undefined ? storyId : `${storyId}[@${mode}]`} @${width} (${kinds})`
+    `New layout findings: ${analysis.total} in ` +
+    `${mode === undefined ? storyId : `${storyId}[@${mode}]`} @${width} ` +
+    `(${[kinds, ...coverage].filter(Boolean).join('; ')})`
   );
 }

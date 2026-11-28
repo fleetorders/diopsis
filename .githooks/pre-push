@@ -395,9 +395,11 @@ fi
 # to an installed binary into "unverifiable, skipped", and dead commands are exactly what this
 # gate exists to catch. hooksPath is neutralised for the materialisation
 # itself so no hook of the pushed tree runs as a side effect of this read; the audit inside
-# sees the repo's own config. It runs scrubbed (run_gate): a child git inheriting git's
-# exported names would ignore the worktree it stands in. A push that carries no commits
-# (deletes only) audits nothing, and says so.
+# sees the repo's own config. The materialisation runs scrubbed (run_gate), for the same
+# reason the audit does: a child git inheriting git's exported names ignores the worktree it
+# stands in — an inherited GIT_INDEX_FILE sends read-tree at the CALLER's index, which a push
+# from a linked worktree then leaves clobbered while the audit tree stays empty. A push that
+# carries no commits (deletes only) audits nothing, and says so.
 if command -v etymd >/dev/null 2>&1; then
   (
     audit_tmp=$(mktemp -d) || exit 1
@@ -418,9 +420,9 @@ if command -v etymd >/dev/null 2>&1; then
     tab=$(printf '\t')
     for tip in $tips; do
       wt=$(mktemp -d "$audit_tmp/tip.XXXXXX") || exit 1
-      if ! git -c core.hooksPath=/dev/null worktree add --detach --no-checkout -q "$wt" "$tip" 2>/dev/null \
-        || ! git -C "$wt" -c core.hooksPath=/dev/null read-tree "$tip" \
-        || ! git ls-tree -r -z "$tip" > "$audit_tmp/audit-entries"; then
+      if ! run_gate git -c core.hooksPath=/dev/null worktree add --detach --no-checkout -q "$wt" "$tip" 2>/dev/null \
+        || ! run_gate git -C "$wt" -c core.hooksPath=/dev/null read-tree "$tip" \
+        || ! run_gate git ls-tree -r -z "$tip" > "$audit_tmp/audit-entries"; then
         echo "✗ etymd audit: could not materialise $(git rev-parse --short "$tip" 2>/dev/null || echo "$tip") for the audit — refusing the push rather than certifying bytes this gate did not read" >&2
         exit 1
       fi
@@ -451,7 +453,7 @@ if command -v etymd >/dev/null 2>&1; then
       if ! (cd "$wt" && run_gate etymd audit --no-ledger --fail-on risk); then
         exit 1
       fi
-      git -c core.hooksPath=/dev/null worktree remove --force "$wt" >/dev/null 2>&1 || exit 1
+      run_gate git -c core.hooksPath=/dev/null worktree remove --force "$wt" >/dev/null 2>&1 || exit 1
     done
   ) || exit 1
 else

@@ -455,7 +455,7 @@ const data = JSON.parse(document.getElementById('data').textContent);
 const assets = data.assets || [];
 for (const c of data.captures) {
   if (!c.images) continue;
-  for (const k of ['expected', 'actual', 'diff']) {
+  for (const k of ['expected', 'actual', 'diff', 'shot']) {
     const v = c.images[k];
     if (typeof v === 'string' && v[0] === '#') c.images[k] = assets[Number(v.slice(1))];
   }
@@ -742,11 +742,39 @@ function layoutList(layout) {
     } else {
       const element = document.createElement('code');
       element.textContent = f.element.selector;
-      line.append(element, ' reaches ' + f.beyond + ' px past the right edge');
+      line.append(element, ' reaches ' + f.beyond + ' px past the page’s edge');
     }
     detail.appendChild(line);
     item.appendChild(detail);
     list.appendChild(item);
+  }
+  // The list is capped for reading; the count is not. What the cap hid is named, and so is
+  // an audit that judged only part of the page — both read as incomplete coverage, never
+  // as a clean result.
+  const total = layout.total || layout.findings.length;
+  if (total > layout.findings.length) {
+    const more = document.createElement('li');
+    more.className = 'a11y-rule';
+    const head = document.createElement('div');
+    head.className = 'a11y-head';
+    const count = document.createElement('code');
+    count.textContent = '+' + (total - layout.findings.length) + ' more';
+    head.appendChild(count);
+    more.appendChild(head);
+    list.appendChild(more);
+  }
+  if (layout.candidateCap || layout.walkTruncated) {
+    const note = document.createElement('li');
+    note.className = 'a11y-rule';
+    const head = document.createElement('div');
+    head.className = 'a11y-head';
+    const code = document.createElement('code');
+    code.textContent = layout.walkTruncated
+      ? 'walk stopped at its element limit'
+      : 'overlap candidates capped';
+    head.appendChild(code);
+    note.appendChild(head);
+    list.appendChild(note);
   }
   wrap.appendChild(list);
   return wrap;

@@ -909,6 +909,36 @@ describe('the reporter and the layout audit', () => {
     assert.match(out, /  ! a--one @320  overlap ×1, text-clip ×1/);
   });
 
+  it('counts findings the display cap hid, and says when coverage was capped', async () => {
+    const { reporter, outputDir } = await setup();
+    const { out } = await withCapturedStdout(async () => {
+      reporter.onTestEnd(
+        testTitled('a--one @320'),
+        result({
+          annotations: [
+            { type: 'diopsis-baseline', description: 'present' },
+            {
+              type: 'diopsis-layout',
+              description: JSON.stringify({
+                findings: [overlap, clip],
+                total: 25,
+                counts: { overlap: 24, 'text-clip': 1 },
+                candidateCap: true,
+              }),
+            },
+          ],
+        }),
+      );
+      await reporter.onEnd({ status: 'passed' } as FullResult);
+    });
+    const summary = await summaryAt(outputDir);
+    // The total counts what was detected, and the line says both what the cap hid and that
+    // the audit judged only part of the page — never a clean-looking partial.
+    assert.equal(summary.totals.layoutFindings, 25);
+    assert.match(out, /  layout    25 findings in 1 story/);
+    assert.match(out, /  ! a--one @320  overlap ×24, text-clip ×1; \+23 more; overlap coverage capped/);
+  });
+
   it('keeps a measured-clean width on the record — clean is a fact, not an absence', async () => {
     const { reporter, outputDir } = await setup();
     await withCapturedStdout(async () => {
@@ -916,7 +946,9 @@ describe('the reporter and the layout audit', () => {
       await reporter.onEnd({ status: 'passed' } as FullResult);
     });
     const summary = await summaryAt(outputDir);
-    assert.deepEqual(summary.captures.find((c) => c.storyId === 'a--one')?.layout, { findings: [] });
+    // A payload from before the audit carried its own totals still reads as a bare list;
+    // the clean record it becomes carries the total the list implies.
+    assert.deepEqual(summary.captures.find((c) => c.storyId === 'a--one')?.layout, { findings: [], total: 0 });
     assert.equal(summary.totals.layoutFindings, 0);
   });
 

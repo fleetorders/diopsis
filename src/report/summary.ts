@@ -29,6 +29,24 @@ export interface CaptureArtifacts {
   shot?: string;
 }
 
+/**
+ * The layout audit's record for one capture: the findings capped for the review's list, and
+ * the facts that keep the cap honest. `total` and `counts` are absent in summaries older
+ * than the audit's own totals; they fall back to the list itself.
+ */
+export interface CaptureLayout {
+  /** The findings, sorted and capped for reading. */
+  findings: LayoutFinding[];
+  /** Findings detected before the display cap — the number a count reports. */
+  total?: number;
+  /** Findings of each kind among all detected. */
+  counts?: Partial<Record<LayoutFinding['kind'], number>>;
+  /** The overlap candidates were capped: pairs past the cap were never judged. */
+  candidateCap?: true;
+  /** The walk stopped at its element limit: what it never reached was never judged. */
+  walkTruncated?: true;
+}
+
 export interface CaptureResult {
   storyId: string;
   storyTitle: string;
@@ -75,11 +93,11 @@ export interface CaptureResult {
    */
   accessibility?: { violations: MarkedA11yViolation[]; new: number };
   /**
-   * The layout audit's findings at this capture's width, present only on a capture the run
+   * The layout audit's record at this capture's width, present only on a capture the run
    * measured — including when it found nothing, so a measured-clean width is told apart
    * from a width nothing measured (docs/decisions.md, D-050).
    */
-  layout?: { findings: LayoutFinding[] };
+  layout?: CaptureLayout;
   artifacts: CaptureArtifacts;
 }
 
@@ -282,7 +300,9 @@ export function totalsFor(captures: CaptureResult[]): RunTotals {
     }
     if (capture.layout) {
       measured = true;
-      layoutCount += capture.layout.findings.length;
+      // The detected total, not the capped list: a count that shrinks to fit its display
+      // would read a partly-examined page as a cleaner one.
+      layoutCount += capture.layout.total ?? capture.layout.findings.length;
     }
   }
   // Present only when the run audited: a zero on a run that never looked is not a clean
